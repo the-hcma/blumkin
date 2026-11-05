@@ -366,7 +366,7 @@ def test_apply_prints_what_the_human_is_to_do_and_how_to_resume(
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "paused at step 2: Click OK, then Save." in result.output
     assert "--from-step 3" in result.output
-    assert seen == [1]
+    assert seen == [None]
 
 
 def test_apply_from_step_is_passed_on_and_json_carries_the_pause(
@@ -432,3 +432,37 @@ def test_expect_needs_an_expectation_and_an_open_instance() -> None:
     _run("browser", "ledger", "discard", "timesheet", "2026-p21", "--yes")
     closed = _run("browser", "ledger", "expect", "timesheet", "2026-p21", "--expect", "day=3")
     assert closed.exit_code == EXIT_USAGE
+
+
+def test_status_shows_where_a_flow_stopped_for_an_item(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import ItemKind, ItemState, record_item, record_resume
+
+    _begin()
+    config = tmp_path / "config"
+    record_item(config, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
+    record_resume(config, "timesheet", "2026-p21", ItemKind.DAY, "d1", "fill-day", 4)
+
+    status = _run("browser", "ledger", "status", "timesheet", "2026-p21")
+
+    (item,) = _json(status)["items"]
+    assert item["resume"] == {"flow": "fill-day", "step": 4}
+
+
+def test_apply_passes_restart_on_and_refuses_it_with_from_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[Any, Any]] = []
+
+    def fake(config: Any, task: str, instance: str, kind: str, item: str, **kw: Any) -> dict:
+        seen.append((kw["from_step"], kw["restart"]))
+        return {"item": {"item": item, "kind": kind, "state": "staged"}, "noop": False,
+                "ok": True, "status": {"summary": "1 staged"}}  # fmt: skip
+
+    monkeypatch.setattr("blumkin.cli.ledger_apply", fake)
+    base = ["browser", "ledger", "apply", "timesheet", "2026-p21", "day", "d1", "--flow", "f"]
+
+    _run(*base, "--restart")
+    _run(*base, "--from-step", "3")
+    _run(*base)
+
+    assert seen == [(None, True), (3, False), (None, False)]

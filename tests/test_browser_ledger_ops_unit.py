@@ -876,3 +876,115 @@ def test_a_cell_error_hides_the_escaped_form_of_a_parameter_value_too(
                      column="2", value="8"), {"project": "ACME\\Boston"})  # fmt: skip
 
     assert "ACME" not in str(caught.value) and "<project>" in str(caught.value)
+
+
+def _pausing_run(ran: list[str]) -> Any:
+    def run(step: Any, values: Any) -> None:
+        ran.append(step.action)
+        if step.action == "handoff":
+            raise HandoffRequired(step.instruction)
+
+    return run
+
+
+def _paused_item(tmp_path: Path, ran: list[str]) -> Any:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    return apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=_pausing_run(ran),
+    )  # fmt: skip
+
+
+def test_a_pause_is_saved_and_a_plain_rerun_is_refused_naming_the_step_to_resume_from(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import LedgerError
+
+    ran: list[str] = []
+    first = _paused_item(tmp_path, ran)
+    assert first.paused is not None
+    saved = instance_status_items(tmp_path)[0]
+    assert (saved.resume_flow, saved.resume_step) == ("attach", 3)
+
+    with pytest.raises(LedgerError, match="step 3 of flow 'attach'.*--from-step 3.*--restart"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=_pausing_run(ran),
+        )  # fmt: skip
+
+    assert ran == ["click", "handoff"]  # the refused run touched nothing
+
+
+def test_from_step_restart_and_a_different_flow_are_handled_for_an_item_that_stopped(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import LedgerError
+
+    ran: list[str] = []
+    _paused_item(tmp_path, ran)
+    other = dataclasses.replace(
+        _handoff_model(), flows=(dataclasses.replace(_handoff_model().flows[0], name="other"),)
+    )
+    with pytest.raises(LedgerError, match="flow 'attach'.*got flow 'other'"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="other", model=other, run_step=lambda s, v: None, start_at=3,
+        )  # fmt: skip
+    with pytest.raises(LedgerError, match="either a step to start from or a restart"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=lambda s, v: None,
+            start_at=3, restart=True,
+        )  # fmt: skip
+
+    restarted = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=_pausing_run(ran), restart=True,
+    )  # fmt: skip
+    assert restarted.paused is not None and ran.count("click") == 2
+
+    done = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=_handoff_model(), run_step=lambda s, v: None, start_at=3,
+    )  # fmt: skip
+    assert done.item.state is ItemState.FILLED
+    cleared = instance_status_items(tmp_path)[0]
+    assert cleared.resume_step is None and cleared.resume_flow is None
+
+
+def test_a_failed_step_condition_saves_the_place_too(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import LedgerError
+    from blumkin.browser.ledger_ops import StepConditionError
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    def run(step: Any, values: Any) -> None:
+        if step.action == "click":
+            raise StepConditionError("Expected a heading, got none")
+
+    with pytest.raises(StepConditionError, match="--from-step 2"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=run,
+        )  # fmt: skip
+
+    held = instance_status_items(tmp_path)[0]
+    assert (held.resume_flow, held.resume_step) == ("attach", 2)
+    with pytest.raises(LedgerError, match="--from-step 2"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="attach", model=_handoff_model(), run_step=run,
+        )  # fmt: skip
+
+
+def test_an_item_that_never_stopped_runs_from_the_start_as_before(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    ran: list[str] = []
+
+    result = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="add-line", model=_model(), run_step=lambda s, v: ran.append(s.action),
+        values={"Amount": "8"},
+    )  # fmt: skip
+
+    assert ran == ["click", "fill"] and result.item.state is ItemState.FILLED

@@ -3502,9 +3502,15 @@ def browser_ledger() -> None:
     "--from-step",
     "from_step",
     type=click.IntRange(min=1),
-    default=1,
-    show_default=True,
-    help="Start from this step (1-based), after a handoff step paused the run.",
+    default=None,
+    help="Start from this step (1-based), after a handoff step paused the run (default: the "
+    "start, unless the item stopped part way).",
+)
+@click.option(
+    "--restart",
+    is_flag=True,
+    help="Run the flow again from step 1 for an item that stopped part way (steps already "
+    "done are repeated).",
 )
 @click.pass_context
 def browser_ledger_apply(
@@ -3517,7 +3523,8 @@ def browser_ledger_apply(
     value: tuple[str, ...],
     as_json_flag: bool,
     sha256: str | None,
-    from_step: int,
+    from_step: int | None,
+    restart: bool,
 ) -> None:
     """Run a recorded flow for one item and mark it filled (no-op if already verified)."""
     as_json = _as_json(ctx, as_json_flag)
@@ -3532,6 +3539,7 @@ def browser_ledger_apply(
             value=value,
             sha256=sha256,
             from_step=from_step,
+            restart=restart,
         )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)

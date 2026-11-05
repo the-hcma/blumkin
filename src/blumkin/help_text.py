@@ -737,7 +737,12 @@ A `handoff` step is the human's part (the attachments dialog's OK, the final Sav
 stops there without failing the item, prints what to do and `paused` with the step to resume
 from, and continues only when you run the same command with `--from-step N` (the steps before
 it are not run again; a handoff step that states a heading continues on its own once the page
-shows it).
+shows it). Where a run stopped, a handoff or a condition that failed after its step was made, is
+saved in the ledger (`status` shows it for the item): while it is, a run with no `--from-step` is
+refused and names the step to resume from, since running the flow again from step 1 would repeat
+what was done; `--restart` says that is meant, and the other flow, or an item that stopped in a
+different flow, is refused the same way. `--from-step` is taken as given. A journal that holds
+such an entry is not read by a blumkin from before this change.
 """
 
 BROWSER_LEDGER_BEGIN_EPILOG = """

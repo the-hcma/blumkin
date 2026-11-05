@@ -25,7 +25,7 @@ import json
 import os
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -54,6 +54,10 @@ class ItemRecord:
     # Receipt filed from a best reading with a low-confidence field (issue #504). A flag
     # only: the journal never holds the reading itself. None means never recorded.
     low_confidence: bool | None = None
+    #: Where a flow stopped part way for this staged item: the flow and the step to go on from
+    #: (see `record_resume`). Any later change of the item's state clears it.
+    resume_flow: str | None = None
+    resume_step: int | None = None
 
 
 class ItemState(StrEnum):
@@ -246,6 +250,43 @@ def expect_items(
         return _status(journal, task, instance)
 
 
+def record_resume(
+    config_dir: Path, task: str, instance: str, kind: ItemKind, item: str, flow: str, step: int
+) -> LedgerStatus:
+    """Remember that a flow stopped part way for a staged item, and the step to go on from.
+
+    A flow stops without failing the item when it hands a step to the person or a step's
+    condition does not hold after the step was made. What was done is not undone, so running
+    the flow again from its first step would repeat it: with this entry `ledger apply` refuses
+    a plain re-run and names the step to resume from. The entry is cleared by the item's next
+    change of state (filled, failed), and a later stop replaces it.
+    """
+    _check_task(task)
+    _check_instance(instance)
+    _check_resume(flow, step)
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "record where a flow stopped")
+        held = folded.items.get((kind, item))
+        if held is None or held.state is not ItemState.STAGED:
+            raise LedgerError(
+                f"Expected a staged {kind.value} {item!r} to record where a flow stopped, got "
+                f"{'none' if held is None else held.state.value}"
+            )
+        _append(
+            journal,
+            {"event": "resume", "flow": flow, "item": item, "kind": kind.value, "step": step},
+        )
+        return _status(journal, task, instance)
+
+
 def instance_status(config_dir: Path, task: str, instance: str) -> LedgerStatus:
     """The folded state of one instance."""
     _check_task(task)
@@ -429,6 +470,14 @@ def _append(journal: Path, entry: dict[str, Any]) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _check_resume(flow: Any, step: Any) -> None:
+    """Refuse a flow name that is not a logical name or a step outside a flow's length."""
+    if not isinstance(flow, str) or not _FLOW_NAME.fullmatch(flow):
+        raise LedgerError(f"Expected a flow name of lowercase words, got {flow!r}")
+    if isinstance(step, bool) or not isinstance(step, int) or not 2 <= step <= _MAX_STEP:
+        raise LedgerError(f"Expected a step to resume from between 2 and {_MAX_STEP}, got {step!r}")
 
 
 def _check_expected(expected: Mapping[ItemKind, int]) -> dict[ItemKind, int]:
@@ -738,6 +787,14 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
             report_id=None if report_id is None else str(report_id),
             total_confirmed=total_confirmed,
         )
+    elif event == "resume":
+        folded.session = None
+        key = (ItemKind(entry["kind"]), entry["item"])
+        held = folded.items.get(key)
+        _check_resume(entry["flow"], entry["step"])
+        if held is None or held.state is not ItemState.STAGED:
+            raise ValueError("resume for an item that is not staged")
+        folded.items[key] = replace(held, resume_flow=entry["flow"], resume_step=entry["step"])
     elif event == "expect":
         changed = _check_expected({ItemKind(k): v for k, v in dict(entry["expected"]).items()})
         folded.expected = {**folded.expected, **changed}
@@ -752,11 +809,13 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
     return folded
 
 
+_FLOW_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
 _ITEM = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _INSTANCE = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?")
 _JOURNAL_FILENAME = "journal.jsonl"
 _LOCK_FILENAME = ".lock"
 _MAX_EXPECTED = 1000
+_MAX_STEP = 201
 _MAX_JOURNAL_BYTES = 8 * 1024 * 1024
 _NEXT: dict[ItemState, tuple[ItemState, ...]] = {
     ItemState.STAGED: (ItemState.FILLED, ItemState.FAILED),

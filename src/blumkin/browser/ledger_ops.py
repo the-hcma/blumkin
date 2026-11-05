@@ -25,6 +25,7 @@ from blumkin.browser.ledger import (
     LedgerStatus,
     instance_status,
     record_item,
+    record_resume,
 )
 from blumkin.browser.model import (
     Flow,
@@ -132,14 +133,22 @@ def apply_item(
     model: SiteModel | None = None,
     models_store: Path | None = None,
     run_step: StepRunner | None = None,
-    start_at: int = 1,
+    start_at: int | None = None,
+    restart: bool = False,
 ) -> ApplyResult:
     """Run a recorded flow for ``item``, then mark it filled (or no-op if already verified).
 
     A `handoff` step stops the run, without failing the item, and the result says what the
     human is to do and which step to resume from (`start_at`, 1-based) once they have. The
     steps before `start_at` are not run again.
+
+    The stop is saved in the ledger (the flow and the step to go on from). While it is, a plain
+    run, with no `start_at`, is refused and names the step to resume from: what was done is not
+    undone, so running the flow again from its first step would repeat it. `restart` says that
+    is meant; `start_at` is the person's own say-so and is taken as given.
     """
+    if restart and start_at is not None:
+        raise LedgerError("Expected either a step to start from or a restart, got both")
     status = instance_status(config_dir, task, instance)
     existing = _find(status, kind, item)
     if existing is not None and existing.state is ItemState.VERIFIED:
@@ -157,6 +166,27 @@ def apply_item(
     # Checked before the item is staged or the browser touched: a refused run changes nothing.
     validate_params(flow, values or {})
     validate_cell_values(flow, values or {})
+    pending_step = (
+        existing.resume_step
+        if existing is not None and existing.state is ItemState.STAGED
+        else None
+    )
+    if pending_step is not None and not restart:
+        stopped_in = existing.resume_flow if existing is not None else None
+        if start_at is None:
+            raise LedgerError(
+                f"Expected {item!r} to go on from step {pending_step} of flow {stopped_in!r}, "
+                f"where it stopped, got a run from the start; run again with "
+                f"--from-step {pending_step} once that is dealt with, or with --restart to "
+                "run the flow again from step 1 (steps already done are repeated)"
+            )
+        if stopped_in != flow_name:
+            raise LedgerError(
+                f"Expected {item!r} to go on in flow {stopped_in!r}, where it stopped, got "
+                f"flow {flow_name!r}; run again with --restart to start that flow instead"
+            )
+    if start_at is None:
+        start_at = 1
     # One past the last step is allowed: a flow whose last step is a handoff resumes there, with
     # nothing left to run but the item to be marked filled.
     if not 1 <= start_at <= len(flow.steps) + 1:
@@ -195,13 +225,16 @@ def apply_item(
                 runner(step, bindings)
             except StepConditionError as failed:
                 # The step itself was made: the item stays as it is and the way on is named, so
-                # a plain re-run from step 1 does not repeat what already happened.
+                # a plain re-run from step 1 does not repeat what already happened. The place is
+                # saved in the ledger, so a later run says so as well.
+                record_resume(config_dir, task, instance, kind, item, flow_name, number + 1)
                 raise StepConditionError(
                     f"Flow step {number} ({step.action}) was made, but its condition failed: "
                     f"{failed}; the item was not marked failed. Look at the page, then resume "
                     f"with --from-step {number + 1}"
                 ) from failed
             except HandoffRequired as pause:
+                record_resume(config_dir, task, instance, kind, item, flow_name, number + 1)
                 paused_status = instance_status(config_dir, task, instance)
                 held = _find(paused_status, kind, item)
                 if held is None:
