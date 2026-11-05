@@ -496,3 +496,67 @@ def test_forget_can_drop_a_stored_page_whose_id_exploration_would_not_make(
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["forgotten"] is True
+
+
+def test_observe_records_a_popup_as_a_dialog_with_the_landmarks_that_mark_its_container(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    result = _run(
+        "browser", "explore", "observe", "expense-report", "attachments", "--kind", "dialog",
+        "--landmark", "Add line", "--landmark", "Help",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["kind"] == "dialog"
+    stored = json.loads(_draft_path(_config_dir).read_text())
+    (page,) = stored["pages"]
+    assert page["kind"] == "dialog" and page["landmarks"] == ["Add line", "Help"]
+    shown = _json(_run("browser", "explore", "show", "expense-report"))
+    assert shown["pages"][0]["kind"] == "dialog"
+    assert shown["pages"][0]["dialog_landmarks"] == ["Add line", "Help"]
+    text = CliRunner().invoke(main, ["browser", "explore", "show", "expense-report"]).output
+    assert "attachments [dialog]" in text
+    assert 'config: dialog_landmarks = ["Add line", "Help"]' in text
+
+
+def test_observe_records_a_list_of_values_dialog_as_its_own_page_kind(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    result = _run(
+        "browser", "explore", "observe", "expense-report", "location-search",
+        "--kind", "list-of-values",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+    assert page["kind"] == "list-of-values" and "landmarks" not in page
+
+
+def test_an_ordinary_page_keeps_its_stored_shape_with_no_kind(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+
+    (page,) = json.loads(_draft_path(_config_dir).read_text())["pages"]
+
+    assert "kind" not in page and "landmarks" not in page
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--kind", "dialog"],  # no landmarks
+        ["--kind", "dialog", "--landmark", "Add line"],  # only one
+        ["--kind", "dialog", "--landmark", "Add line", "--landmark", "Submit report"],
+        ["--kind", "dialog", "--landmark", "Add line", "--landmark", "Not on the page"],
+        ["--landmark", "Add line", "--landmark", "Help"],  # landmarks on an ordinary page
+        ["--kind", "list-of-values", "--landmark", "Add line", "--landmark", "Help"],
+    ],
+)
+def test_a_dialog_without_good_landmarks_is_refused_and_leaves_no_draft(
+    driver: _Driver, _config_dir: Path, extra: list[str]
+) -> None:
+    result = _run("browser", "explore", "observe", "expense-report", "attachments", *extra)
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert not _draft_path(_config_dir).exists()

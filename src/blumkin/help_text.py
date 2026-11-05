@@ -474,11 +474,20 @@ Examples:
 \b
   blumkin browser explore observe expense-report expense-list
   blumkin browser explore observe expense-report expense-form --json
+  blumkin browser explore observe expense-report attachments --kind dialog \\
+    --landmark Add --landmark Delete
+  blumkin browser explore observe expense-report location-search --kind list-of-values
 
 Records the page the task's browser is on (a page id of lowercase words) in the draft: its
 URL as a path template, a fingerprint of its landmarks and each named control with its kind,
 locators and whether it looks finalizing. Labels that look like typed data are skipped and
 counted. The page must be on one of the task's `allowed_hosts`.
+`--kind dialog` records a popup the page does not mark as a dialog (an Oracle ADF attachments
+popup has no `role=dialog`): `--landmark NAME` (at least two, each a control seen on the page and
+not a finalizing action) are the controls that together mark its container, and `explore show`
+prints them as the `dialog_landmarks = [...]` line to put in the task's policy so a declared
+`dialog_confirm` such as `OK` works inside it. `--kind list-of-values` records a search dialog
+whose result rows are chosen by their text (`blumkin browser pick`, or a `pick` flow step).
 """
 
 BROWSER_EXPLORE_SAVE_EPILOG = """
@@ -984,7 +993,8 @@ replaced only with `--replace`; `blumkin browser model diff TASK N` shows what a
 A parameter is NAME:KIND with KIND one of date, file, text, or NAME:choice=A|B|C. A step is its
 action, then its control when it acts on one (click, press, fill, upload), then key=value words
 (page, bind, expect, expect_heading, instruction, row, column, value; quote a value with spaces
-in the shell's own way). The actions are click, press, fill, upload, goto, cell and handoff. It
+in the shell's own way). The actions are click, press, fill, upload, goto, cell, pick (choose a
+result row by its text) and handoff. It
 needs a saved model (`blumkin browser explore`), and nothing here touches the browser.
 """
 

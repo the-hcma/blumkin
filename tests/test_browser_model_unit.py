@@ -1009,7 +1009,7 @@ def test_a_model_without_parameters_keeps_its_stored_shape(tmp_path: Path) -> No
         (lambda f: f["params"][0].update(kind="number"), "one of"),
         (lambda f: f["params"][0].update(amount="12.50"), "unexpected key"),
         (lambda f: f.update(params=f["params"] * 4), "Expected at most"),
-        (lambda f: f["steps"][0].update(bind="date"), "only on a fill, upload or cell"),
+        (lambda f: f["steps"][0].update(bind="date"), "only on a fill, upload, cell or pick"),
         (lambda f: f["steps"][1].update(bind="file"), "non-file"),
         (lambda f: f["steps"][1].update(action="upload"), "of a file"),
         (lambda f: f["steps"][1].pop("bind"), "to bind a parameter"),
@@ -1224,3 +1224,89 @@ def test_text_with_nothing_after_it_and_a_double_dollar_are_handled_in_a_cell_st
     # `$$name` is a literal header, not a reference to a parameter that might not exist.
     loaded = _load_payload(tmp_path, _with_cell(_payload(tmp_path), row="1", column="$$Budget"))
     assert loaded is not None and loaded.flows[0].steps[-1].column == "$$Budget"
+
+
+def _with_page_kind(payload: dict[str, Any], **page: Any) -> dict[str, Any]:
+    payload = copy.deepcopy(payload)
+    payload["pages"][0].update(page)
+    return payload
+
+
+def test_a_dialog_page_with_landmarks_and_a_list_of_values_page_round_trip(tmp_path: Path) -> None:
+    payload = _with_page_kind(_payload(tmp_path), kind="dialog", landmarks=["Add", "Delete"])
+    payload["pages"][1].update(kind="list-of-values")
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None
+    assert (loaded.pages[0].kind, loaded.pages[0].landmarks) == ("dialog", ("Add", "Delete"))
+    assert (loaded.pages[1].kind, loaded.pages[1].landmarks) == ("list-of-values", ())
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.pages == saved.pages
+
+
+def test_a_model_without_page_kinds_keeps_its_stored_shape(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    assert all("kind" not in page and "landmarks" not in page for page in payload["pages"])
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None and loaded.pages[0].kind == "page" and loaded.pages[0].landmarks == ()
+
+
+@pytest.mark.parametrize(
+    ("page", "match"),
+    [
+        ({"kind": "popup"}, "to be one of"),
+        ({"landmarks": ["Add", "Delete"]}, "only on a dialog page"),
+        ({"kind": "list-of-values", "landmarks": ["Add", "Delete"]}, "only on a dialog page"),
+        ({"kind": "dialog", "landmarks": ["Add"]}, "at least two distinct"),
+        ({"kind": "dialog", "landmarks": ["Add", "add"]}, "at least two distinct"),
+        ({"kind": "dialog", "landmarks": ["Add", 'say "x"']}, "Expected"),
+    ],
+)
+def test_a_bad_page_kind_or_landmark_list_is_refused(
+    tmp_path: Path, page: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(SiteModelError, match=match):
+        _load_payload(tmp_path, _with_page_kind(_payload(tmp_path), **page))
+
+
+def _with_pick(payload: dict[str, Any], **step: Any) -> dict[str, Any]:
+    payload = copy.deepcopy(payload)
+    flow = payload["flows"][0]
+    flow["params"] = [{"kind": "text", "name": "city"}, {"kind": "file", "name": "receipt"}]
+    for existing in flow["steps"]:
+        if existing["action"] in ("fill", "upload"):
+            existing["bind"] = "city"
+    flow["steps"].append({"action": "pick", "control": None, "expect": None, "page": None, **step})
+    return payload
+
+
+def test_a_pick_step_round_trips_with_a_bound_text_or_a_literal(tmp_path: Path) -> None:
+    payload = _with_pick(_payload(tmp_path), bind="city")
+    payload["flows"][0]["steps"].append(
+        {"action": "pick", "control": None, "expect": None, "page": None, "value": "Boston, MA"}
+    )
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None
+    bound, literal = loaded.flows[0].steps[-2:]
+    assert (bound.bind, bound.value) == ("city", None)
+    assert (literal.bind, literal.value) == (None, "Boston, MA")
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+@pytest.mark.parametrize(
+    ("step", "match"),
+    [
+        ({}, "to have a bind or a value"),
+        ({"bind": "city", "value": "x"}, "bind or a value, not both"),
+        ({"bind": "receipt"}, "non-file parameter"),
+        ({"bind": "nobody"}, "name a parameter of the flow"),
+        ({"value": "x" * 81}, "at most"),
+        ({"value": "x", "row": "1"}, "only a bind or a value"),
+        ({"value": "x", "control": "expense.add"}, "only a bind or a value"),
+    ],
+)
+def test_a_bad_pick_step_is_refused(tmp_path: Path, step: dict[str, Any], match: str) -> None:
+    with pytest.raises(SiteModelError, match=match):
+        _load_payload(tmp_path, _with_pick(_payload(tmp_path), **step))

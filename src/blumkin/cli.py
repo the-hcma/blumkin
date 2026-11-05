@@ -3042,15 +3042,36 @@ def browser_explore_forget(ctx: click.Context, task: str, page_id: str, as_json_
 @browser_explore.command("observe", epilog=help_text.BROWSER_EXPLORE_OBSERVE_EPILOG)
 @click.argument("task")
 @click.argument("page_id")
+@click.option(
+    "--kind",
+    type=click.Choice(["page", "dialog", "list-of-values"]),
+    default="page",
+    show_default=True,
+    help="What the page is: a popup the page does not mark as a dialog, or a list-of-values "
+    "dialog whose rows are chosen by their text.",
+)
+@click.option(
+    "--landmark",
+    "landmarks",
+    multiple=True,
+    help="With --kind dialog: a control that marks the popup's container (at least two).",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_explore_observe(
-    ctx: click.Context, task: str, page_id: str, as_json_flag: bool
+    ctx: click.Context,
+    task: str,
+    page_id: str,
+    kind: str,
+    landmarks: tuple[str, ...],
+    as_json_flag: bool,
 ) -> None:
     """Record the page the task's browser is on in the draft."""
     as_json = _as_json(ctx, as_json_flag)
     try:
-        payload = explore_observe(load_browser_setup(), task, page_id)
+        payload = explore_observe(
+            load_browser_setup(), task, page_id, kind=kind, landmarks=landmarks
+        )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if as_json:
@@ -3058,8 +3079,8 @@ def browser_explore_observe(
         return
     emit_lines(
         [
-            f"{task}: page {payload['page']} ({payload['url_template']}) recorded with "
-            f"{payload['controls']} control(s); {payload['skipped']} label(s) skipped",
+            f"{task}: {payload['kind']} {payload['page']} ({payload['url_template']}) recorded "
+            f"with {payload['controls']} control(s); {payload['skipped']} label(s) skipped",
             *(f"  warning: {sanitize_terminal(text)}" for text in payload.get("warnings", ())),
         ]
     )
@@ -3105,9 +3126,14 @@ def browser_explore_show(ctx: click.Context, task: str, as_json_flag: bool) -> N
     lines = [f"{task}: {len(payload['pages'])} page(s), {payload['steps']} step(s)"]
     for page in payload["pages"]:
         marked = f", finalizing: {', '.join(page['finalizing'])}" if page["finalizing"] else ""
+        shown = "" if page["kind"] == "page" else f" [{page['kind']}]"
         lines.append(
-            f"  {page['page_id']} {page['url_template']} - {page['controls']} control(s){marked}"
+            f"  {page['page_id']}{shown} {page['url_template']} - "
+            f"{page['controls']} control(s){marked}"
         )
+        if page.get("dialog_landmarks"):
+            listed = ", ".join(f'"{sanitize_terminal(n)}"' for n in page["dialog_landmarks"])
+            lines.append(f"    config: dialog_landmarks = [{listed}]")
     emit_lines(lines)
 
 

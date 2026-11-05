@@ -516,6 +516,21 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             )
             actions.click_task(config, task, name, role=role)
             return
+        if action == "pick":
+            if step.bind is not None:
+                if step.bind not in values:
+                    raise LedgerError(f"Expected a value for {step.bind!r}, got none")
+                chosen = values[step.bind]
+            else:
+                chosen = step.value or ""
+            if not chosen:
+                raise LedgerError("Flow step 'pick' needs the text of the row to choose")
+            try:
+                actions.pick_task(config, task, chosen)
+            except BrowserActionError as exc:
+                # The text a parameter supplied is the user's data: named, not echoed.
+                raise _rescrubbed(exc, step, values) from None
+            return
         if action == "cell":
             row = _cell_ref(step.row, values, "row")
             column = _cell_ref(step.column, values, "column")

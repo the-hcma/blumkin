@@ -32,7 +32,7 @@ from blumkin.browser.explore import (
     attach_exploring,
     decide_click,
 )
-from blumkin.browser.guard import validate_control_patterns
+from blumkin.browser.guard import validate_control_patterns, validate_dialog_landmarks
 from blumkin.browser.model import (
     SiteModel,
     discard_draft,
@@ -152,9 +152,29 @@ def explore_forget(config: BrowserSetup, task: str, page_id: str) -> dict[str, A
     return payload
 
 
-def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, Any]:
-    """Add the page the task's browser is on to the draft (continuing a stored model)."""
+def explore_observe(
+    config: BrowserSetup,
+    task: str,
+    page_id: str,
+    *,
+    kind: str = "page",
+    landmarks: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Add the page the task's browser is on to the draft (continuing a stored model).
+
+    `kind` says what the page is: an ordinary `page`, a `dialog` (a popup the page does not
+    mark as one, such as an Oracle ADF attachments popup) or a `list-of-values` dialog whose
+    rows are chosen by their text. A `dialog` records its `landmarks`, at least two controls
+    seen on it that are not finalizing actions, which are what the task's `dialog_landmarks`
+    policy key takes (`explore show` prints it).
+    """
+    if landmarks and kind != "dialog":
+        raise PageIdError("Expected --landmark only with --kind dialog, got it with another kind")
+    if kind == "dialog" and not landmarks:
+        raise PageIdError("Expected at least two --landmark controls for a dialog page, got none")
     hosts, extra_deny = explore_policy(config, task)
+    if landmarks:
+        validate_dialog_landmarks(landmarks, extra_deny)
     profile = require_profile(config.config_dir, task)
     with contextlib.closing(attach_exploring(profile, allowed_hosts=hosts)) as driver:
         driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
@@ -169,7 +189,7 @@ def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, 
             else ModelDraft(task=task, hosts=(), extra_deny=extra_deny)
         )
         draft.add_host(urlsplit(url).hostname or "")
-        draft.add_page(page_id, url, controls)
+        draft.add_page(page_id, url, controls, page_kind=kind, landmarks=landmarks)
         model = _to_model(draft)
         page = next(p for p in model.pages if p.page_id == page_id)
         seen.update(controls=len(page.controls), skipped=draft.skipped, template=page.url_template)
@@ -183,6 +203,7 @@ def explore_observe(config: BrowserSetup, task: str, page_id: str) -> dict[str, 
     update_draft(resolve_store(config), task, change)
     payload: dict[str, Any] = {
         "controls": seen["controls"],
+        "kind": kind,
         "ok": True,
         "page": page_id,
         "skipped": seen["skipped"],
@@ -237,9 +258,11 @@ def explore_show(config: BrowserSetup, task: str) -> dict[str, Any]:
             {
                 "controls": len(page.controls),
                 "finalizing": [c.name for c in page.controls if c.safety.value == "finalizing"],
+                "kind": page.kind,
                 "page_id": page.page_id,
                 "url_template": page.url_template,
             }
+            | ({"dialog_landmarks": list(page.landmarks)} if page.landmarks else {})
             for page in draft.pages
         ],
         "steps": sum(len(flow.steps) for flow in draft.flows),

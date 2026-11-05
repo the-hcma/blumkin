@@ -39,6 +39,7 @@ from blumkin.browser.actions import host_allowed
 from blumkin.browser.cdp import DEFAULT_ACTION_TIMEOUT_S, BrowserActionError, ControlInfo, attach
 from blumkin.browser.guard import is_declared_control, is_finalizing_name, vet_control
 from blumkin.browser.model import (
+    PAGE_KINDS,
     Control,
     ControlKind,
     ControlSafety,
@@ -329,9 +330,32 @@ class ModelDraft:
         if host not in self._hosts:
             self._hosts = (*self._hosts, host)
 
-    def add_page(self, page_id: str, url: str, controls: Sequence[ControlObservation]) -> None:
-        """Record (or update) a page from what was observed on it."""
+    def add_page(
+        self,
+        page_id: str,
+        url: str,
+        controls: Sequence[ControlObservation],
+        *,
+        page_kind: str = "page",
+        landmarks: Sequence[str] = (),
+    ) -> None:
+        """Record (or update) a page from what was observed on it.
+
+        A `dialog` page also records the `landmarks` that mark its container, each of which
+        must be a control that was observed on it; a `list-of-values` page records none.
+        """
         validate_page_id(page_id)
+        if page_kind not in PAGE_KINDS:
+            raise PageIdError(f"Expected a page kind of {', '.join(PAGE_KINDS)}, got {page_kind!r}")
+        if landmarks and page_kind != "dialog":
+            raise PageIdError("Expected landmarks only for a dialog page, got some")
+        observed = {item.name for item in controls}
+        unseen = [name for name in landmarks if name not in observed]
+        if unseen:
+            raise PageIdError(
+                f"Expected every landmark to be a control seen on the page, got "
+                f"{', '.join(repr(name) for name in unseen)} which is not there"
+            )
         marks: list[str] = []
         built: list[Control] = []
         used: set[str] = set()
@@ -353,6 +377,8 @@ class ModelDraft:
         self._pages[page_id] = Page(
             controls=tuple(built),
             fingerprint=tuple(sorted(set(marks))),
+            kind=page_kind,
+            landmarks=tuple(landmarks),
             page_id=page_id,
             url_template=url_template(url),
         )
