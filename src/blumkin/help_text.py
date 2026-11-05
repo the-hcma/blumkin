@@ -748,8 +748,9 @@ shows it). Where a run stopped, a handoff or a condition that failed after its s
 saved in the ledger (`status` shows it for the item): while it is, a run with no `--from-step` is
 refused and names the step to resume from, since running the flow again from step 1 would repeat
 what was done; `--restart` says that is meant, and the other flow, or an item that stopped in a
-different flow, is refused the same way. `--from-step` is taken as given. A journal that holds
-such an entry is not read by a blumkin from before this change.
+different flow, is refused the same way (except a stop at step 1, where nothing was made yet, so a
+plain re-run, even with another flow, just starts again). `--from-step` is taken as given. A
+journal that holds such an entry is not read by a blumkin from before this change.
 """
 
 BROWSER_LEDGER_BEGIN_EPILOG = """
