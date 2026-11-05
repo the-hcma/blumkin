@@ -129,6 +129,9 @@ _OCR_DESKEW_WIDTH = 400
 _OCR_MAX_PIXELS = 25_000_000
 _OCR_MAX_WIDTH = 2400
 _OCR_MIN_WIDTH = 1500
+#: Orientation confidence (Tesseract's own scale) from which a turn it asks for is believed.
+_OCR_ORIENTATION_MIN_CONFIDENCE = 3.0
+_OCR_ORIENTATION_WIDTH = 1600
 #: A read with fewer letters and digits than this is retried with other settings.
 _OCR_RETRY_BELOW = 8
 #: Page-segmentation modes tried, in order, when the first reads leave almost nothing:
@@ -377,7 +380,7 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
     # A phone stores a photo as the sensor saw it and says in EXIF how to turn it: every pass
     # reads the upright photo, or the plain read of a sideways one is long garbage that outweighs
     # the cleaned-up read of the same photo.
-    image = _upright(image)
+    image = _oriented(_upright(image), pytesseract)
     candidates = []
     passes = 0
     not_found = getattr(pytesseract, "TesseractNotFoundError", RuntimeError)
@@ -416,6 +419,24 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
             raise
         except Exception:  # noqa: BLE001 - the reads so far still stand
             pass
+    if prepared is not None and not retried and not any(_has_amount(t) for t in candidates):
+        # Still no amount: a photo taken sideways or upside down with no EXIF flag and no
+        # orientation Tesseract could judge. Try each quarter turn and keep the first that reads.
+        for quarter in (90, 180, 270):
+            try:
+                passes += 1
+                turned = str(
+                    pytesseract.image_to_string(
+                        prepared.rotate(quarter, expand=True), config="--psm 6"
+                    )
+                ).strip()
+            except not_found:
+                raise
+            except Exception:  # noqa: BLE001 - another turn may still read it
+                continue
+            candidates.append(turned)
+            if _has_amount(turned):
+                break
     # One entry per distinct read (ignoring spacing), each kept as it was read.
     distinct = list(
         {" ".join(text.split()): text for text in reversed(candidates) if text.strip()}.values()
@@ -431,6 +452,30 @@ def _ocr_photo(image: Any, pytesseract: Any) -> tuple[str, int, bool]:
         passes,
         False,
     )
+
+
+def _oriented(image: Any, pytesseract: Any) -> Any:
+    """The photo turned the way Tesseract's orientation detection says its print is upright.
+
+    A phone photo can be stored sideways or upside down with nothing in EXIF to say so; every
+    pass over it then reads garbage. Detection that fails or is not confident leaves the photo
+    as it is.
+    """
+    from PIL import ImageOps  # noqa: PLC0415 - Pillow is only needed for image reads
+
+    small = ImageOps.grayscale(image)
+    small.thumbnail((_OCR_ORIENTATION_WIDTH, _OCR_ORIENTATION_WIDTH))
+    try:
+        found = pytesseract.image_to_osd(small, output_type=pytesseract.Output.DICT)
+        turn = int(found.get("rotate", 0))
+        confidence = float(found.get("orientation_conf", 0))
+    except Exception:  # noqa: BLE001 - too little print to judge, or no detection data
+        return image
+    if turn not in (90, 180, 270) or confidence < _OCR_ORIENTATION_MIN_CONFIDENCE:
+        return image
+    # Tesseract's `rotate` is the clockwise turn that makes the page upright; Pillow turns
+    # counter-clockwise.
+    return image.rotate(-turn, expand=True)
 
 
 def _prepare_for_ocr(image: Any) -> Any:

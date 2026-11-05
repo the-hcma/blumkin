@@ -232,7 +232,6 @@ def test_one_stray_symbol_does_not_outvote_the_dollar_signs() -> None:
     currency = parse_receipt_text(text).currency
 
     assert currency.value == "USD"
-    assert "several currencies" in currency.note
 
 
 def test_a_read_with_words_and_no_amount_is_tried_again_as_sparse_text() -> None:
@@ -299,3 +298,14 @@ def test_a_tip_table_with_the_percentage_after_the_word_tip_is_dropped() -> None
     )
 
     assert parse_receipt_text(text).total.value == "35.33"
+
+
+def test_a_currency_symbol_among_letters_is_noise_but_beside_a_digit_is_an_amount() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    noise = parse_receipt_text("syeS£E a 5\n€ - “\nThank you\n").currency
+    amount = parse_receipt_text("Total £12.50\n").currency
+    spaced = parse_receipt_text("Total € 12,50\n").currency
+
+    assert noise.value is None
+    assert amount.value == "GBP" and spaced.value == "EUR"

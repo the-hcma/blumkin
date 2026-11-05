@@ -481,6 +481,11 @@ def _parse_currency(text: str) -> ReceiptField:
     explicit = bool(found or near)  # a printed code or a labelled one: `$` cannot argue with it
     for symbol, code in _CURRENCY_SYMBOLS.items():
         for match in re.finditer(re.escape(symbol), text):
+            # A symbol with no digit beside it is OCR noise (`syeS£E`), not part of an amount.
+            before = text[max(0, match.start() - 2) : match.start()].split("\n")[-1]
+            after = text[match.end() : match.end() + 3].split("\n")[0]
+            if not any(char.isdigit() for char in before + after):
+                continue
             found.append((match.start(), code))
             near.add(code)
     found.extend((0, code) for code in sorted(near) if all(code != seen for _, seen in found))
