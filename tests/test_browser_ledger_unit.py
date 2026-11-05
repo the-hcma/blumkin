@@ -6,6 +6,7 @@ import json
 import stat
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -762,3 +763,27 @@ def test_a_stop_can_only_be_recorded_for_a_staged_item_in_an_open_instance(
     discard_instance(tmp_path, "timesheet", "2026-p21")
     with pytest.raises(LedgerError, match="open instance"):
         record_resume(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", "f", 2)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"flow": "f", "item": "ghost", "kind": "day", "step": 3},  # no such item
+        {"flow": "f", "item": "d1", "kind": "day", "step": 1},  # step before the next one
+        {"flow": "f", "item": "d1", "kind": "day", "step": 999},
+        {"flow": "Bad Flow", "item": "d1", "kind": "day", "step": 3},
+        {"flow": "f", "item": "d1", "kind": "day"},  # no step at all
+    ],
+)
+def test_a_hand_edited_resume_entry_makes_the_journal_invalid_not_a_crash(
+    tmp_path: Path, bad: dict[str, Any]
+) -> None:
+    begin_instance(tmp_path, "timesheet", "2026-p21")
+    record_item(tmp_path, "timesheet", "2026-p21", ItemKind.DAY, "d1", ItemState.STAGED)
+    journal = _journal(tmp_path)
+    lines = journal.read_text().splitlines()
+    lines.append(json.dumps({"at": "2026-11-05T00:00:00Z", "event": "resume", "seq": 3, **bad}))
+    journal.write_text("\n".join(lines) + "\n")
+
+    with pytest.raises(LedgerJournalError):
+        instance_status(tmp_path, "timesheet", "2026-p21")

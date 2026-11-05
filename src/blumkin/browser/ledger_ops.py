@@ -7,6 +7,7 @@ and always reports ``submitted: false``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
@@ -173,12 +174,19 @@ def apply_item(
     )
     if pending_step is not None and not restart:
         stopped_in = existing.resume_flow if existing is not None else None
+        if start_at is None and pending_step > len(flow.steps) + 1:
+            raise LedgerError(
+                f"Expected {item!r} to go on from step {pending_step} of flow {stopped_in!r}, "
+                f"where it stopped, got a flow that now has {len(flow.steps)} steps; look at "
+                "the page, then run again with --restart"
+            )
         if start_at is None:
             raise LedgerError(
                 f"Expected {item!r} to go on from step {pending_step} of flow {stopped_in!r}, "
-                f"where it stopped, got a run from the start; run again with "
-                f"--from-step {pending_step} once that is dealt with, or with --restart to "
-                "run the flow again from step 1 (steps already done are repeated)"
+                f"where it stopped, got a run from the start; look at the page (a handoff step is "
+                f"the person's to do, and a step whose heading never showed was made but did not "
+                f"land as expected), then run again with --from-step {pending_step}, or with "
+                "--restart to run the flow again from step 1 (steps already done are repeated)"
             )
         if stopped_in != flow_name:
             raise LedgerError(
@@ -227,14 +235,14 @@ def apply_item(
                 # The step itself was made: the item stays as it is and the way on is named, so
                 # a plain re-run from step 1 does not repeat what already happened. The place is
                 # saved in the ledger, so a later run says so as well.
-                record_resume(config_dir, task, instance, kind, item, flow_name, number + 1)
+                _remember_stop(config_dir, task, instance, kind, item, flow_name, number + 1)
                 raise StepConditionError(
                     f"Flow step {number} ({step.action}) was made, but its condition failed: "
                     f"{failed}; the item was not marked failed. Look at the page, then resume "
                     f"with --from-step {number + 1}"
                 ) from failed
             except HandoffRequired as pause:
-                record_resume(config_dir, task, instance, kind, item, flow_name, number + 1)
+                _remember_stop(config_dir, task, instance, kind, item, flow_name, number + 1)
                 paused_status = instance_status(config_dir, task, instance)
                 held = _find(paused_status, kind, item)
                 if held is None:
@@ -641,6 +649,20 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
         raise LedgerError(f"Unsupported flow action {step.action!r}")
 
     return run
+
+
+def _remember_stop(
+    config_dir: Path, task: str, instance: str, kind: ItemKind, item: str, flow: str, step: int
+) -> None:
+    """Save where a flow stopped, without ever hiding why it stopped.
+
+    The pause or the failed condition is what the caller must hear about: if the ledger cannot
+    take the entry (the instance was closed meanwhile, the item changed state), that is dropped
+    and the original outcome goes on. The refusal it enables is checked when a run starts, not
+    held across a run, so two runs for one item at the same time are not serialized by it.
+    """
+    with contextlib.suppress(LedgerError):
+        record_resume(config_dir, task, instance, kind, item, flow, step)
 
 
 def _find(status: LedgerStatus, kind: ItemKind, item: str) -> ItemRecord | None:
