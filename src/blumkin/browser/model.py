@@ -938,6 +938,8 @@ def _step(
         expect_heading = _text(
             expect_heading, f"{where}.expect_heading", max_len=_MAX_HEADING, plain=True
         )
+        if not expect_heading.strip():
+            raise SiteModelError(f"Expected {where}.expect_heading with some text, got blanks")
     instruction = data.get("instruction")
     if (action == _HANDOFF) != (instruction is not None):
         raise SiteModelError(

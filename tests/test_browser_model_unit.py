@@ -1133,3 +1133,10 @@ def test_the_model_and_the_actions_agree_on_the_longest_heading() -> None:
     from blumkin.browser.actions import EXPECT_HEADING_CHARS
 
     assert model._MAX_HEADING == EXPECT_HEADING_CHARS
+
+
+def test_a_blank_heading_is_refused_when_the_model_loads(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["flows"][0]["steps"][0]["expect_heading"] = "   "
+    with pytest.raises(SiteModelError, match="some text"):
+        _load_payload(tmp_path, payload)

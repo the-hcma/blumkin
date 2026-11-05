@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from blumkin.browser.cdp import BrowserActionError
+from blumkin.browser.cdp import BrowserActionError, BrowserAttachError
 from blumkin.browser.flow_params import validate_params
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.ledger import (
@@ -176,9 +176,11 @@ def apply_item(
     bindings["item"] = item
     try:
         for number, step in enumerate(flow.steps, start=1):
-            # A handoff before the resume point that states a heading is checked again: the
-            # human's part is only taken as done when the page shows it.
-            if number < start_at and not (step.action == "handoff" and step.expect_heading):
+            # The handoff the run paused at (the step just before the resume point), when it
+            # states a heading, is checked again: the human's part is only taken as done when
+            # the page shows it. Earlier steps, handoffs included, are not looked at again.
+            outstanding = number == start_at - 1 and step.action == "handoff"
+            if number < start_at and not (outstanding and step.expect_heading):
                 continue
             try:
                 runner(step, bindings)
@@ -406,7 +408,7 @@ def _default_run_step(task: str) -> StepRunner:
                     done = actions.heading_task(
                         config, task, step.expect_heading, wait_s=0.0, what="handoff"
                     )
-                except BrowserActionError:
+                except BrowserActionError, BrowserAttachError:
                     done = {}  # the page is somewhere else: the human has not finished
                 if done.get("expect_heading"):
                     return
@@ -415,7 +417,7 @@ def _default_run_step(task: str) -> StepRunner:
         if step.expect_heading:
             try:
                 actions.heading_task(config, task, step.expect_heading, what=f"{action} step")
-            except BrowserActionError as exc:
+            except (BrowserActionError, BrowserAttachError) as exc:
                 raise StepConditionError(str(exc)) from exc
 
     def _run_action(step: FlowStep, action: str, values: Mapping[str, str]) -> None:

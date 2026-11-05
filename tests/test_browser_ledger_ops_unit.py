@@ -558,3 +558,74 @@ def test_a_handoff_probe_that_fails_pauses_instead_of_failing_the_item(
             ),
             {},
         )  # fmt: skip
+
+
+def test_only_the_handoff_the_run_paused_at_is_checked_again(tmp_path: Path) -> None:
+    model = _handoff_model()
+    flow = model.flows[0]
+    two = dataclasses.replace(
+        flow,
+        steps=(
+            dataclasses.replace(
+                flow.steps[1], expect_heading="Edit Report", instruction="Attach the receipt."
+            ),
+            flow.steps[0],
+            dataclasses.replace(
+                flow.steps[1], expect_heading="Report saved", instruction="Press Save."
+            ),
+            flow.steps[2],
+        ),
+    )
+    model = dataclasses.replace(model, flows=(two,))
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    paused_run = apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=model,
+        run_step=lambda s, v: (_ for _ in ()).throw(HandoffRequired("x"))
+        if s.expect_heading == "Report saved" else None,
+        start_at=1,
+    )  # fmt: skip
+    assert paused_run.paused is not None and paused_run.paused.step == 3
+    probed: list[str | None] = []
+
+    def run(step: Any, values: Any) -> None:
+        if step.action == "handoff":
+            probed.append(step.expect_heading)
+
+    apply_item(
+        tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+        flow_name="attach", model=model, run_step=run, start_at=4,
+    )  # fmt: skip
+
+    assert probed == ["Report saved"]
+
+
+def test_a_browser_that_cannot_be_attached_pauses_a_handoff_and_leaves_a_step_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import BrowserAttachError
+    from blumkin.browser.ledger_ops import StepConditionError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    def gone(*_a: Any, **_k: Any) -> dict:
+        raise BrowserAttachError("the browser closed")
+
+    monkeypatch.setattr(actions, "heading_task", gone)
+    monkeypatch.setattr(actions, "click_task", lambda *a, **k: {})
+    run = ledger_ops._default_run_step("expense-report")
+
+    with pytest.raises(HandoffRequired):
+        run(
+            FlowStep(action="handoff", control=None, expect=None, expect_heading="Saved",
+                     instruction="Click Save.", page=None),
+            {},
+        )  # fmt: skip
+    with pytest.raises(StepConditionError, match="the browser closed"):
+        run(
+            FlowStep(action="click", control="Add line", expect=None, expect_heading="Saved",
+                     page="form"),
+            {},
+        )  # fmt: skip
