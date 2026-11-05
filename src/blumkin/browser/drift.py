@@ -147,7 +147,7 @@ def best_matching_page(
         recorded = {_canonical(mark) for mark in page.fingerprint if not mark.startswith("link:")}
         if len(recorded) < _MIN_LANDMARKS:
             continue
-        matched = len(recorded & live)
+        matched = _matched_marks(recorded, live)
         share = matched / len(recorded)
         # Most landmarks matched first, so a small page whose few landmarks are all on the
         # page cannot outrank a richer page that lost one; then the share, then the page asked.
@@ -290,7 +290,7 @@ def _appearance_findings(page: Page, observed: Sequence[ControlObservation]) -> 
             ]
         return []
     live = {_canonical(mark) for mark in landmark_marks(observed) if not mark.startswith("link:")}
-    share = len(recorded & live) / len(recorded)
+    share = _matched_marks(recorded, live) / len(recorded)
     if share < _SAME_PAGE:
         return [
             _looks_different(
@@ -315,8 +315,6 @@ def _canonical(mark: str) -> str:
     """A `role:name` mark with alias roles folded together (search box and text box alike)."""
     role, sep, name = mark.partition(":")
     folded = {"combobox": "listbox", "searchbox": "textbox"}.get(role, role)
-    if folded in _COUNT_ROLES:
-        name = _fold_counts(name)  # a count that moved does not change which page this is
     return f"{folded}{sep}{name}"
 
 
@@ -364,6 +362,33 @@ def _control_findings(
             ),
         )
     ]
+
+
+def _matched_marks(recorded: set[str], live: set[str]) -> int:
+    """How many recorded landmarks are on the page: exact ones first, then moved counts.
+
+    A recorded mark left over after the exact matches also counts when it differs from exactly
+    one left-over live mark of the same role only in its numbers (`button:Attachments (2)` and
+    `button:Attachments (3)`), and neither side has a second mark of that shape. The marks
+    themselves stay distinct, so thresholds and weights are unchanged.
+    """
+    matched = len(recorded & live)
+    left_recorded = Counter(_shape(mark) for mark in recorded - live)
+    left_live = Counter(_shape(mark) for mark in live - recorded)
+    return matched + sum(
+        1
+        for shape, count in left_recorded.items()
+        if shape is not None and count == 1 and left_live[shape] == 1
+    )
+
+
+def _shape(mark: str) -> str | None:
+    """A count-bearing `role:name` mark with its numbers folded, or None when it has none."""
+    role, _, name = mark.partition(":")
+    folded = _fold_counts(name)
+    if role not in _COUNT_ROLES or folded == name or not any(c.isalpha() for c in folded):
+        return None
+    return f"{role}:{folded}"
 
 
 def _fold_counts(name: str) -> str:

@@ -545,3 +545,29 @@ def test_count_bearing_buttons_do_not_change_which_page_it_is() -> None:
 
     assert grade is Grade.COMPATIBLE
     assert controls == []
+
+
+def test_the_page_share_keeps_distinct_marks_that_only_differ_in_their_numbers() -> None:
+    from blumkin.browser.drift import best_matching_page
+
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    snapshot = '- heading "Rows"\n- button "Delete row 5"\n- button "Delete row 6"\n'
+    draft.add_page("rows", "https://erp.example.com/rows", _obs(snapshot))
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+
+    assert best_matching_page(model.pages, _obs(snapshot)) is not None
+
+
+def test_number_only_buttons_do_not_make_two_pages_look_alike() -> None:
+    from blumkin.browser.drift import best_matching_page
+
+    common = '- button "Save"\n- textbox "Amount"\n- heading "Items"\n'
+    draft = ModelDraft(task="expense-report", hosts=("erp.example.com",))
+    draft.add_page("one", "https://erp.example.com/a", _obs(common + '- button "1"\n'))
+    draft.add_page("two", "https://erp.example.com/b", _obs(common + '- button "2"\n'))
+    model = draft.to_model(recorded_at="2026-10-25T12:00:00Z", blumkin_version="1.0.0")
+
+    live = _obs(common + '- button "2"\n')
+    best = best_matching_page(model.pages, live, prefer="one")
+
+    assert best is not None and best[0] == "two"
