@@ -1106,27 +1106,31 @@ class PlaywrightDriver:
         """Wait for the page an action started to settle, then say what heading it ended on.
 
         Settled means the network went idle and the DOM stayed unchanged for `quiet_ms`; both
-        waits are bounded by `timeout_s` and neither is an error (a page that keeps polling
+        waits share one `timeout_s` deadline and neither is an error (a page that keeps polling
         never goes idle). With `expect_heading`, the page's headings are then polled up to
         `expect_wait_s` for one that contains the text (ignoring case): `matched` says whether
         one did. Nothing on the page is touched.
         """
         self._require_open()
+        # One deadline for the whole settle, however many waits it takes.
+        deadline = time.monotonic() + timeout_s
+
+        def left_ms() -> int:
+            return max(1, int((deadline - time.monotonic()) * 1000))
+
         with contextlib.suppress(_playwright_error()):
-            self._page.wait_for_load_state("networkidle", timeout=timeout_s * 1000)
+            self._page.wait_for_load_state("networkidle", timeout=left_ms())
         quiet = False
         for _ in range(2):
             try:
                 quiet = bool(
-                    self._page.evaluate(
-                        _QUIET_DOM_JS, {"quiet": quiet_ms, "total": int(timeout_s * 1000)}
-                    )
+                    self._page.evaluate(_QUIET_DOM_JS, {"quiet": quiet_ms, "total": left_ms()})
                 )
                 break
             except _playwright_error():
                 # A navigation destroyed the page the wait ran in: wait for the new one.
                 with contextlib.suppress(_playwright_error()):
-                    self._page.wait_for_load_state("load", timeout=timeout_s * 1000)
+                    self._page.wait_for_load_state("load", timeout=left_ms())
         headings = self._headings()
         matched: bool | None = None
         if expect_heading is not None:

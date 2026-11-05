@@ -2810,6 +2810,8 @@ def browser_click(
     lines = [f"{task}: clicked {payload['role']} {sanitize_terminal(name)!r}{which}"]
     if payload.get("url"):
         lines.append(f"now on: {payload['url']}")
+    if payload.get("heading_withheld"):
+        lines.append("heading: withheld (it read like an instruction)")
     if payload.get("heading"):
         lines.append(f"heading (page text, untrusted): {sanitize_terminal(payload['heading'])}")
     emit_lines(lines)

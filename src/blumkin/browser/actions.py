@@ -233,6 +233,9 @@ def click_task(
                 f"got {len(expect_heading)}"
             )
 
+    declared = config.browser.tasks.get(task)
+    hosts = declared.allowed_hosts if declared else ()
+
     def act(driver: GuardedDriver) -> dict[str, Any]:
         found = driver.click(name, role, waited, nth=nth)
         payload: dict[str, Any] = {
@@ -244,7 +247,11 @@ def click_task(
         }
         if nth is not None:
             payload["nth"] = nth
-        payload.update(_settled_report(driver, expect_heading))
+
+        def on_allowed_host() -> None:
+            _require_allowed_page(driver, task, hosts, "the click")
+
+        payload.update(_settled_report(driver, expect_heading, on_allowed_host))
         return payload
 
     return _with_driver(config, task, act, check_after=True)
@@ -1794,16 +1801,27 @@ def _require_allowed_page(
         )
 
 
-def _settled_report(driver: GuardedDriver, expect_heading: str | None) -> dict[str, Any]:
+def _settled_report(
+    driver: GuardedDriver, expect_heading: str | None, on_allowed_host: Callable[[], None]
+) -> dict[str, Any]:
     """Wait for the page a click started to settle and say where it ended up.
 
     The heading is page text: addresses are removed, it is cut short, and it is withheld when
     it reads like an instruction to an agent. A missing expected heading is an error that says
-    the click was made.
+    the click was made. `on_allowed_host` raises when the page is on a host the task may not
+    use: it runs before the page is waited on and again before anything from it is shown, so
+    no word or address of a foreign page reaches the output or an error.
     """
+    on_allowed_host()
     settled = driver.settle_page(expect_heading=expect_heading)
     if settled is None:
+        if expect_heading is not None:
+            raise BrowserActionError(
+                "Expected a browser that can wait for a heading, got one that cannot; "
+                "the click WAS made, so read the page instead of clicking again"
+            )
         return {}
+    on_allowed_host()
     report: dict[str, Any] = {"settled": settled.quiet}
     shown = _display_url(driver.url)
     if shown:
@@ -1811,10 +1829,11 @@ def _settled_report(driver: GuardedDriver, expect_heading: str | None) -> dict[s
     headings = [
         redact_addresses(_one_line(text))[:EXPECT_HEADING_CHARS] for text in settled.headings
     ]
-    if headings and scan_for_injection("\n".join(headings), location="page.text").to_payload():
+    first = headings[0] if headings else None
+    if first and scan_for_injection(first, location="page.text").to_payload():
         report["heading_withheld"] = True
-        headings = []
-    report["heading"] = headings[0] if headings else None
+        first = None
+    report["heading"] = first
     report["untrusted"] = UNTRUSTED_NOTE
     if expect_heading is not None:
         report["expect_heading"] = settled.matched
@@ -1822,7 +1841,8 @@ def _settled_report(driver: GuardedDriver, expect_heading: str | None) -> dict[s
             raise BrowserActionError(
                 f"Expected a heading containing {expect_heading!r} within "
                 f"{EXPECT_HEADING_WAIT_S:g} seconds of the click, got "
-                f"{headings[0] if headings else 'none'!r} on {shown or 'a page'}; "
+                f"{'a withheld heading' if report.get('heading_withheld') else first or 'none'!r} "
+                f"on {shown or 'a page'}; "
                 "the click WAS made, so read the page instead of clicking again"
             )
     return report
