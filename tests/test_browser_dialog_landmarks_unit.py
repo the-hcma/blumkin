@@ -277,3 +277,68 @@ def test_a_prefix_pick_refuses_a_name_that_only_a_label_elsewhere_makes_final() 
             assert page.evaluate("window.picked") is None
         finally:
             browser.close()
+
+
+_LONG_PAGE = f"""
+<ul role=grid>
+  <li role=row>
+    <div role=gridcell tabindex=0 onclick="window.picked = 'long'">Template {"x " * 1500}</div>
+  </li>
+</ul>
+"""
+
+
+def test_a_prefix_pick_refuses_a_name_longer_than_the_snapshot_it_can_check() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LONG_PAGE)
+            driver = _driver(page, browser, ())
+
+            with pytest.raises(SubmitBlockedError, match="more names than can be checked"):
+                driver.pick("Template", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") is None
+        finally:
+            browser.close()
+
+
+def test_an_exact_pick_does_not_read_the_accessibility_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from playwright.sync_api import Locator, sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+
+    calls: list[object] = []
+    original = Locator.aria_snapshot
+
+    def counting(self: Locator, *args: object, **kwargs: object) -> str:
+        calls.append(self)
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Locator, "aria_snapshot", counting)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LIST_PAGE)
+            driver = _driver(page, browser, ())
+
+            driver.pick("blumkin-probe Created By Henrique 11/06/2026", "gridcell")
+            assert calls == []
+
+            driver.pick("blumkin-other", "gridcell", None, True)
+            assert len(calls) == 1
+        finally:
+            browser.close()

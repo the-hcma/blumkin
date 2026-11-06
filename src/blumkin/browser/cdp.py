@@ -2790,10 +2790,10 @@ _CELL_JS = r"""
 #: How often and how long a commit is waited for, and how often the options of a typed cell value
 #: are polled while they load.
 _CELL_COMMIT_POLLS = 4
-#: How long `upload` waits for the frame post a chosen file may start (polls of this many
-#: milliseconds), and how long it lets that post finish.
 #: Most characters of a matched element's accessibility snapshot a prefix pick checks.
 _PICK_SNAPSHOT_CHARS = 2000
+#: How long `upload` waits for the frame post a chosen file may start (polls of this many
+#: milliseconds), and how long it lets that post finish.
 _UPLOAD_POST_POLL_MS = 250
 _UPLOAD_POST_POLLS = 16
 _UPLOAD_POST_GRACE_MS = 2000
