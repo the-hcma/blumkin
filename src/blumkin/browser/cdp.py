@@ -1635,10 +1635,15 @@ class PlaywrightDriver:
         raw: dict[str, Any] = {}
         for group in self._dialog_landmarks or ((),):
             found = handle.evaluate(_DESCRIBE_CONTROL_JS, list(group))
-            raw = raw or found
-            if found.get("dialogLandmark"):
+            if not raw:
                 raw = found
-                break
+            elif found.get("dialogLandmark") and (
+                not raw.get("dialogLandmark")
+                or found.get("containerSize", 0) < raw.get("containerSize", 0)
+            ):
+                # With several popups in one form a group can match the form itself: the
+                # nearest container across the groups is the popup the button is in.
+                raw = found
         return ControlInfo(
             tag=str(raw["tag"]),
             input_type=str(raw["type"]),
@@ -2887,6 +2892,7 @@ _DESCRIBE_CONTROL_JS = (
     "target: String(e.getAttribute('target') || ''), "
     "dialog: !!d, formInDialog: !!d && (!f || (d.contains(f) && !(viaLandmark && d === f))), "
     "dialogIsForm: !!d && viaLandmark && d === f, "
+    "containerSize: d ? d.querySelectorAll('*').length : 0, "
     "dialogControls: names, dialogComplete: complete, dialogLandmark: viaLandmark}; }"
 )
 

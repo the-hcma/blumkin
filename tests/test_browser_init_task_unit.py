@@ -402,6 +402,8 @@ def test_no_control_of_the_expense_report_template_can_submit_and_the_guard_acce
         GuardPolicy(
             allowed_controls=frozenset(policy.allowed_controls),
             dialog_confirm=frozenset(policy.dialog_confirm),
+            dialog_landmarks=policy.dialog_landmarks,
+            extra_deny_names=policy.extra_deny_names,
         ),
     )
 
