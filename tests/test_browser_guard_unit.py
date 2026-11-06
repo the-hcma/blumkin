@@ -1907,8 +1907,14 @@ def test_pick_refuses_a_finalizing_text_and_needs_no_declaration() -> None:
 # ------------------------------------------------------- popups found by landmarks (#624)
 
 
-def _landmark_ok(*, submit: bool, dialog_controls: tuple[str, ...] = ("Add", "Delete", "OK")):
+def _landmark_ok(
+    *,
+    submit: bool,
+    dialog_controls: tuple[str, ...] = ("Add", "Delete", "OK"),
+    form_method: str = "post",
+):
     return ControlInfo(
+        form_method=form_method,
         tag="button" if submit else "a",
         input_type="submit" if submit else "",
         in_form=submit,
@@ -1954,6 +1960,16 @@ def test_a_task_that_opted_in_clicks_a_submit_type_confirm_in_a_landmark_popup()
     assert raw.calls == [("click", "button", "OK")]
 
 
+def test_the_opt_in_never_spares_a_popup_in_a_form_that_submits_by_get() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
+    raw.controls["OK"] = _landmark_ok(submit=True, form_method="get")
+
+    with pytest.raises(SubmitBlockedError, match="form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
 def test_the_opt_in_never_spares_a_popup_that_holds_submit_or_a_script_handler() -> None:
     raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
     raw.controls["OK"] = _landmark_ok(submit=True, dialog_controls=("Add", "Delete", "Submit"))
@@ -1988,6 +2004,23 @@ def test_file_before_a_noun_is_a_column_not_the_filing_action(name: str, denied:
     from blumkin.browser.guard import DEFAULT_DENY_NAMES, _deny_stems, _is_denied
 
     assert _is_denied(name, _deny_stems(DEFAULT_DENY_NAMES)) is denied
+
+
+def test_a_task_deny_name_with_file_before_a_noun_still_matches() -> None:
+    from blumkin.browser.guard import DEFAULT_DENY_NAMES, _deny_stems, _is_denied
+
+    stems = _deny_stems((*DEFAULT_DENY_NAMES, "file type"))
+
+    assert _is_denied("File Type", stems) is True
+    assert _is_denied("File Name or URL", stems) is False
+
+
+@pytest.mark.parametrize("value", [("Add", ("x", "y")), (("Add",), ()), (("Add", 1),), ((),)])
+def test_a_mixed_or_malformed_landmark_value_is_refused(value: tuple[object, ...]) -> None:
+    from blumkin.browser.guard import landmark_groups
+
+    with pytest.raises(SubmitBlockedError, match="dialog_landmarks"):
+        landmark_groups(value)  # type: ignore[arg-type]
 
 
 def test_a_landmark_popup_with_a_file_name_column_still_qualifies() -> None:

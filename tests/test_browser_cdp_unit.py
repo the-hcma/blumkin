@@ -3264,12 +3264,21 @@ def test_a_control_lookup_that_never_answers_is_bounded_whatever_the_wait(
 
 
 class _NetRoute:
-    def __init__(self, *, method: str, url: str, navigation: bool, child: bool) -> None:
+    def __init__(
+        self,
+        *,
+        method: str,
+        url: str,
+        navigation: bool,
+        child: bool,
+        content_type: str = "multipart/form-data; boundary=x",
+    ) -> None:
         from types import SimpleNamespace
 
         frame = SimpleNamespace(parent_frame=object() if child else None)
         self.request = SimpleNamespace(
             frame=frame,
+            headers={"content-type": content_type},
             is_navigation_request=lambda: navigation,
             method=method,
             url=url,
@@ -3310,3 +3319,96 @@ def test_the_net_still_swallows_other_posts_during_an_upload() -> None:
     assert _net_outcome(True, url="https://evil.example.net/upload") == "fulfilled 204"
     assert _net_outcome(True, method="PUT") == "fulfilled 204"
     assert _net_outcome(True, navigation=False, method="POST") == "continued"
+
+
+def test_the_net_lets_only_a_multipart_post_through() -> None:
+    assert _net_outcome(True, content_type="application/x-www-form-urlencoded") == "fulfilled 204"
+    assert _net_outcome(True, content_type="") == "fulfilled 204"
+
+
+def test_the_net_lets_only_the_first_upload_post_through() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import _navigation_net
+
+    page = SimpleNamespace(url="https://erp.example.com/app/page")
+    window = {"open": True}
+
+    def passed() -> None:
+        window["open"] = False
+
+    handler = _navigation_net(page, lambda: window["open"], passed)
+    outcomes = []
+    for _ in range(2):
+        route = _NetRoute(
+            method="POST", url="https://erp.example.com/app/upload", navigation=True, child=True
+        )
+        handler(route)
+        outcomes.append(route.outcome)
+
+    assert outcomes == ["continued", "fulfilled 204"]
+
+
+def _bare_driver(page: object):  # noqa: ANN202
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    driver = object.__new__(PlaywrightDriver)
+    driver._page = page  # type: ignore[attr-defined]
+    driver._upload_posts = 0  # type: ignore[attr-defined]
+    driver._uploading = True  # type: ignore[attr-defined]
+    return driver
+
+
+def test_a_counted_upload_post_closes_the_window_and_stops_the_wait() -> None:
+    waited: list[int] = []
+
+    class _Page:
+        def wait_for_timeout(self, ms: int) -> None:
+            waited.append(ms)
+            if len(waited) == 2:
+                driver._count_upload_post()  # noqa: SLF001
+
+    driver = _bare_driver(_Page())
+
+    driver._hold_for_upload_post()  # noqa: SLF001
+
+    assert driver._uploading is False  # type: ignore[attr-defined]
+    assert driver._upload_posts == 1  # type: ignore[attr-defined]
+    # Two polls until the post, then the grace period.
+    assert len(waited) == 3 and waited[-1] > waited[0]
+
+
+def test_a_page_that_never_posts_costs_only_the_capped_wait() -> None:
+    waited: list[int] = []
+
+    class _Page:
+        def wait_for_timeout(self, ms: int) -> None:
+            waited.append(ms)
+
+    driver = _bare_driver(_Page())
+
+    driver._hold_for_upload_post()  # noqa: SLF001
+
+    assert len(waited) == 16 and sum(waited) <= 4000
+
+
+def test_swallowed_writes_are_logged_only_when_a_file_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser.cdp import _log_swallowed
+
+    request = _NetRoute(
+        method="POST", url="https://erp.example.com/a/b?secret=1", navigation=True, child=True
+    ).request
+    request.resource_type = "document"
+    target = tmp_path / "net.log"
+
+    monkeypatch.delenv("BLUMKIN_BROWSER_NET_LOG", raising=False)
+    _log_swallowed(request)
+    assert not target.exists()
+
+    monkeypatch.setenv("BLUMKIN_BROWSER_NET_LOG", str(target))
+    _log_swallowed(request)
+    line = target.read_text()
+    assert line.startswith("POST erp.example.com/a/b document nav=True frame=True")
+    assert "secret" not in line

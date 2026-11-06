@@ -647,8 +647,9 @@ class GuardedDriver:
                     )
                 # A popup found by its landmarks sits in the page's own form, so a button that
                 # cannot submit anything (not a submit control) is judged by what the popup holds.
+                in_form = self._confirm_in_form and info.form_method == "post"
                 if not info.form_in_dialog and not (
-                    info.dialog_landmark and (self._confirm_in_form or not _is_submit_control(info))
+                    info.dialog_landmark and (in_form or not _is_submit_control(info))
                 ):
                     raise self._refuse(
                         action,
@@ -668,7 +669,9 @@ class GuardedDriver:
             info,
             dialog_confirm=confirm,
             draft_control=draft,
-            in_form_ok=self._confirm_in_form and info.dialog_landmark,
+            in_form_ok=(
+                self._confirm_in_form and info.dialog_landmark and info.form_method == "post"
+            ),
         )
         if reason is not None:
             raise self._refuse(action, reason)
@@ -837,8 +840,15 @@ def landmark_groups(value: Iterable[Any]) -> tuple[tuple[str, ...], ...]:
     if not items:
         return ()
     if all(isinstance(item, str) for item in items):
-        return (tuple(str(item) for item in items),)
-    return tuple(tuple(str(name) for name in group) for group in items)
+        return (tuple(items),)
+    if all(isinstance(group, (list, tuple)) and group for group in items) and all(
+        isinstance(name, str) for group in items for name in group
+    ):
+        return tuple(tuple(group) for group in items)
+    raise SubmitBlockedError(
+        "Expected dialog_landmarks as a list of names or a list of non-empty lists of names, "
+        f"got {items!r}"
+    )
 
 
 def validate_dialog_landmarks(names: Iterable[str], extra_deny_names: Iterable[str] = ()) -> None:
@@ -885,8 +895,9 @@ def vet_control(
     `dialog_confirm` spares a submit-type button the submit check, but only inside a dialog
     whose form, if any, lies inside that dialog: it then submits the dialog's own rows.
     `draft_control` spares it for a button the user declared a draft calculation, anywhere on
-    the page. `in_form_ok` (the task opted in, and the popup was found by its landmarks) also
-    spares a dialog confirm whose popup sits in the page's own form. Every other check (a
+    the page. `in_form_ok` (the task opted in, the popup was found by its landmarks and its
+    form posts, so the safety net swallows a submit) also spares a dialog confirm whose popup
+    sits in the page's own form; a form that submits by GET is never spared. Every other check (a
     formaction override, a script link, a submitting handler) still applies to all of them.
     """
     confirmed = dialog_confirm and info.in_dialog and (info.form_in_dialog or in_form_ok)
@@ -964,8 +975,10 @@ _FILE_NOUNS = frozenset({"name", "names", "size", "type"})
 def _is_denied(name: str, stems: tuple[str, ...]) -> bool:
     folded = _folded(name)
     words = re.findall(r"[^\W_]+", folded)
-    # `File Name or URL` is a column header: `file` followed by a noun is not the action.
-    words = [
+    # `File Name or URL` is a column header, not the filing action: only the built-in `file`
+    # stem looks past `file` followed by a noun, so a task's own `File Type` deny name still
+    # matches it.
+    plain = [
         word
         for i, word in enumerate(words)
         if not (word == "file" and i + 1 < len(words) and words[i + 1] in _FILE_NOUNS)
@@ -985,7 +998,7 @@ def _is_denied(name: str, stems: tuple[str, ...]) -> bool:
             glued = stem.replace(" ", "")
             if any(compact.startswith(glued, start) for start in starts):
                 return True
-        elif any(word.startswith(stem) for word in words):
+        elif any(word.startswith(stem) for word in (plain if stem == "file" else words)):
             return True
     return False
 

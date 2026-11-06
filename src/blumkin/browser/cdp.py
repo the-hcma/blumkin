@@ -297,6 +297,8 @@ class ControlInfo:
     dialog_controls_complete: bool = True
     #: The "dialog" is not marked as one by the page: it is the smallest container around the
     #: element that holds every control the task declared as a dialog landmark.
+    #: The method of the form the element sits in, lower case (`post`, `get`), empty with none.
+    form_method: str = ""
     dialog_landmark: bool = False
     #: Set by `checked_pick` only: the element holds, sits inside or is made of a control.
     holds_controls: bool = False
@@ -1389,7 +1391,9 @@ class PlaywrightDriver:
         on("request", moved)
 
     def _count_upload_post(self) -> None:
+        # One post only: the window closes as soon as the file's post has been let through.
         self._upload_posts += 1
+        self._uploading = False
 
     def _hold_for_upload_post(self) -> None:
         """Keep the net open until the frame post of a chosen file shows up, for a short while.
@@ -1429,14 +1433,15 @@ class PlaywrightDriver:
             # safety net lets that one frame post through, and only while this runs.
             self._uploading = True
             self._upload_posts = 0
-            try:
-                handle.set_input_files(str(resolved), timeout=self._timeout_ms)
-                self._hold_for_upload_post()
-                return self._observe_upload(handle, resolved.name, hidden, before)
-            finally:
-                self._uploading = False
+            handle.set_input_files(str(resolved), timeout=self._timeout_ms)
         except _playwright_error() as exc:
+            self._uploading = False
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
+        try:
+            self._hold_for_upload_post()
+            return self._observe_upload(handle, resolved.name, hidden, before)
+        finally:
+            self._uploading = False
 
     @property
     def url(self) -> str:
@@ -1638,6 +1643,7 @@ class PlaywrightDriver:
             dialog_controls=tuple(str(text) for text in raw.get("dialogControls", ()) or ()),
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
             dialog_landmark=bool(raw.get("dialogLandmark", False)),
+            form_method=str(raw.get("formMethod", "")),
             own_names=tuple(str(text) for text in raw.get("ownNames", ()) or ()),
             own_names_complete=bool(raw.get("ownComplete", True)),
         )
@@ -2864,7 +2870,7 @@ _DESCRIBE_CONTROL_JS = (
     "if (own.length > 50) ownComplete = false; } "
     "return {ownNames: own.slice(0, 50), ownComplete: ownComplete, tag: e.tagName.toLowerCase(), "
     "type: String(e.type || '').toLowerCase(), "
-    "form: !!e.form, "
+    "form: !!e.form, formMethod: f ? String(f.method || 'get').toLowerCase() : '', "
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
     "href: String(e.getAttribute('href') || ''), "
     "onclick: String(e.getAttribute('onclick') || ''), "
@@ -2985,10 +2991,11 @@ def _navigation_net(
 ) -> Callable[[Any], None]:
     """The safety net for form posts, which lets a file upload's frame post through.
 
-    While an `upload` runs, a POST from a child frame to the page's own host is let through:
-    Oracle ADF sends the chosen file that way, and answering it with an empty `204` leaves the
-    page waiting for an upload that never completes. Every other write is swallowed as before,
-    whatever the target, and so is the same post from the main page or while nothing uploads.
+    While an `upload` runs, the first multipart POST from a child frame to the page's own host
+    is let through: Oracle ADF sends the chosen file that way, and answering it with an empty
+    `204` leaves the page waiting for an upload that never completes. Every other write is
+    swallowed as before, whatever the target, and so is a second post, a post from the main
+    page, a post that is not multipart, or one made while nothing uploads.
     """
 
     def handler(route: Any) -> None:
@@ -3005,6 +3012,9 @@ def _navigation_net(
 
 def _is_frame_post_to_page_host(request: Any, page: Any) -> bool:
     if request.method != "POST" or not request.is_navigation_request():
+        return False
+    kind = str((request.headers or {}).get("content-type", "")).casefold()
+    if not kind.startswith("multipart/form-data"):
         return False
     if request.frame.parent_frame is None:
         return False
