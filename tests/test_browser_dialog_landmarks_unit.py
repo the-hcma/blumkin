@@ -169,6 +169,8 @@ def test_the_opt_in_clicks_a_popup_in_a_post_form_but_never_the_form_itself() ->
                 off.click("OK", nth=1)
 
             on = _driver(page, browser, (("Add", "Delete"),), in_form=True)
+            on.click("OK", nth=1)
+            assert page.evaluate("window.okPressed") is True
             with pytest.raises(SubmitBlockedError):
                 on.click("OK", nth=2)
             assert page.evaluate("window.wholeSubmitted") is None
