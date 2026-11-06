@@ -492,3 +492,13 @@ def test_a_subtotal_or_credit_line_does_not_back_a_card_charge() -> None:
 
     assert "card charge" not in subtotal.note
     assert "card charge" not in credit.note
+
+
+def test_a_tax_line_or_an_uppercase_cr_marker_does_not_make_a_card_charge() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    tax = parse_receipt_text("Item $20.00\nTotl tax $1.60\nVisa $1.60\n").total
+    credit = parse_receipt_text("Item $20.00\nTotal $17.00\nCard $17.00 CR\n").total
+
+    assert "card charge" not in tax.note
+    assert "card charge" not in credit.note

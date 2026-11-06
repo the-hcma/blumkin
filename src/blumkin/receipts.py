@@ -331,7 +331,8 @@ _MONTH_LABEL = {
 }
 _NEGATIVE_AMOUNT = re.compile(
     r"[-\u2212\u2013\u2014]\s*[^\d\s]{0,3}\s*\d|\(\s*[^\d\s()]{0,3}\s*\d[\d .,]*\)|"
-    r"\d\s*[-\u2212]\s*$|\b(?:cr|credit)\b"
+    r"\d\s*[-\u2212]\s*$|\b(?:cr|credit)\b",
+    re.IGNORECASE,
 )
 _NOISE_LETTERS = "OoIlSBZ|"
 #: A card line that is a balance or a reference, not a payment (`Gift card balance $2.00`).
@@ -701,6 +702,8 @@ def _paid_amounts(text: str) -> list[str]:
         clear = [a.value for a in amounts if a.value and a.has_decimals and not a.doubtful]
         if len(clear) != 1:
             continue  # no amount, or several: which one the line means is a guess
+        if _TAX_WORDS.search(raw.casefold()):
+            continue  # a tax amount is never what was charged
         if _PAID_LINE.search(raw):
             refund = _NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold())
             if not refund and not _NOT_PAID_LINE.search(raw):
