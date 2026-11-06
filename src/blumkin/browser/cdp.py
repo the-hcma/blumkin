@@ -1422,23 +1422,23 @@ class PlaywrightDriver:
         if not resolved.is_file():
             raise BrowserActionError(f"Expected an existing file to upload, got {str(path)!r}")
         try:
-            scope = self._scope(target)
-            locator = self._field(scope, label, target)
-            self._still_allowed(scope, target)
-            handle = locator.element_handle(timeout=self._timeout_ms)
-            hidden = self._probe(handle, _UPLOAD_INFO_JS) is True
-            before = self._probe(handle, _UPLOAD_COUNT_JS, resolved.name)
-            # Through the handle the probes read: a form that swaps the input in between would
-            # otherwise receive the file while the replaced one is observed.
-            # Oracle ADF posts the chosen file from a hidden frame the moment it is chosen; the
-            # safety net lets that one frame post through, and only while this runs.
-            self._uploading = True
-            self._upload_posts = 0
-            handle.set_input_files(str(resolved), timeout=self._timeout_ms)
-        except _playwright_error() as exc:
-            self._uploading = False
-            raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
-        try:
+            try:
+                scope = self._scope(target)
+                locator = self._field(scope, label, target)
+                self._still_allowed(scope, target)
+                handle = locator.element_handle(timeout=self._timeout_ms)
+                hidden = self._probe(handle, _UPLOAD_INFO_JS) is True
+                before = self._probe(handle, _UPLOAD_COUNT_JS, resolved.name)
+                # Through the handle the probes read: a form that swaps the input in between
+                # would otherwise receive the file while the replaced one is observed.
+                # Oracle ADF posts the chosen file from a hidden frame the moment it is
+                # chosen; the safety net lets that one frame post through, and only while
+                # this runs.
+                self._uploading = True
+                self._upload_posts = 0
+                handle.set_input_files(str(resolved), timeout=self._timeout_ms)
+            except _playwright_error() as exc:
+                raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
             if self._net_handler is self._lenient_net:
                 self._hold_for_upload_post()
             return self._observe_upload(handle, resolved.name, hidden, before)

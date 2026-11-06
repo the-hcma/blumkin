@@ -3506,3 +3506,30 @@ def test_strict_mode_waits_for_no_upload_post() -> None:
     driver.upload("File Name", Path(__file__).resolve())
 
     assert held == []
+
+
+def test_upload_closes_the_window_whatever_goes_wrong_while_setting_the_file() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+
+    def boom(path: str, timeout: int) -> None:
+        raise RuntimeError("not a playwright error")
+
+    handle = SimpleNamespace(set_input_files=boom)
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: handle
+    )
+
+    with pytest.raises(RuntimeError):
+        driver.upload("File Name", Path(__file__).resolve())
+
+    assert driver._uploading is False  # type: ignore[attr-defined]
