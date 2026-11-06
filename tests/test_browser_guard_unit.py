@@ -88,8 +88,8 @@ class _Raw:
         self.calls.append(("aria",))
         return '- button "Go"'
 
-    def set_dialog_landmarks(self, names: Sequence[str]) -> None:
-        self.landmarks = tuple(names)
+    def set_dialog_landmarks(self, groups: Sequence[Sequence[str]]) -> None:
+        self.landmarks = tuple(tuple(group) for group in groups)
 
     def block_form_submission(self, *, background_writes: bool = False) -> None:
         self.net_installed += 1
@@ -263,13 +263,15 @@ def _guard(
     deny: tuple[str, ...] = (),
     confirm: tuple[str, ...] = (),
     draft: tuple[str, ...] = (),
-    landmarks: tuple[str, ...] = (),
+    landmarks: tuple[str, ...] | tuple[tuple[str, ...], ...] = (),
+    in_form: bool = False,
 ) -> tuple[_Raw, GuardedDriver]:
     raw = _Raw()
     policy = GuardPolicy(
         allow_all_controls=allow_all,
         allowed_controls=frozenset(allowed),
         dialog_confirm=frozenset(confirm),
+        dialog_confirm_in_form=in_form,
         dialog_landmarks=landmarks,
         draft_controls=frozenset(draft),
         extra_deny_names=deny,
@@ -1905,8 +1907,16 @@ def test_pick_refuses_a_finalizing_text_and_needs_no_declaration() -> None:
 # ------------------------------------------------------- popups found by landmarks (#624)
 
 
-def _landmark_ok(*, submit: bool, dialog_controls: tuple[str, ...] = ("Add", "Delete", "OK")):
+def _landmark_ok(
+    *,
+    submit: bool,
+    dialog_controls: tuple[str, ...] = ("Add", "Delete", "OK"),
+    form_method: str = "post",
+    dialog_is_form: bool = False,
+):
     return ControlInfo(
+        form_method=form_method,
+        dialog_is_form=dialog_is_form,
         tag="button" if submit else "a",
         input_type="submit" if submit else "",
         in_form=submit,
@@ -1919,7 +1929,7 @@ def _landmark_ok(*, submit: bool, dialog_controls: tuple[str, ...] = ("Add", "De
 
 def test_the_landmarks_are_handed_to_the_driver_only_when_declared() -> None:
     raw, _ = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
-    assert raw.landmarks == ("Add", "Delete")
+    assert raw.landmarks == (("Add", "Delete"),)
     plain, _ = _guard(confirm=("OK",))
     assert not hasattr(plain, "landmarks")
 
@@ -1941,6 +1951,99 @@ def test_a_submit_type_confirm_in_a_landmark_popup_inside_the_page_form_is_refus
         driver.click("OK")
 
     assert raw.calls == []
+
+
+def test_a_task_that_opted_in_clicks_a_submit_type_confirm_in_a_landmark_popup() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
+    raw.controls["OK"] = _landmark_ok(submit=True)
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
+
+
+def test_the_opt_in_never_spares_a_popup_in_a_form_that_submits_by_get() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
+    raw.controls["OK"] = _landmark_ok(submit=True, form_method="get")
+
+    with pytest.raises(SubmitBlockedError, match="form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_the_opt_in_never_spares_a_container_that_is_the_form_itself() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
+    raw.controls["OK"] = _landmark_ok(submit=True, dialog_is_form=True)
+
+    with pytest.raises(SubmitBlockedError, match="form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_the_opt_in_never_spares_a_popup_that_holds_submit_or_a_script_handler() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
+    raw.controls["OK"] = _landmark_ok(submit=True, dialog_controls=("Add", "Delete", "Submit"))
+    with pytest.raises(SubmitBlockedError, match="finalizing control"):
+        driver.click("OK")
+
+    submitting = dataclasses.replace(_landmark_ok(submit=True), inline_handler="doSubmit()")
+    raw.controls["OK"] = submitting
+    with pytest.raises(SubmitBlockedError, match="submits a form"):
+        driver.click("OK")
+
+    outside = dataclasses.replace(_landmark_ok(submit=True), dialog_landmark=False)
+    raw.controls["OK"] = outside
+    with pytest.raises(SubmitBlockedError, match="form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    ("name", "denied"),
+    [
+        ("File Name or URL", False),
+        ("File name", False),
+        ("File", True),
+        ("File report", True),
+        ("File name and file report", True),
+        ("Submit", True),
+    ],
+)
+def test_file_before_a_noun_is_a_column_not_the_filing_action(name: str, denied: bool) -> None:
+    from blumkin.browser.guard import DEFAULT_DENY_NAMES, _deny_stems, _is_denied
+
+    assert _is_denied(name, _deny_stems(DEFAULT_DENY_NAMES)) is denied
+
+
+def test_a_task_deny_name_with_file_before_a_noun_still_matches() -> None:
+    from blumkin.browser.guard import DEFAULT_DENY_NAMES, _deny_stems, _is_denied
+
+    stems = _deny_stems((*DEFAULT_DENY_NAMES, "file type"))
+
+    assert _is_denied("File Type", stems) is True
+    assert _is_denied("File Name or URL", stems) is False
+
+
+@pytest.mark.parametrize("value", [("Add", ("x", "y")), (("Add",), ()), (("Add", 1),), ((),)])
+def test_a_mixed_or_malformed_landmark_value_is_refused(value: tuple[object, ...]) -> None:
+    from blumkin.browser.guard import landmark_groups
+
+    with pytest.raises(SubmitBlockedError, match="dialog_landmarks"):
+        landmark_groups(value)  # type: ignore[arg-type]
+
+
+def test_a_landmark_popup_with_a_file_name_column_still_qualifies() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
+    raw.controls["OK"] = _landmark_ok(
+        submit=True, dialog_controls=("Add", "Delete", "File Name or URL", "OK")
+    )
+
+    driver.click("OK")
+
+    assert raw.calls == [("click", "button", "OK")]
 
 
 def test_a_landmark_container_that_also_holds_submit_never_qualifies() -> None:
@@ -1979,6 +2082,19 @@ def test_dialog_landmarks_need_two_distinct_exact_non_finalizing_names(
 ) -> None:
     with pytest.raises(SubmitBlockedError, match="dialog_landmarks"):
         _guard(confirm=("OK",), landmarks=names)
+
+
+def test_dialog_landmarks_are_passed_to_the_driver_as_one_group_per_popup() -> None:
+    flat, _ = _guard(confirm=("OK",), landmarks=("Add", "Delete"))
+    several, _ = _guard(confirm=("OK",), landmarks=(("Add", "Delete"), ("Reset", "Search")))
+
+    assert flat.landmarks == (("Add", "Delete"),)
+    assert several.landmarks == (("Add", "Delete"), ("Reset", "Search"))
+
+
+def test_every_dialog_landmark_group_is_checked_on_its_own() -> None:
+    with pytest.raises(SubmitBlockedError, match="dialog_landmarks"):
+        _guard(confirm=("OK",), landmarks=(("Add", "Delete"), ("Reset", "Submit")))
 
 
 def test_dialog_landmarks_without_a_dialog_confirm_are_refused() -> None:

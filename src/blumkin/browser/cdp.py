@@ -19,6 +19,7 @@ import dataclasses
 import functools
 import json
 import math
+import os
 import re
 import signal
 import threading
@@ -294,6 +295,10 @@ class ControlInfo:
     #: False when the dialog held more controls, or longer names, than were collected: nothing
     #: can then be said about what the dialog holds.
     dialog_controls_complete: bool = True
+    #: The method of the form the element sits in, lower case (`post`, `get`), empty with none.
+    form_method: str = ""
+    #: The container found by the landmarks is the form itself, not a popup inside it.
+    dialog_is_form: bool = False
     #: The "dialog" is not marked as one by the page: it is the smallest container around the
     #: element that holds every control the task declared as a dialog landmark.
     dialog_landmark: bool = False
@@ -463,10 +468,13 @@ class PlaywrightDriver:
         self._chain: list[str] = []
         self._chain_listening = False
         self._expired = False
-        self._dialog_landmarks: tuple[str, ...] = ()
+        self._dialog_landmarks: tuple[tuple[str, ...], ...] = ()
         self._existing_frames = existing_frames
         self._navigation_handler: Any = None
         self._net_handler: Any = None
+        self._uploading = False
+        self._upload_posts = 0
+        self._lenient_net = _navigation_net(page, lambda: self._uploading, self._count_upload_post)
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -529,7 +537,7 @@ class PlaywrightDriver:
         request, so a net registered after the host route would run first and skip it.
         """
         self._require_open()
-        handler = _abort_every_write if background_writes else _abort_non_get_navigation
+        handler = _abort_every_write if background_writes else self._lenient_net
         if self._net_handler is handler or self._net_handler is _abort_every_write:
             return
         previous = self._net_handler
@@ -1140,13 +1148,14 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error("scroll the frame", exc) from exc
 
-    def set_dialog_landmarks(self, names: Sequence[str]) -> None:
-        """Treat the smallest container holding a control of each of these names as a dialog.
+    def set_dialog_landmarks(self, groups: Sequence[Sequence[str]]) -> None:
+        """Treat the smallest container holding a control of each name of a group as a dialog.
 
-        For a popup the page does not mark as one (`role=dialog`): the guard still judges what
-        the container holds before a declared dialog confirm may be clicked inside it.
+        For a popup the page does not mark as one (`role=dialog`), one group of names per popup:
+        the guard still judges what the container holds before a declared dialog confirm may
+        be clicked inside it.
         """
-        self._dialog_landmarks = tuple(names)
+        self._dialog_landmarks = tuple(tuple(group) for group in groups)
 
     def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
         """Wait for a navigation the last action started: the URL moving on, then the load.
@@ -1383,6 +1392,25 @@ class PlaywrightDriver:
 
         on("request", moved)
 
+    def _count_upload_post(self) -> None:
+        # One post only: the window closes as soon as the file's post has been let through.
+        self._upload_posts += 1
+        self._uploading = False
+
+    def _hold_for_upload_post(self) -> None:
+        """Keep the net open until the frame post of a chosen file shows up, for a short while.
+
+        Oracle ADF sends the file from a hidden frame a moment after it is chosen, so the post
+        can arrive after `set_input_files` returned. A page that never posts costs the cap, and
+        nothing is waited for in strict mode, where the net lets nothing through.
+        """
+        for _ in range(_UPLOAD_POST_POLLS):
+            if self._upload_posts:
+                break
+            self._page.wait_for_timeout(_UPLOAD_POST_POLL_MS)
+        if self._upload_posts:
+            self._page.wait_for_timeout(_UPLOAD_POST_GRACE_MS)
+
     def upload(
         self, label: str, path: Path, target: FieldTarget | None = None
     ) -> UploadObservation:
@@ -1396,18 +1424,33 @@ class PlaywrightDriver:
         if not resolved.is_file():
             raise BrowserActionError(f"Expected an existing file to upload, got {str(path)!r}")
         try:
-            scope = self._scope(target)
-            locator = self._field(scope, label, target)
-            self._still_allowed(scope, target)
-            handle = locator.element_handle(timeout=self._timeout_ms)
-            hidden = self._probe(handle, _UPLOAD_INFO_JS) is True
-            before = self._probe(handle, _UPLOAD_COUNT_JS, resolved.name)
-            # Through the handle the probes read: a form that swaps the input in between would
-            # otherwise receive the file while the replaced one is observed.
-            handle.set_input_files(str(resolved), timeout=self._timeout_ms)
-        except _playwright_error() as exc:
-            raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
-        return self._observe_upload(handle, resolved.name, hidden, before)
+            try:
+                scope = self._scope(target)
+                locator = self._field(scope, label, target)
+                self._still_allowed(scope, target)
+                handle = locator.element_handle(timeout=self._timeout_ms)
+                hidden = self._probe(handle, _UPLOAD_INFO_JS) is True
+                before = self._probe(handle, _UPLOAD_COUNT_JS, resolved.name)
+                # Through the handle the probes read: a form that swaps the input in between
+                # would otherwise receive the file while the replaced one is observed.
+                # Oracle ADF posts the chosen file from a hidden frame the moment it is
+                # chosen; the safety net lets that one frame post through, and only while
+                # this runs.
+                self._uploading = True
+                self._upload_posts = 0
+                handle.set_input_files(str(resolved), timeout=self._timeout_ms)
+            except _playwright_error() as exc:
+                raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
+            if self._net_handler is self._lenient_net:
+                try:
+                    self._hold_for_upload_post()
+                except _playwright_error() as exc:
+                    raise self._action_error(
+                        f"wait after uploading to the field labelled {label!r}", exc
+                    ) from exc
+            return self._observe_upload(handle, resolved.name, hidden, before)
+        finally:
+            self._uploading = False
 
     @property
     def url(self) -> str:
@@ -1589,7 +1632,18 @@ class PlaywrightDriver:
         return str(found.get("url", "")), tuple(str(text) for text in found.get("headings", ()))
 
     def _describe(self, handle: Any) -> ControlInfo:
-        raw = handle.evaluate(_DESCRIBE_CONTROL_JS, list(self._dialog_landmarks))
+        raw: dict[str, Any] = {}
+        for group in self._dialog_landmarks or ((),):
+            found = handle.evaluate(_DESCRIBE_CONTROL_JS, list(group))
+            if not raw:
+                raw = found
+            elif found.get("dialogLandmark") and (
+                not raw.get("dialogLandmark")
+                or found.get("containerSize", 0) < raw.get("containerSize", 0)
+            ):
+                # With several popups in one form a group can match the form itself: the
+                # nearest container across the groups is the popup the button is in.
+                raw = found
         return ControlInfo(
             tag=str(raw["tag"]),
             input_type=str(raw["type"]),
@@ -1603,6 +1657,8 @@ class PlaywrightDriver:
             dialog_controls=tuple(str(text) for text in raw.get("dialogControls", ()) or ()),
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
             dialog_landmark=bool(raw.get("dialogLandmark", False)),
+            form_method=str(raw.get("formMethod", "")),
+            dialog_is_form=bool(raw.get("dialogIsForm", False)),
             own_names=tuple(str(text) for text in raw.get("ownNames", ()) or ()),
             own_names_complete=bool(raw.get("ownComplete", True)),
         )
@@ -2707,6 +2763,11 @@ _CELL_JS = r"""
 #: How often and how long a commit is waited for, and how often the options of a typed cell value
 #: are polled while they load.
 _CELL_COMMIT_POLLS = 4
+#: How long `upload` waits for the frame post a chosen file may start (polls of this many
+#: milliseconds), and how long it lets that post finish.
+_UPLOAD_POST_POLL_MS = 250
+_UPLOAD_POST_POLLS = 16
+_UPLOAD_POST_GRACE_MS = 2000
 _CELL_OPTION_POLL_MS = 500
 _CELL_OPTION_POLLS = 16
 
@@ -2824,12 +2885,14 @@ _DESCRIBE_CONTROL_JS = (
     "if (own.length > 50) ownComplete = false; } "
     "return {ownNames: own.slice(0, 50), ownComplete: ownComplete, tag: e.tagName.toLowerCase(), "
     "type: String(e.type || '').toLowerCase(), "
-    "form: !!e.form, "
+    "form: !!e.form, formMethod: f ? String(f.method || 'get').toLowerCase() : '', "
     "formaction: e.hasAttribute('formaction') || e.hasAttribute('formmethod'), "
     "href: String(e.getAttribute('href') || ''), "
     "onclick: String(e.getAttribute('onclick') || ''), "
     "target: String(e.getAttribute('target') || ''), "
     "dialog: !!d, formInDialog: !!d && (!f || (d.contains(f) && !(viaLandmark && d === f))), "
+    "dialogIsForm: !!d && viaLandmark && d === f, "
+    "containerSize: d ? d.querySelectorAll('*').length : 0, "
     "dialogControls: names, dialogComplete: complete, dialogLandmark: viaLandmark}; }"
 )
 
@@ -2902,6 +2965,33 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _log_swallowed(request: Any) -> None:
+    """Append what the safety net swallowed to the file `BLUMKIN_BROWSER_NET_LOG` names.
+
+    A diagnostic for a click that seems to do nothing: the method, the host, the last part of
+    the path (no `;parameters`, no query string, no body, no header), the resource type and
+    whether it was a navigation and from a child frame. Off unless set; a new file is created
+    private (mode 0600), and a failure to write is ignored.
+    """
+    target = os.environ.get("BLUMKIN_BROWSER_NET_LOG")
+    if not target:
+        return
+    try:
+        parts = urlsplit(str(request.url))
+        path = parts.path.split(";", 1)[0][-120:]
+        navigation = request.is_navigation_request()
+        child = request.frame.parent_frame is not None
+        line = (
+            f"{request.method} {parts.hostname}{path} {request.resource_type} "
+            f"nav={navigation} frame={child}\n"
+        )
+        descriptor = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            handle.write(line)
+    except OSError, ValueError, _playwright_error():
+        return
+
+
 def _abort_every_write(route: Any) -> None:
     """Strict mode: swallow any request that writes, navigation or background; pass the rest.
 
@@ -2912,7 +3002,44 @@ def _abort_every_write(route: Any) -> None:
     if route.request.method in _READ_METHODS:
         route.continue_()
     else:
+        _log_swallowed(route.request)
         route.fulfill(status=204)
+
+
+def _navigation_net(
+    page: Any, uploading: Callable[[], bool], on_pass: Callable[[], None] | None = None
+) -> Callable[[Any], None]:
+    """The safety net for form posts, which lets a file upload's frame post through.
+
+    While an `upload` runs, the first multipart POST from a child frame to the page's own host
+    is let through: Oracle ADF sends the chosen file that way, and answering it with an empty
+    `204` leaves the page waiting for an upload that never completes. Every other write is
+    swallowed as before, whatever the target, and so is a second post, a post from the main
+    page, a post that is not multipart, or one made while nothing uploads.
+    """
+
+    def handler(route: Any) -> None:
+        request = route.request
+        if uploading() and _is_frame_post_to_page_host(request, page):
+            if on_pass is not None:
+                on_pass()
+            route.continue_()
+            return
+        _abort_non_get_navigation(route)
+
+    return handler
+
+
+def _is_frame_post_to_page_host(request: Any, page: Any) -> bool:
+    if request.method != "POST" or not request.is_navigation_request():
+        return False
+    kind = str((request.headers or {}).get("content-type", "")).casefold()
+    if not kind.startswith("multipart/form-data"):
+        return False
+    if request.frame.parent_frame is None:
+        return False
+    host = urlsplit(str(request.url)).hostname
+    return bool(host) and host == urlsplit(str(page.url)).hostname
 
 
 def _abort_non_get_navigation(route: Any) -> None:
@@ -2924,6 +3051,7 @@ def _abort_non_get_navigation(route: Any) -> None:
     """
     request = route.request
     if request.is_navigation_request() and request.method not in ("GET", "HEAD"):
+        _log_swallowed(request)
         route.fulfill(status=204)
     else:
         route.continue_()

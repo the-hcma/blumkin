@@ -3261,3 +3261,347 @@ def test_a_control_lookup_that_never_answers_is_bounded_whatever_the_wait(
     with pytest.raises(BrowserActionError, match="may or may not have happened"):
         driver.matching_roles("Save", ["button"], 0)
     assert time.monotonic() - started < 3
+
+
+class _NetRoute:
+    def __init__(
+        self,
+        *,
+        method: str,
+        url: str,
+        navigation: bool,
+        child: bool,
+        content_type: str = "multipart/form-data; boundary=x",
+    ) -> None:
+        from types import SimpleNamespace
+
+        frame = SimpleNamespace(parent_frame=object() if child else None)
+        self.request = SimpleNamespace(
+            frame=frame,
+            headers={"content-type": content_type},
+            resource_type="document",
+            is_navigation_request=lambda: navigation,
+            method=method,
+            url=url,
+        )
+        self.outcome = ""
+
+    def continue_(self) -> None:
+        self.outcome = "continued"
+
+    def fulfill(self, *, status: int) -> None:
+        self.outcome = f"fulfilled {status}"
+
+
+def _net_outcome(uploading: bool, **request: object) -> str:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import _navigation_net
+
+    page = SimpleNamespace(url="https://erp.example.com/app/page")
+    base = {
+        "method": "POST",
+        "url": "https://erp.example.com/app/upload",
+        "navigation": True,
+        "child": True,
+    }
+    route = _NetRoute(**{**base, **request})  # type: ignore[arg-type]
+    _navigation_net(page, lambda: uploading)(route)
+    return route.outcome
+
+
+def test_the_net_lets_a_child_frame_post_through_only_while_an_upload_runs() -> None:
+    assert _net_outcome(True) == "continued"
+    assert _net_outcome(False) == "fulfilled 204"
+
+
+def test_the_net_still_swallows_other_posts_during_an_upload() -> None:
+    assert _net_outcome(True, child=False) == "fulfilled 204"
+    assert _net_outcome(True, url="https://evil.example.net/upload") == "fulfilled 204"
+    assert _net_outcome(True, method="PUT") == "fulfilled 204"
+    assert _net_outcome(True, navigation=False, method="POST") == "continued"
+
+
+def test_the_net_lets_only_a_multipart_post_through() -> None:
+    assert _net_outcome(True, content_type="application/x-www-form-urlencoded") == "fulfilled 204"
+    assert _net_outcome(True, content_type="") == "fulfilled 204"
+
+
+def test_the_net_lets_only_the_first_upload_post_through() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import _navigation_net
+
+    page = SimpleNamespace(url="https://erp.example.com/app/page")
+    window = {"open": True}
+
+    def passed() -> None:
+        window["open"] = False
+
+    handler = _navigation_net(page, lambda: window["open"], passed)
+    outcomes = []
+    for _ in range(2):
+        route = _NetRoute(
+            method="POST", url="https://erp.example.com/app/upload", navigation=True, child=True
+        )
+        handler(route)
+        outcomes.append(route.outcome)
+
+    assert outcomes == ["continued", "fulfilled 204"]
+
+
+def _bare_driver(page: object):  # noqa: ANN202
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    driver = object.__new__(PlaywrightDriver)
+    driver._page = page  # type: ignore[attr-defined]
+    driver._upload_posts = 0  # type: ignore[attr-defined]
+    driver._uploading = True  # type: ignore[attr-defined]
+    driver._timeout_s = 1.0  # type: ignore[attr-defined]
+    return driver
+
+
+def test_a_counted_upload_post_closes_the_window_and_stops_the_wait() -> None:
+    waited: list[int] = []
+
+    class _Page:
+        def wait_for_timeout(self, ms: int) -> None:
+            waited.append(ms)
+            if len(waited) == 2:
+                driver._count_upload_post()  # noqa: SLF001
+
+    driver = _bare_driver(_Page())
+
+    driver._hold_for_upload_post()  # noqa: SLF001
+
+    assert driver._uploading is False  # type: ignore[attr-defined]
+    assert driver._upload_posts == 1  # type: ignore[attr-defined]
+    # Two polls until the post, then the grace period.
+    from blumkin.browser.cdp import _UPLOAD_POST_GRACE_MS, _UPLOAD_POST_POLL_MS
+
+    assert waited == [_UPLOAD_POST_POLL_MS, _UPLOAD_POST_POLL_MS, _UPLOAD_POST_GRACE_MS]
+
+
+def test_a_page_that_never_posts_costs_only_the_capped_wait() -> None:
+    waited: list[int] = []
+
+    class _Page:
+        def wait_for_timeout(self, ms: int) -> None:
+            waited.append(ms)
+
+    driver = _bare_driver(_Page())
+
+    driver._hold_for_upload_post()  # noqa: SLF001
+
+    assert len(waited) == 16 and sum(waited) <= 4000
+
+
+def test_swallowed_writes_are_logged_only_when_a_file_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser.cdp import _log_swallowed
+
+    request = _NetRoute(
+        method="POST", url="https://erp.example.com/a/b?secret=1", navigation=True, child=True
+    ).request
+    request.resource_type = "document"
+    target = tmp_path / "net.log"
+
+    monkeypatch.delenv("BLUMKIN_BROWSER_NET_LOG", raising=False)
+    _log_swallowed(request)
+    assert not target.exists()
+
+    monkeypatch.setenv("BLUMKIN_BROWSER_NET_LOG", str(target))
+    _log_swallowed(request)
+    line = target.read_text()
+    assert line.startswith("POST erp.example.com/a/b document nav=True frame=True")
+    assert "secret" not in line
+
+
+def test_upload_opens_the_window_for_the_set_files_call_and_closes_it_after() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    seen: dict[str, object] = {}
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+
+    def set_files(path: str, timeout: int) -> None:
+        seen["during_set"] = driver._uploading  # type: ignore[attr-defined]
+
+    handle = SimpleNamespace(set_input_files=set_files)
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: handle
+    )
+    driver._hold_for_upload_post = lambda: seen.setdefault(  # type: ignore[attr-defined]
+        "held",
+        driver._uploading,  # type: ignore[attr-defined]
+    )
+
+    def observe(*args: object) -> str:
+        seen["during_observe"] = driver._uploading  # type: ignore[attr-defined]
+        return "observed"
+
+    driver._observe_upload = observe  # type: ignore[attr-defined]
+    path = Path(__file__).resolve()
+
+    assert driver.upload("File Name", path) == "observed"
+
+    assert seen == {"during_set": True, "held": True, "during_observe": True}
+    assert driver._uploading is False  # type: ignore[attr-defined]
+
+
+def test_upload_closes_the_window_when_setting_the_file_fails() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+
+    def boom(path: str, timeout: int) -> None:
+        raise PlaywrightError("detached")
+
+    handle = SimpleNamespace(set_input_files=boom)
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: handle
+    )
+
+    with pytest.raises(BrowserActionError):
+        driver.upload("File Name", Path(__file__).resolve())
+
+    assert driver._uploading is False  # type: ignore[attr-defined]
+
+
+def test_strict_mode_waits_for_no_upload_post() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = object()  # strict: not the lenient net
+    driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: SimpleNamespace(set_input_files=lambda path, timeout: None)
+    )
+    held: list[bool] = []
+    driver._hold_for_upload_post = lambda: held.append(True)  # type: ignore[attr-defined]
+    driver._observe_upload = lambda *args: "observed"  # type: ignore[attr-defined]
+
+    driver.upload("File Name", Path(__file__).resolve())
+
+    assert held == []
+
+
+def test_upload_closes_the_window_whatever_goes_wrong_while_setting_the_file() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+
+    def boom(path: str, timeout: int) -> None:
+        raise RuntimeError("not a playwright error")
+
+    handle = SimpleNamespace(set_input_files=boom)
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: handle
+    )
+
+    with pytest.raises(RuntimeError):
+        driver.upload("File Name", Path(__file__).resolve())
+
+    assert driver._uploading is False  # type: ignore[attr-defined]
+
+
+def test_an_unwritable_net_log_does_not_block_the_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import _navigation_net
+
+    monkeypatch.setenv("BLUMKIN_BROWSER_NET_LOG", str(tmp_path))  # a directory: not writable
+    page = SimpleNamespace(url="https://erp.example.com/app/page")
+    route = _NetRoute(
+        method="POST", url="https://erp.example.com/app/upload", navigation=True, child=True
+    )
+
+    _navigation_net(page, lambda: False)(route)
+
+    assert route.outcome == "fulfilled 204"
+
+
+def test_the_net_log_is_created_private_and_drops_path_parameters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stat
+
+    from blumkin.browser.cdp import _log_swallowed
+
+    request = _NetRoute(
+        method="POST",
+        url="https://erp.example.com/a/b;jsessionid=SECRET?x=1",
+        navigation=True,
+        child=False,
+    ).request
+    target = tmp_path / "net.log"
+    monkeypatch.setenv("BLUMKIN_BROWSER_NET_LOG", str(target))
+
+    _log_swallowed(request)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert "SECRET" not in target.read_text()
+
+
+def test_an_error_while_waiting_for_the_upload_post_is_a_browser_action_error() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: SimpleNamespace(set_input_files=lambda path, timeout: None)
+    )
+
+    def closed() -> None:
+        raise PlaywrightError("page closed")
+
+    driver._hold_for_upload_post = closed  # type: ignore[attr-defined]
+
+    with pytest.raises(BrowserActionError, match="wait after uploading"):
+        driver.upload("File Name", Path(__file__).resolve())
+
+    assert driver._uploading is False  # type: ignore[attr-defined]

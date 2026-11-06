@@ -49,10 +49,14 @@ _PAGE = """
   <button type=submit form=report>Submit</button>
   <a href="#" role=button onclick="window.bigOk = true; return false">OK</a>
 </div>
+<div id=search>
+  <a href="#" role=button>Reset</a> <a href="#" role=button>Search</a>
+  <a href="#" role=button onclick="window.searchOk = true; return false">OK</a>
+</div>
 """
 
 
-def _driver(page, browser, landmarks):  # noqa: ANN001, ANN202
+def _driver(page, browser, landmarks, *, in_form=False):  # noqa: ANN001, ANN202
     from blumkin.browser.cdp import PlaywrightDriver
     from blumkin.browser.guard import GuardedDriver, GuardPolicy
 
@@ -60,6 +64,7 @@ def _driver(page, browser, landmarks):  # noqa: ANN001, ANN202
     policy = GuardPolicy(
         allowed_controls=frozenset({"Save", "Cancel"}),
         dialog_confirm=frozenset({"OK"}),
+        dialog_confirm_in_form=in_form,
         dialog_landmarks=landmarks,
     )
     return GuardedDriver(raw, policy)
@@ -99,5 +104,113 @@ def test_ok_is_clicked_in_the_popup_with_the_landmarks_and_nowhere_else() -> Non
                     driver.click("OK", nth=nth)
             assert page.evaluate("window.wholeSubmitted") is None
             assert page.evaluate("window.wrappedSubmit") is None
+        finally:
+            browser.close()
+
+
+def test_each_popup_is_found_by_its_own_group_of_landmarks() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_PAGE)
+            only_attachments = _driver(page, browser, (("Add", "Delete"),))
+            search_ok = page.get_by_role("button", name="OK", exact=True).count()  # the last one
+            with pytest.raises(SubmitBlockedError):
+                only_attachments.click("OK", nth=search_ok)
+            assert page.evaluate("window.searchOk") is None
+
+            both = _driver(page, browser, (("Add", "Delete"), ("Reset", "Search")))
+            both.click("OK", nth=search_ok)
+            assert page.evaluate("window.searchOk") is True
+            both.click("OK", nth=1)
+            assert page.evaluate("window.okPressed") is True
+        finally:
+            browser.close()
+
+
+_POST_PAGE = """
+<form id=report method=post onsubmit="window.submitted = true; return false">
+  <button type=submit>Submit</button>
+  <div id=popup>
+    <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+    <button type=submit onclick="window.okPressed = true">OK</button>
+  </div>
+</form>
+<form id=whole method=post onsubmit="window.wholeSubmitted = true; return false">
+  <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+  <button type=submit>OK</button>
+</form>
+"""
+
+
+def test_the_opt_in_clicks_a_popup_in_a_post_form_but_never_the_form_itself() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_POST_PAGE)
+            off = _driver(page, browser, (("Add", "Delete"),))
+            with pytest.raises(SubmitBlockedError):
+                off.click("OK", nth=1)
+
+            on = _driver(page, browser, (("Add", "Delete"),), in_form=True)
+            on.click("OK", nth=1)
+            assert page.evaluate("window.okPressed") is True
+            with pytest.raises(SubmitBlockedError):
+                on.click("OK", nth=2)
+            assert page.evaluate("window.wholeSubmitted") is None
+        finally:
+            browser.close()
+
+
+_ONE_FORM_PAGE = """
+<form id=report method=post onsubmit="return false">
+  <button type=submit>Submit</button>
+  <div id=attachments>
+    <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+    <button type=submit onclick="window.attachOk = true">OK</button>
+  </div>
+  <div id=search>
+    <a href="#" role=button>Reset</a> <a href="#" role=button>Search</a>
+    <button type=submit onclick="window.searchOk = true">OK</button>
+  </div>
+</form>
+"""
+
+
+def test_two_popups_in_one_form_are_each_found_by_their_own_group() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_ONE_FORM_PAGE)
+            driver = _driver(page, browser, (("Add", "Delete"), ("Reset", "Search")), in_form=True)
+
+            driver.click("OK", nth=2)
+            driver.click("OK", nth=1)
+
+            assert page.evaluate("window.searchOk") is True
+            assert page.evaluate("window.attachOk") is True
         finally:
             browser.close()

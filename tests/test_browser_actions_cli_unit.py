@@ -1796,6 +1796,25 @@ def test_the_guard_policy_carries_the_tasks_strict_mode() -> None:
     assert _policy_for(setup(strict), "other").block_background_writes is False
 
 
+def test_the_guard_policy_carries_the_tasks_dialog_settings() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.actions import _policy_for
+    from blumkin.config import BrowserTaskPolicy
+
+    declared = BrowserTaskPolicy(
+        dialog_confirm=("OK",),
+        dialog_confirm_in_form=True,
+        dialog_landmarks=(("Add", "Delete"), ("Reset", "Search")),
+    )
+    setup: Any = SimpleNamespace(browser=SimpleNamespace(tasks={"t": declared}))
+
+    policy = _policy_for(setup, "t")
+
+    assert policy.dialog_confirm_in_form is True
+    assert policy.dialog_landmarks == (("Add", "Delete"), ("Reset", "Search"))
+
+
 def test_the_guard_policy_carries_the_tasks_deny_list_mode() -> None:
     from types import SimpleNamespace
 

@@ -371,7 +371,7 @@ def test_the_expense_report_table_holds_the_hosts_controls_confirm_folder_and_fo
     policy = load_browser_setup().browser.tasks["expense-report"]
     assert policy.allowed_hosts == ("erp.example.com",)
     assert policy.dialog_confirm == ("OK",)
-    assert policy.dialog_landmarks == ("Add", "Delete")
+    assert policy.dialog_landmarks == (("Add", "Delete"), ("Reset", "Search"))
     assert policy.upload_dirs == ("~/receipts",)
     assert policy.form_url == "https://erp.example.com/expenses"
     assert "Create Report" in policy.allowed_controls
@@ -402,6 +402,8 @@ def test_no_control_of_the_expense_report_template_can_submit_and_the_guard_acce
         GuardPolicy(
             allowed_controls=frozenset(policy.allowed_controls),
             dialog_confirm=frozenset(policy.dialog_confirm),
+            dialog_landmarks=policy.dialog_landmarks,
+            extra_deny_names=policy.extra_deny_names,
         ),
     )
 
@@ -456,6 +458,12 @@ def test_the_expense_report_next_steps_lead_from_the_form_to_the_handoff(config:
     for command in ("launch expense-report --open", "explore observe", "explore save", "handoff"):
         assert command in text
     assert "password" not in text.lower()
+    # The opt-in is pointed at, never enabled by the template.
+    assert "dialog_confirm_in_form = true" in text
+    assert (
+        "dialog_confirm_in_form"
+        not in _payload(_run("--template", "expense-report", "--host", "erp.example.com"))["table"]
+    )
 
 
 def test_the_other_template_still_needs_no_host_and_keeps_its_table(config: Path) -> None:
