@@ -1924,6 +1924,12 @@ def test_a_prefix_pick_reaches_the_driver_and_checks_the_whole_name() -> None:
     # An exact pick looks only at the text it was given, as before.
     driver.pick("Template", "gridcell")
 
+    raw.controls["Long"] = ControlInfo(
+        tag="div", input_type="", in_form=False, own_names=("Long",), own_names_complete=False
+    )
+    with pytest.raises(SubmitBlockedError, match="more names than can be checked"):
+        driver.pick("Long", "gridcell", None, True)
+
 
 def test_pick_refuses_a_finalizing_text_and_needs_no_declaration() -> None:
     raw, driver = _guard()

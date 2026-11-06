@@ -345,6 +345,8 @@ class GuardedDriver:
             raise self._refuse(action, "its text is a finalizing action")
 
         def vet(info: ControlInfo) -> None:
+            if prefix and not info.own_names_complete:
+                raise self._refuse(action, "the element has more names than can be checked")
             if prefix and any(_is_denied(held, self._deny) for held in info.own_names):
                 raise self._refuse(action, "its full text holds a finalizing action")
             if (
