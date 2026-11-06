@@ -43,8 +43,14 @@ async def docs_read(
     pages: str | None = None,
     sheet: str | None = None,
     ocr: bool = False,
+    photo: bool = False,
 ) -> dict[str, Any]:
-    """Read one local file already on disk; no provider, auth, or network calls."""
+    """Read one local file already on disk; no provider, auth, or network calls.
+
+    `photo` says a scanned page is a photo of a receipt: it is read with the photo pipeline
+    (turned upright, straightened, retried in other layouts) and not with one plain OCR pass.
+    It costs several passes a page, so it is off for documents.
+    """
     del config
     file_path = Path(path).expanduser()
     _ensure_file(file_path)
@@ -55,7 +61,7 @@ async def docs_read(
     if kind == ".docx":
         extracted_pages = _read_docx(file_path)
     elif kind == ".pdf":
-        extracted_pages, ocr_used = _read_pdf(file_path, ocr=ocr, pages=pages)
+        extracted_pages, ocr_used = _read_pdf(file_path, ocr=ocr, pages=pages, photo=photo)
     elif kind == ".xlsx":
         extracted_pages = _read_xlsx(file_path, sheet=sheet)
     elif kind in _IMAGE_EXTENSIONS:
@@ -222,7 +228,10 @@ def _normalize_cell(value: Any) -> str:
     return str(value).strip()
 
 
-def _ocr_pdf_page(path: Path, *, page_index: int) -> str:
+def _ocr_pdf_page(path: Path, *, page_index: int, photo: bool = False) -> tuple[str, int, bool]:
+    """OCR one page: its text, how many OCR passes it took and whether the passes disagree on a
+    sign. With `photo` the page is read as a photo of a receipt (see `_ocr_photo`); without it,
+    in one plain pass."""
     _require_ocr_binaries()
     pdf2image, pdf2image_exceptions, pytesseract = _import_ocr_modules()
     poppler_errors = tuple(
@@ -241,9 +250,11 @@ def _ocr_pdf_page(path: Path, *, page_index: int) -> str:
     except poppler_errors as exc:
         raise DocsReadOcrUnavailableError(_POPPLER_HINT) from exc
     if not images:
-        return ""
+        return "", 0, False
     try:
-        return str(pytesseract.image_to_string(images[0])).strip()
+        if photo:
+            return _ocr_photo(images[0], pytesseract)
+        return str(pytesseract.image_to_string(images[0])).strip(), 1, False
     except getattr(pytesseract, "TesseractNotFoundError", RuntimeError) as exc:
         raise DocsReadOcrUnavailableError(_TESSERACT_HINT) from exc
 
@@ -524,7 +535,9 @@ def _read_image(path: Path) -> list[dict[str, Any]]:
     return [page]
 
 
-def _read_pdf(path: Path, *, ocr: bool, pages: str | None) -> tuple[list[dict[str, Any]], bool]:
+def _read_pdf(
+    path: Path, *, ocr: bool, pages: str | None, photo: bool = False
+) -> tuple[list[dict[str, Any]], bool]:
     pdfplumber = _import_pdfplumber()
     budget = _BudgetGuard()
     try:
@@ -535,14 +548,23 @@ def _read_pdf(path: Path, *, ocr: bool, pages: str | None) -> tuple[list[dict[st
             for page_index in selected_pages:
                 page = document.pages[page_index - 1]
                 text = str(page.extract_text() or "").strip()
+                passes, conflict = 0, False
                 if ocr and not text:
-                    text = _ocr_pdf_page(path, page_index=page_index)
+                    text, passes, conflict = _ocr_pdf_page(path, page_index=page_index, photo=photo)
                     ocr_used = True
                 budget.add(text)
                 tables = [
                     _table_rows(table, budget=budget) for table in page.extract_tables() or []
                 ]
-                extracted_page = {"index": page_index, "tables": tables, "text": text}
+                extracted_page: dict[str, Any] = {
+                    "index": page_index,
+                    "tables": tables,
+                    "text": text,
+                }
+                if photo and passes and not text.strip():
+                    extracted_page["ocr_passes"] = passes
+                if conflict:
+                    extracted_page["sign_conflict"] = True
                 extracted_pages.append(extracted_page)
     except DocsReadOcrUnavailableError, DocsReadOversizeError, ValueError:
         raise

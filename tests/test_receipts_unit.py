@@ -119,7 +119,13 @@ def _reader(text: str, *, ocr_used: bool = True, warning: Any = None):
     calls: list[dict[str, Any]] = []
 
     async def reader(
-        *, config: Any, path: str, pages: Any = None, sheet: Any = None, ocr: bool = False
+        *,
+        config: Any,
+        path: str,
+        pages: Any = None,
+        sheet: Any = None,
+        ocr: bool = False,
+        photo: bool = False,
     ):
         calls.append({"ocr": ocr, "path": path})
         return {
@@ -163,7 +169,13 @@ def test_a_pdf_without_text_is_retried_with_ocr(tmp_path: Path) -> None:
     seen: list[bool] = []
 
     async def reader(
-        *, config: Any, path: str, pages: Any = None, sheet: Any = None, ocr: bool = False
+        *,
+        config: Any,
+        path: str,
+        pages: Any = None,
+        sheet: Any = None,
+        ocr: bool = False,
+        photo: bool = False,
     ):
         seen.append(ocr)
         text = _COFFEE if ocr else "   "

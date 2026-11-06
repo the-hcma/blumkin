@@ -188,7 +188,7 @@ async def read_receipt(
         blank_pages = _blank_pages(payload)
         if suffix == ".pdf" and blank_pages:
             try:
-                payload = await reader(config=config, path=str(path), ocr=True)
+                payload = await reader(config=config, path=str(path), ocr=True, photo=True)
                 text = _joined_text(payload)
                 blank_pages = _blank_pages(payload)
             except DocsReadOcrUnavailableError, DocsReadExtraMissingError:
@@ -229,20 +229,23 @@ async def read_receipt(
             f"{detail}; tell me the vendor, date and total.",
         )
     fields = parse_receipt_text(text)
-    message = ""
+    messages: list[str] = []
     if any(page.get("sign_conflict") for page in payload.get("pages") or []):
-        message = (
+        note = (
             "The OCR passes disagree about a minus sign or brackets, so this may be a refund "
             "or credit; check every amount against the receipt."
         )
-        fields = _distrust(fields, message)
+        messages.append(note)
+        fields = _distrust(fields, note)
     if blank_pages:
         total_pages = len(payload.get("pages") or [])
-        message = (
+        note = (
             f"{len(blank_pages)} of {total_pages} pages had no text and could not be read, so "
             "fields may be missing; check every amount against the receipt."
         )
-        fields = _distrust(fields, message)
+        messages.append(note)
+        fields = _distrust(fields, note)
+    message = " ".join(messages)
     return ReceiptReading(
         fields=fields,
         injection_warning=payload.get("injection_warning"),
@@ -328,9 +331,20 @@ _MONTH_LABEL = {
 }
 _NEGATIVE_AMOUNT = re.compile(
     r"[-\u2212\u2013\u2014]\s*[^\d\s]{0,3}\s*\d|\(\s*[^\d\s()]{0,3}\s*\d[\d .,]*\)|"
-    r"\d\s*[-\u2212]\s*$|\b(?:cr|credit)\b"
+    r"\d\s*[-\u2212]\s*$|\b(?:cr|credit)\b",
+    re.IGNORECASE,
 )
 _NOISE_LETTERS = "OoIlSBZ|"
+#: A card line that is a balance or a reference, not a payment (`Gift card balance $2.00`).
+_NOT_PAID_LINE = re.compile(
+    r"\b(?:balance|gift|remaining|reward|rewards|points?|saving|savings)\b", re.IGNORECASE
+)
+#: A line that says what was charged to a card.
+_PAID_LINE = re.compile(
+    r"\b(?:amex|american\s+express|card|debit|mastercard|visa)\b", re.IGNORECASE
+)
+#: A line that looks like a total line even when OCR garbled the rest of it (`Totaliatt`).
+_TOTAL_LOOKING_LINE = re.compile(r"\btot", re.IGNORECASE)
 _REFUND_WORDS = re.compile(r"\b(?:credit\s+(?:memo|note)|refund(?:ed)?|reversal|void(?:ed)?)\b")
 _INCLUDING = re.compile(r"\b(?:inc|incl|including|inclusive)\b")
 _MAX_AMOUNT_RUN = 30
@@ -655,6 +669,13 @@ def _parse_total(text: str) -> ReceiptField:
 
 
 def _guess_total(text: str) -> ReceiptField:
+    paid = _paid_amounts(text)
+    if paid:
+        return ReceiptField(
+            confidence=Confidence.LOW,
+            value=max(paid, key=Decimal),
+            note="no total line found; this is the card charge a total-looking line repeats",
+        )
     amounts = [_parse_amount(run) for run in _AMOUNT_RUN.findall(text)]
     guesses = [a.value for a in amounts if a.value is not None and a.has_decimals]
     if not guesses:
@@ -664,6 +685,36 @@ def _guess_total(text: str) -> ReceiptField:
         value=max(guesses, key=Decimal),
         note="no total line found; this is the largest amount on the receipt",
     )
+
+
+def _paid_amounts(text: str) -> list[str]:
+    """Amounts charged to a card that a total-looking line repeats.
+
+    A total line OCR garbled beyond reading still leaves its amount, which the card line then
+    repeats; that agreement is what makes the card line trustworthy. An amount on a card line
+    that only an item or a subtotal repeats may be half of a split payment, a credit or a
+    balance, so it is not used.
+    """
+    on_payment: list[str] = []
+    elsewhere: set[str] = set()
+    for raw in text.splitlines():
+        amounts = [_parse_amount(run) for run in _AMOUNT_RUN.findall(raw)]
+        clear = [a.value for a in amounts if a.value and a.has_decimals and not a.doubtful]
+        if len(clear) != 1:
+            continue  # no amount, or several: which one the line means is a guess
+        if _TAX_WORDS.search(raw.casefold()):
+            continue  # a tax amount is never what was charged
+        if _PAID_LINE.search(raw):
+            refund = _NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold())
+            if not refund and not _NOT_PAID_LINE.search(raw):
+                on_payment.append(clear[0])
+        elif (
+            _TOTAL_LOOKING_LINE.search(raw)
+            and not _NOT_A_TOTAL.search(raw.casefold())
+            and not _NEGATIVE_AMOUNT.search(raw)
+        ):
+            elsewhere.add(clear[0])
+    return [value for value in on_payment if value in elsewhere]
 
 
 def _parse_vendor(text: str, sender: str | None = None) -> ReceiptField:
