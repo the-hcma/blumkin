@@ -56,7 +56,7 @@ _PAGE = """
 """
 
 
-def _driver(page, browser, landmarks):  # noqa: ANN001, ANN202
+def _driver(page, browser, landmarks, *, in_form=False):  # noqa: ANN001, ANN202
     from blumkin.browser.cdp import PlaywrightDriver
     from blumkin.browser.guard import GuardedDriver, GuardPolicy
 
@@ -64,6 +64,7 @@ def _driver(page, browser, landmarks):  # noqa: ANN001, ANN202
     policy = GuardPolicy(
         allowed_controls=frozenset({"Save", "Cancel"}),
         dialog_confirm=frozenset({"OK"}),
+        dialog_confirm_in_form=in_form,
         dialog_landmarks=landmarks,
     )
     return GuardedDriver(raw, policy)
@@ -131,5 +132,45 @@ def test_each_popup_is_found_by_its_own_group_of_landmarks() -> None:
             assert page.evaluate("window.searchOk") is True
             both.click("OK", nth=1)
             assert page.evaluate("window.okPressed") is True
+        finally:
+            browser.close()
+
+
+_POST_PAGE = """
+<form id=report method=post onsubmit="window.submitted = true; return false">
+  <button type=submit>Submit</button>
+  <div id=popup>
+    <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+    <button type=submit onclick="window.okPressed = true">OK</button>
+  </div>
+</form>
+<form id=whole method=post onsubmit="window.wholeSubmitted = true; return false">
+  <a href="#" role=button>Add</a> <a href="#" role=button>Delete</a>
+  <button type=submit>OK</button>
+</form>
+"""
+
+
+def test_the_opt_in_clicks_a_popup_in_a_post_form_but_never_the_form_itself() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_POST_PAGE)
+            off = _driver(page, browser, (("Add", "Delete"),))
+            with pytest.raises(SubmitBlockedError):
+                off.click("OK", nth=1)
+
+            on = _driver(page, browser, (("Add", "Delete"),), in_form=True)
+            with pytest.raises(SubmitBlockedError):
+                on.click("OK", nth=2)
+            assert page.evaluate("window.wholeSubmitted") is None
         finally:
             browser.close()

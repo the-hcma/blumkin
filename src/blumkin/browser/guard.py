@@ -647,7 +647,9 @@ class GuardedDriver:
                     )
                 # A popup found by its landmarks sits in the page's own form, so a button that
                 # cannot submit anything (not a submit control) is judged by what the popup holds.
-                in_form = self._confirm_in_form and info.form_method == "post"
+                in_form = (
+                    self._confirm_in_form and info.form_method == "post" and not info.dialog_is_form
+                )
                 if not info.form_in_dialog and not (
                     info.dialog_landmark and (in_form or not _is_submit_control(info))
                 ):
@@ -670,7 +672,10 @@ class GuardedDriver:
             dialog_confirm=confirm,
             draft_control=draft,
             in_form_ok=(
-                self._confirm_in_form and info.dialog_landmark and info.form_method == "post"
+                self._confirm_in_form
+                and info.dialog_landmark
+                and info.form_method == "post"
+                and not info.dialog_is_form
             ),
         )
         if reason is not None:

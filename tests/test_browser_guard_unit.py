@@ -1912,9 +1912,11 @@ def _landmark_ok(
     submit: bool,
     dialog_controls: tuple[str, ...] = ("Add", "Delete", "OK"),
     form_method: str = "post",
+    dialog_is_form: bool = False,
 ):
     return ControlInfo(
         form_method=form_method,
+        dialog_is_form=dialog_is_form,
         tag="button" if submit else "a",
         input_type="submit" if submit else "",
         in_form=submit,
@@ -1963,6 +1965,16 @@ def test_a_task_that_opted_in_clicks_a_submit_type_confirm_in_a_landmark_popup()
 def test_the_opt_in_never_spares_a_popup_in_a_form_that_submits_by_get() -> None:
     raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
     raw.controls["OK"] = _landmark_ok(submit=True, form_method="get")
+
+    with pytest.raises(SubmitBlockedError, match="form is not the dialog's"):
+        driver.click("OK")
+
+    assert raw.calls == []
+
+
+def test_the_opt_in_never_spares_a_container_that_is_the_form_itself() -> None:
+    raw, driver = _guard(confirm=("OK",), landmarks=("Add", "Delete"), in_form=True)
+    raw.controls["OK"] = _landmark_ok(submit=True, dialog_is_form=True)
 
     with pytest.raises(SubmitBlockedError, match="form is not the dialog's"):
         driver.click("OK")

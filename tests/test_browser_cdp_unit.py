@@ -3279,6 +3279,7 @@ class _NetRoute:
         self.request = SimpleNamespace(
             frame=frame,
             headers={"content-type": content_type},
+            resource_type="document",
             is_navigation_request=lambda: navigation,
             method=method,
             url=url,
@@ -3376,7 +3377,9 @@ def test_a_counted_upload_post_closes_the_window_and_stops_the_wait() -> None:
     assert driver._uploading is False  # type: ignore[attr-defined]
     assert driver._upload_posts == 1  # type: ignore[attr-defined]
     # Two polls until the post, then the grace period.
-    assert len(waited) == 3 and waited[-1] > waited[0]
+    from blumkin.browser.cdp import _UPLOAD_POST_GRACE_MS, _UPLOAD_POST_POLL_MS
+
+    assert waited == [_UPLOAD_POST_POLL_MS, _UPLOAD_POST_POLL_MS, _UPLOAD_POST_GRACE_MS]
 
 
 def test_a_page_that_never_posts_costs_only_the_capped_wait() -> None:
@@ -3530,6 +3533,75 @@ def test_upload_closes_the_window_whatever_goes_wrong_while_setting_the_file() -
     )
 
     with pytest.raises(RuntimeError):
+        driver.upload("File Name", Path(__file__).resolve())
+
+    assert driver._uploading is False  # type: ignore[attr-defined]
+
+
+def test_an_unwritable_net_log_does_not_block_the_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import _navigation_net
+
+    monkeypatch.setenv("BLUMKIN_BROWSER_NET_LOG", str(tmp_path))  # a directory: not writable
+    page = SimpleNamespace(url="https://erp.example.com/app/page")
+    route = _NetRoute(
+        method="POST", url="https://erp.example.com/app/upload", navigation=True, child=True
+    )
+
+    _navigation_net(page, lambda: False)(route)
+
+    assert route.outcome == "fulfilled 204"
+
+
+def test_the_net_log_is_created_private_and_drops_path_parameters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import stat
+
+    from blumkin.browser.cdp import _log_swallowed
+
+    request = _NetRoute(
+        method="POST",
+        url="https://erp.example.com/a/b;jsessionid=SECRET?x=1",
+        navigation=True,
+        child=False,
+    ).request
+    target = tmp_path / "net.log"
+    monkeypatch.setenv("BLUMKIN_BROWSER_NET_LOG", str(target))
+
+    _log_swallowed(request)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert "SECRET" not in target.read_text()
+
+
+def test_an_error_while_waiting_for_the_upload_post_is_a_browser_action_error() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: SimpleNamespace(set_input_files=lambda path, timeout: None)
+    )
+
+    def closed() -> None:
+        raise PlaywrightError("page closed")
+
+    driver._hold_for_upload_post = closed  # type: ignore[attr-defined]
+
+    with pytest.raises(BrowserActionError, match="wait after uploading"):
         driver.upload("File Name", Path(__file__).resolve())
 
     assert driver._uploading is False  # type: ignore[attr-defined]

@@ -297,6 +297,8 @@ class ControlInfo:
     dialog_controls_complete: bool = True
     #: The method of the form the element sits in, lower case (`post`, `get`), empty with none.
     form_method: str = ""
+    #: The container found by the landmarks is the form itself, not a popup inside it.
+    dialog_is_form: bool = False
     #: The "dialog" is not marked as one by the page: it is the smallest container around the
     #: element that holds every control the task declared as a dialog landmark.
     dialog_landmark: bool = False
@@ -1440,7 +1442,12 @@ class PlaywrightDriver:
             except _playwright_error() as exc:
                 raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
             if self._net_handler is self._lenient_net:
-                self._hold_for_upload_post()
+                try:
+                    self._hold_for_upload_post()
+                except _playwright_error() as exc:
+                    raise self._action_error(
+                        f"wait after uploading to the field labelled {label!r}", exc
+                    ) from exc
             return self._observe_upload(handle, resolved.name, hidden, before)
         finally:
             self._uploading = False
@@ -1646,6 +1653,7 @@ class PlaywrightDriver:
             dialog_controls_complete=bool(raw.get("dialogComplete", True)),
             dialog_landmark=bool(raw.get("dialogLandmark", False)),
             form_method=str(raw.get("formMethod", "")),
+            dialog_is_form=bool(raw.get("dialogIsForm", False)),
             own_names=tuple(str(text) for text in raw.get("ownNames", ()) or ()),
             own_names_complete=bool(raw.get("ownComplete", True)),
         )
@@ -2878,6 +2886,7 @@ _DESCRIBE_CONTROL_JS = (
     "onclick: String(e.getAttribute('onclick') || ''), "
     "target: String(e.getAttribute('target') || ''), "
     "dialog: !!d, formInDialog: !!d && (!f || (d.contains(f) && !(viaLandmark && d === f))), "
+    "dialogIsForm: !!d && viaLandmark && d === f, "
     "dialogControls: names, dialogComplete: complete, dialogLandmark: viaLandmark}; }"
 )
 
@@ -2953,22 +2962,25 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
 def _log_swallowed(request: Any) -> None:
     """Append what the safety net swallowed to the file `BLUMKIN_BROWSER_NET_LOG` names.
 
-    A diagnostic for a click that seems to do nothing: the method, the path (no query string,
-    no body, no header), the resource type and whether it was a navigation. Off unless set.
+    A diagnostic for a click that seems to do nothing: the method, the host, the last part of
+    the path (no `;parameters`, no query string, no body, no header), the resource type and
+    whether it was a navigation and from a child frame. Off unless set; a new file is created
+    private (mode 0600), and a failure to write is ignored.
     """
     target = os.environ.get("BLUMKIN_BROWSER_NET_LOG")
     if not target:
         return
     try:
-        path = urlsplit(str(request.url)).path[-120:]
+        parts = urlsplit(str(request.url))
+        path = parts.path.split(";", 1)[0][-120:]
         navigation = request.is_navigation_request()
         child = request.frame.parent_frame is not None
-        host = urlsplit(str(request.url)).hostname
         line = (
-            f"{request.method} {host}{path} {request.resource_type} "
+            f"{request.method} {parts.hostname}{path} {request.resource_type} "
             f"nav={navigation} frame={child}\n"
         )
-        with open(target, "a", encoding="utf-8") as handle:
+        descriptor = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
             handle.write(line)
     except OSError, ValueError, _playwright_error():
         return
