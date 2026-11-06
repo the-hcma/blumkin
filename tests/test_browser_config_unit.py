@@ -383,6 +383,41 @@ def test_dialog_confirm_names_are_parsed_and_default_to_none(
     assert tasks["time-sheet"].dialog_confirm == ()
 
 
+def test_dialog_landmarks_are_one_group_or_a_group_per_popup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\ndialog_landmarks = ["Add", "Delete"]\n\n'
+        "[browser.tasks.time-sheet]\n"
+        'dialog_landmarks = [["Add", "Delete"], ["Reset", "Search"]]\n\n'
+        "[browser.tasks.other]\n\n",
+    )
+
+    tasks = load_config().browser.tasks
+
+    assert tasks["expense-report"].dialog_landmarks == (("Add", "Delete"),)
+    assert tasks["time-sheet"].dialog_landmarks == (("Add", "Delete"), ("Reset", "Search"))
+    assert tasks["other"].dialog_landmarks == ()
+
+
+def test_dialog_confirm_in_form_is_parsed_and_defaults_to_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        "[browser.tasks.expense-report]\ndialog_confirm_in_form = true\n\n"
+        "[browser.tasks.time-sheet]\n\n",
+    )
+
+    tasks = load_config().browser.tasks
+
+    assert tasks["expense-report"].dialog_confirm_in_form is True
+    assert tasks["time-sheet"].dialog_confirm_in_form is False
+
+
 def test_allow_all_controls_is_parsed_and_defaults_to_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

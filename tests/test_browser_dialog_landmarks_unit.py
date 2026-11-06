@@ -49,6 +49,10 @@ _PAGE = """
   <button type=submit form=report>Submit</button>
   <a href="#" role=button onclick="window.bigOk = true; return false">OK</a>
 </div>
+<div id=search>
+  <a href="#" role=button>Reset</a> <a href="#" role=button>Search</a>
+  <a href="#" role=button onclick="window.searchOk = true; return false">OK</a>
+</div>
 """
 
 
@@ -99,5 +103,33 @@ def test_ok_is_clicked_in_the_popup_with_the_landmarks_and_nowhere_else() -> Non
                     driver.click("OK", nth=nth)
             assert page.evaluate("window.wholeSubmitted") is None
             assert page.evaluate("window.wrappedSubmit") is None
+        finally:
+            browser.close()
+
+
+def test_each_popup_is_found_by_its_own_group_of_landmarks() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_PAGE)
+            only_attachments = _driver(page, browser, (("Add", "Delete"),))
+            search_ok = page.get_by_role("button", name="OK", exact=True).count()  # the last one
+            with pytest.raises(SubmitBlockedError):
+                only_attachments.click("OK", nth=search_ok)
+            assert page.evaluate("window.searchOk") is None
+
+            both = _driver(page, browser, (("Add", "Delete"), ("Reset", "Search")))
+            both.click("OK", nth=search_ok)
+            assert page.evaluate("window.searchOk") is True
+            both.click("OK", nth=1)
+            assert page.evaluate("window.okPressed") is True
         finally:
             browser.close()

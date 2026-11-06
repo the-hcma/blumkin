@@ -3261,3 +3261,52 @@ def test_a_control_lookup_that_never_answers_is_bounded_whatever_the_wait(
     with pytest.raises(BrowserActionError, match="may or may not have happened"):
         driver.matching_roles("Save", ["button"], 0)
     assert time.monotonic() - started < 3
+
+
+class _NetRoute:
+    def __init__(self, *, method: str, url: str, navigation: bool, child: bool) -> None:
+        from types import SimpleNamespace
+
+        frame = SimpleNamespace(parent_frame=object() if child else None)
+        self.request = SimpleNamespace(
+            frame=frame,
+            is_navigation_request=lambda: navigation,
+            method=method,
+            url=url,
+        )
+        self.outcome = ""
+
+    def continue_(self) -> None:
+        self.outcome = "continued"
+
+    def fulfill(self, *, status: int) -> None:
+        self.outcome = f"fulfilled {status}"
+
+
+def _net_outcome(uploading: bool, **request: object) -> str:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import _navigation_net
+
+    page = SimpleNamespace(url="https://erp.example.com/app/page")
+    base = {
+        "method": "POST",
+        "url": "https://erp.example.com/app/upload",
+        "navigation": True,
+        "child": True,
+    }
+    route = _NetRoute(**{**base, **request})  # type: ignore[arg-type]
+    _navigation_net(page, lambda: uploading)(route)
+    return route.outcome
+
+
+def test_the_net_lets_a_child_frame_post_through_only_while_an_upload_runs() -> None:
+    assert _net_outcome(True) == "continued"
+    assert _net_outcome(False) == "fulfilled 204"
+
+
+def test_the_net_still_swallows_other_posts_during_an_upload() -> None:
+    assert _net_outcome(True, child=False) == "fulfilled 204"
+    assert _net_outcome(True, url="https://evil.example.net/upload") == "fulfilled 204"
+    assert _net_outcome(True, method="PUT") == "fulfilled 204"
+    assert _net_outcome(True, navigation=False, method="POST") == "continued"

@@ -185,8 +185,15 @@ class BrowserTaskPolicy:
     #: Oracle ADF attachments popup with its `Add` and `Delete` toolbar): the smallest container
     #: around a `dialog_confirm` button that holds a control of each name is judged as a dialog,
     #: by what it holds, so a container that also holds `Submit` never qualifies. At least two
-    #: names, so one common word cannot mark a whole page.
-    dialog_landmarks: tuple[str, ...] = ()
+    #: names, so one common word cannot mark a whole page. A list of such lists names several
+    #: popups (attachments, the expense location search): each group is tried on its own.
+    dialog_landmarks: tuple[tuple[str, ...], ...] = ()
+    #: Off by default: let a `dialog_confirm` button that is a submit control be clicked in a
+    #: popup found by `dialog_landmarks` even though the popup sits inside the page's own form
+    #: (Oracle ADF draws its popup `OK` as a submit button in the report's form). The popup is
+    #: still refused when it holds a finalizing control, or the button carries a formaction
+    #: override or a submitting handler.
+    dialog_confirm_in_form: bool = False
     #: Exact accessible names of buttons the user has verified only recalculate what is on the
     #: page (the mileage form's `Calculate`). Such a button may be clicked although it is a
     #: submit-type control in the page's form; a formaction override, a script link, a
@@ -709,6 +716,7 @@ _TASK_POLICY_KEYS = frozenset(
         "allowed_hosts",
         "block_background_writes",
         "dialog_confirm",
+        "dialog_confirm_in_form",
         "dialog_landmarks",
         "download_dirs",
         "draft_controls",
@@ -861,6 +869,12 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"{prefix}.block_background_writes must be true or false in config.toml, "
                 f"got {strict!r}"
             )
+        confirm_in_form = table.get("dialog_confirm_in_form", False)
+        if not isinstance(confirm_in_form, bool):
+            raise ProviderConfigError(
+                f"{prefix}.dialog_confirm_in_form must be true or false in config.toml, "
+                f"got {confirm_in_form!r}"
+            )
         picks_account = table.get("sign_in_account", False)
         if not isinstance(picks_account, bool):
             raise ProviderConfigError(
@@ -889,7 +903,8 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 table.get("allowed_controls"), f"{prefix}.allowed_controls"
             ),
             dialog_confirm=_string_list(table.get("dialog_confirm"), f"{prefix}.dialog_confirm"),
-            dialog_landmarks=_string_list(
+            dialog_confirm_in_form=confirm_in_form,
+            dialog_landmarks=_string_groups(
                 table.get("dialog_landmarks"), f"{prefix}.dialog_landmarks"
             ),
             draft_controls=_string_list(table.get("draft_controls"), f"{prefix}.draft_controls"),
@@ -1481,6 +1496,14 @@ def _policy_folders(table: dict[str, Any], key: str, prefix: str) -> tuple[str, 
                 f"{prefix}.{key} must not be the filesystem root in config.toml, got {entry!r}"
             )
     return entries
+
+
+def _string_groups(value: Any, key: str) -> tuple[tuple[str, ...], ...]:
+    """A list of names (one group) or a list of such lists (one group per popup)."""
+    if isinstance(value, list) and value and all(isinstance(item, list) for item in value):
+        return tuple(_string_list(item, key) for item in value)
+    names = _string_list(value, key)
+    return (names,) if names else ()
 
 
 def _string_list(value: Any, key: str) -> tuple[str, ...]:

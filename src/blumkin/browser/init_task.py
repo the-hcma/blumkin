@@ -43,7 +43,7 @@ class TaskTemplate:
     #: Buttons that confirm a dialog's own rows (valid only inside a dialog).
     dialog_confirm: tuple[str, ...] = ()
     #: Controls that together mark a popup the page does not flag as a dialog.
-    dialog_landmarks: tuple[str, ...] = ()
+    dialog_landmarks: tuple[tuple[str, ...], ...] = ()
     #: Names that stay finalizing for this site although the guard's own list lacks them
     #: (`Clear Time Card` wipes the card): written as `extra_deny_names`.
     extra_deny_names: tuple[str, ...] = ()
@@ -77,7 +77,7 @@ TEMPLATES: dict[str, TaskTemplate] = {
         ),
         allowed_hosts=(),
         dialog_confirm=("OK",),
-        dialog_landmarks=("Add", "Delete"),
+        dialog_landmarks=(("Add", "Delete"), ("Reset", "Search")),
         name="expense-report",
         needs_host=True,
         next_steps=(
@@ -221,7 +221,8 @@ def render_table(
     if template.dialog_confirm:
         lines.append(f"dialog_confirm = {_toml_list(template.dialog_confirm)}")
     if template.dialog_landmarks:
-        lines.append(f"dialog_landmarks = {_toml_list(template.dialog_landmarks)}")
+        groups = ", ".join(_toml_list(group) for group in template.dialog_landmarks)
+        lines.append(f"dialog_landmarks = [{groups}]")
     if template.extra_deny_names:
         lines.append(f"extra_deny_names = {_toml_list(template.extra_deny_names)}")
     folders = template.upload_dirs if upload_dirs is None else upload_dirs

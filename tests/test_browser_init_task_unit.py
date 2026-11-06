@@ -371,7 +371,7 @@ def test_the_expense_report_table_holds_the_hosts_controls_confirm_folder_and_fo
     policy = load_browser_setup().browser.tasks["expense-report"]
     assert policy.allowed_hosts == ("erp.example.com",)
     assert policy.dialog_confirm == ("OK",)
-    assert policy.dialog_landmarks == ("Add", "Delete")
+    assert policy.dialog_landmarks == (("Add", "Delete"), ("Reset", "Search"))
     assert policy.upload_dirs == ("~/receipts",)
     assert policy.form_url == "https://erp.example.com/expenses"
     assert "Create Report" in policy.allowed_controls
