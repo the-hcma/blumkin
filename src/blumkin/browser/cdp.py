@@ -634,6 +634,14 @@ class PlaywrightDriver:
                 # The accessible name a prefix matched can come from anywhere (a label elsewhere,
                 # an aria-label): the element's own accessibility snapshot holds all of it.
                 shown = str(locator.aria_snapshot(timeout=self._timeout_ms))
+                # The snapshot belongs to what the locator matches now: it must still be the
+                # element that was described, or the names checked are not the clicked one's.
+                again = locator.element_handle(timeout=self._timeout_ms)
+                if not handle.evaluate("(a, b) => a === b", again):
+                    raise BrowserActionError(
+                        f"Expected the {role} named {name!r} to stay the same element while "
+                        "it was checked, got another one; nothing was clicked"
+                    )
                 info = dataclasses.replace(
                     info,
                     own_names=(*info.own_names, shown[:_PICK_SNAPSHOT_CHARS]),

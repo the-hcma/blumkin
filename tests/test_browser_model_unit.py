@@ -1331,6 +1331,7 @@ def test_a_pick_step_round_trips_with_a_role_and_a_prefix_match(tmp_path: Path) 
     [
         ({"bind": "city", "role": "button"}, "row or gridcell"),
         ({"bind": "city", "match": "contains"}, "exact or prefix"),
+        ({"bind": "city", "match": ""}, "exact or prefix"),
     ],
 )
 def test_a_bad_pick_role_or_match_is_refused(
