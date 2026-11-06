@@ -139,7 +139,9 @@ class BrowserDriver(Protocol):
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None: ...
 
-    def pick(self, text: str, role: str = "row", nth: int | None = None) -> None: ...
+    def pick(
+        self, text: str, role: str = "row", nth: int | None = None, prefix: bool = False
+    ) -> None: ...
 
     def pick_account(
         self,
@@ -614,6 +616,7 @@ class PlaywrightDriver:
         role: str,
         vet: Callable[[ControlInfo], None],
         nth: int | None = None,
+        prefix: bool = False,
     ) -> None:
         """Choose a row (or cell) by its text; `vet` also learns whether it holds a control.
 
@@ -622,7 +625,7 @@ class PlaywrightDriver:
         it would take the click too, so `holds_controls` tells the guard when the row holds,
         sits inside or is made of one (see `_PICK_BLOCKERS_JS`).
         """
-        handle = self._resolve(name, role, nth)
+        handle = self._resolve(name, role, nth, prefix=prefix)
         try:
             info = dataclasses.replace(
                 self._describe(handle), holds_controls=bool(handle.evaluate(_PICK_BLOCKERS_JS))
@@ -1663,11 +1666,18 @@ class PlaywrightDriver:
             own_names_complete=bool(raw.get("ownComplete", True)),
         )
 
-    def _resolve(self, name: str, role: str, nth: int | None) -> Any:
-        """The one element of `role` named exactly `name` (the `nth` match when given)."""
+    def _resolve(self, name: str, role: str, nth: int | None, *, prefix: bool = False) -> Any:
+        """The one element of `role` named exactly `name` (the `nth` match when given).
+
+        With `prefix` its name only has to start with `name` (case-sensitive): a list row whose
+        name carries a date or an author after the text the caller knows.
+        """
         self._require_open()
         try:
-            locator = self._page.get_by_role(role, name=name, exact=True)
+            if prefix:
+                locator = self._page.get_by_role(role, name=re.compile(f"^{re.escape(name)}"))
+            else:
+                locator = self._page.get_by_role(role, name=name, exact=True)
             if nth is not None:
                 # `nth` is not strict like a plain lookup, so look again right before the
                 # click: the page may have changed since `matching_roles` counted.
@@ -2145,6 +2155,7 @@ class RawBrowserDriver(Protocol):
         role: str,
         vet: Callable[[ControlInfo], None],
         nth: int | None = None,
+        prefix: bool = False,
     ) -> None: ...
 
     def close(self) -> None: ...

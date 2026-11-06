@@ -214,3 +214,34 @@ def test_two_popups_in_one_form_are_each_found_by_their_own_group() -> None:
             assert page.evaluate("window.attachOk") is True
         finally:
             browser.close()
+
+
+_LIST_PAGE = """
+<ul role=grid>
+  <li role=row><div role=gridcell tabindex=0
+      onclick="window.picked = 'probe'">blumkin-probe Created By Henrique 11/06/2026</div></li>
+  <li role=row><div role=gridcell tabindex=0
+      onclick="window.picked = 'other'">blumkin-other Created By Henrique 11/06/2026</div></li>
+</ul>
+"""
+
+
+def test_a_prefix_pick_chooses_the_gridcell_whose_name_starts_with_the_text() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LIST_PAGE)
+            driver = _driver(page, browser, ())
+
+            driver.pick("blumkin-probe", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") == "probe"
+        finally:
+            browser.close()

@@ -61,6 +61,7 @@ class _Raw:
         self.probes: list[tuple[str, tuple[str, ...], float]] = []
         #: The `nth` each lookup and each click was given.
         self.nths: list[int | None] = []
+        self.prefixes: list[bool] = []
         self.url = "https://erp.example.com/expenses"
 
     def matching_roles(
@@ -96,10 +97,16 @@ class _Raw:
         self.background_writes = background_writes
 
     def checked_pick(
-        self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        nth: int | None = None,
+        prefix: bool = False,
     ) -> None:
         vet(self.controls.get(name, _PLAIN))
         self.nths.append(nth)
+        self.prefixes.append(prefix)
         self.calls.append(("pick", role, name))
 
     def checked_click(
@@ -1893,6 +1900,29 @@ def test_pick_refuses_a_role_that_is_a_control_and_a_bad_nth() -> None:
     with pytest.raises(ValueError, match="positive whole number"):
         driver.pick("Boston", "row", 0)
     assert raw.calls == []
+
+
+def test_a_prefix_pick_reaches_the_driver_and_checks_the_whole_name() -> None:
+    raw, driver = _guard()
+    raw.controls["blumkin-probe"] = ControlInfo(
+        tag="div",
+        input_type="",
+        in_form=False,
+        own_names=("blumkin-probe Created By Henrique 11/06/2026",),
+    )
+    driver.pick("blumkin-probe", "gridcell", None, True)
+    assert raw.prefixes == [True]
+
+    raw.controls["Template"] = ControlInfo(
+        tag="div",
+        input_type="",
+        in_form=False,
+        own_names=("Template then Submit now",),
+    )
+    with pytest.raises(SubmitBlockedError, match="full text"):
+        driver.pick("Template", "gridcell", None, True)
+    # An exact pick looks only at the text it was given, as before.
+    driver.pick("Template", "gridcell")
 
 
 def test_pick_refuses_a_finalizing_text_and_needs_no_declaration() -> None:

@@ -1042,6 +1042,33 @@ def test_the_default_runner_picks_a_row_by_a_bound_text_or_a_literal_and_hides_t
     assert "withheld" in str(caught.value)
 
 
+def test_a_pick_step_passes_its_role_and_prefix_match_to_the_pick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    seen: list[dict[str, Any]] = []
+
+    def fake_pick(config: Any, task: str, text: str, **kwargs: Any) -> dict:
+        seen.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(actions, "pick_task", fake_pick)
+    run = ledger_ops._default_run_step("time-sheet")
+
+    run(FlowStep(action="pick", control=None, expect=None, page=None, bind="name"),
+        {"name": "blumkin-probe"})  # fmt: skip
+    run(FlowStep(action="pick", control=None, expect=None, page=None, bind="name",
+                 role="gridcell", match="prefix"), {"name": "blumkin-probe"})  # fmt: skip
+
+    assert seen == [
+        {"prefix": False, "role": "row"},
+        {"prefix": True, "role": "gridcell"},
+    ]
+
+
 def test_a_bound_pick_text_with_a_backslash_never_appears_in_any_form(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
