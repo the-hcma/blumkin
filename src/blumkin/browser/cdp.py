@@ -625,11 +625,21 @@ class PlaywrightDriver:
         it would take the click too, so `holds_controls` tells the guard when the row holds,
         sits inside or is made of one (see `_PICK_BLOCKERS_JS`).
         """
-        handle = self._resolve(name, role, nth, prefix=prefix)
+        handle, locator = self._resolve_with_locator(name, role, nth, prefix=prefix)
         try:
             info = dataclasses.replace(
                 self._describe(handle), holds_controls=bool(handle.evaluate(_PICK_BLOCKERS_JS))
             )
+            if prefix:
+                # The accessible name a prefix matched can come from anywhere (a label elsewhere,
+                # an aria-label): the element's own accessibility snapshot holds all of it.
+                shown = str(locator.aria_snapshot(timeout=self._timeout_ms))
+                info = dataclasses.replace(
+                    info,
+                    own_names=(*info.own_names, shown[:_PICK_SNAPSHOT_CHARS]),
+                    own_names_complete=info.own_names_complete
+                    and len(shown) <= _PICK_SNAPSHOT_CHARS,
+                )
             vet(info)
             handle.click(timeout=self._timeout_ms, no_wait_after=True)
         except _playwright_error() as exc:
@@ -1672,6 +1682,12 @@ class PlaywrightDriver:
         With `prefix` its name only has to start with `name` (case-sensitive): a list row whose
         name carries a date or an author after the text the caller knows.
         """
+        return self._resolve_with_locator(name, role, nth, prefix=prefix)[0]
+
+    def _resolve_with_locator(
+        self, name: str, role: str, nth: int | None, *, prefix: bool = False
+    ) -> tuple[Any, Any]:
+        """The element `_resolve` finds, and the locator that found it."""
         self._require_open()
         try:
             if prefix:
@@ -1687,7 +1703,7 @@ class PlaywrightDriver:
                         f"Expected at least {nth} {role}s named {name!r}, got {count}"
                     )
                 locator = locator.nth(nth - 1)
-            return locator.element_handle(timeout=self._timeout_ms)
+            return locator.element_handle(timeout=self._timeout_ms), locator
         except _playwright_error() as exc:
             raise self._action_error(f"find the {role} named {name!r}", exc) from exc
 
@@ -2776,6 +2792,8 @@ _CELL_JS = r"""
 _CELL_COMMIT_POLLS = 4
 #: How long `upload` waits for the frame post a chosen file may start (polls of this many
 #: milliseconds), and how long it lets that post finish.
+#: Most characters of a matched element's accessibility snapshot a prefix pick checks.
+_PICK_SNAPSHOT_CHARS = 2000
 _UPLOAD_POST_POLL_MS = 250
 _UPLOAD_POST_POLLS = 16
 _UPLOAD_POST_GRACE_MS = 2000

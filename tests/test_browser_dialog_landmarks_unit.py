@@ -245,3 +245,35 @@ def test_a_prefix_pick_chooses_the_gridcell_whose_name_starts_with_the_text() ->
             assert page.evaluate("window.picked") == "probe"
         finally:
             browser.close()
+
+
+_LABELLED_PAGE = """
+<span id=hidden aria-label="Template Submit now"></span>
+<ul role=grid>
+  <li role=row><div role=gridcell tabindex=0 aria-labelledby=hidden
+      onclick="window.picked = 'labelled'">Template</div></li>
+</ul>
+"""
+
+
+def test_a_prefix_pick_refuses_a_name_that_only_a_label_elsewhere_makes_final() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LABELLED_PAGE)
+            driver = _driver(page, browser, ())
+
+            with pytest.raises(SubmitBlockedError):
+                driver.pick("Template", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") is None
+        finally:
+            browser.close()
