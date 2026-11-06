@@ -705,7 +705,11 @@ def _paid_amounts(text: str) -> list[str]:
             refund = _NEGATIVE_AMOUNT.search(raw) or _REFUND_WORDS.search(raw.casefold())
             if not refund and not _NOT_PAID_LINE.search(raw):
                 on_payment.append(clear[0])
-        elif _TOTAL_LOOKING_LINE.search(raw):
+        elif (
+            _TOTAL_LOOKING_LINE.search(raw)
+            and not _NOT_A_TOTAL.search(raw.casefold())
+            and not _NEGATIVE_AMOUNT.search(raw)
+        ):
             elsewhere.add(clear[0])
     return [value for value in on_payment if value in elsewhere]
 

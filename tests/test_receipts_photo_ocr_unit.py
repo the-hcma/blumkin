@@ -482,3 +482,13 @@ def test_a_total_looking_line_with_two_amounts_does_not_back_a_card_charge() -> 
 
     assert "card charge" not in total.note
     assert total.value == "40.00"
+
+
+def test_a_subtotal_or_credit_line_does_not_back_a_card_charge() -> None:
+    from blumkin.receipts import parse_receipt_text
+
+    subtotal = parse_receipt_text("Item $20.00\nSub Total $17.00\nVisa $17.00\nPaid $18.60\n").total
+    credit = parse_receipt_text("Item $20.00\nTotal credit -$17.00\nVisa $17.00\n").total
+
+    assert "card charge" not in subtotal.note
+    assert "card charge" not in credit.note
