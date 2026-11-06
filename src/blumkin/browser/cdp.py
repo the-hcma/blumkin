@@ -295,10 +295,10 @@ class ControlInfo:
     #: False when the dialog held more controls, or longer names, than were collected: nothing
     #: can then be said about what the dialog holds.
     dialog_controls_complete: bool = True
-    #: The "dialog" is not marked as one by the page: it is the smallest container around the
-    #: element that holds every control the task declared as a dialog landmark.
     #: The method of the form the element sits in, lower case (`post`, `get`), empty with none.
     form_method: str = ""
+    #: The "dialog" is not marked as one by the page: it is the smallest container around the
+    #: element that holds every control the task declared as a dialog landmark.
     dialog_landmark: bool = False
     #: Set by `checked_pick` only: the element holds, sits inside or is made of a control.
     holds_controls: bool = False
@@ -1399,7 +1399,8 @@ class PlaywrightDriver:
         """Keep the net open until the frame post of a chosen file shows up, for a short while.
 
         Oracle ADF sends the file from a hidden frame a moment after it is chosen, so the post
-        can arrive after `set_input_files` returned. A page that never posts costs the cap.
+        can arrive after `set_input_files` returned. A page that never posts costs the cap, and
+        nothing is waited for in strict mode, where the net lets nothing through.
         """
         for _ in range(_UPLOAD_POST_POLLS):
             if self._upload_posts:
@@ -1438,7 +1439,8 @@ class PlaywrightDriver:
             self._uploading = False
             raise self._action_error(f"upload to the field labelled {label!r}", exc) from exc
         try:
-            self._hold_for_upload_post()
+            if self._net_handler is self._lenient_net:
+                self._hold_for_upload_post()
             return self._observe_upload(handle, resolved.name, hidden, before)
         finally:
             self._uploading = False

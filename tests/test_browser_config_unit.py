@@ -418,6 +418,19 @@ def test_dialog_confirm_in_form_is_parsed_and_defaults_to_off(
     assert tasks["time-sheet"].dialog_confirm_in_form is False
 
 
+def test_dialog_confirm_in_form_must_be_true_or_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        '[browser.tasks.expense-report]\ndialog_confirm_in_form = "yes"\n\n',
+    )
+
+    with pytest.raises(ProviderConfigError, match="dialog_confirm_in_form"):
+        load_config()
+
+
 def test_allow_all_controls_is_parsed_and_defaults_to_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

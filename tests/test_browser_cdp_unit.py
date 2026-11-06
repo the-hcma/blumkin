@@ -3356,6 +3356,7 @@ def _bare_driver(page: object):  # noqa: ANN202
     driver._page = page  # type: ignore[attr-defined]
     driver._upload_posts = 0  # type: ignore[attr-defined]
     driver._uploading = True  # type: ignore[attr-defined]
+    driver._timeout_s = 1.0  # type: ignore[attr-defined]
     return driver
 
 
@@ -3412,3 +3413,96 @@ def test_swallowed_writes_are_logged_only_when_a_file_is_named(
     line = target.read_text()
     assert line.startswith("POST erp.example.com/a/b document nav=True frame=True")
     assert "secret" not in line
+
+
+def test_upload_opens_the_window_for_the_set_files_call_and_closes_it_after() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    seen: dict[str, object] = {}
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+
+    def set_files(path: str, timeout: int) -> None:
+        seen["during_set"] = driver._uploading  # type: ignore[attr-defined]
+
+    handle = SimpleNamespace(set_input_files=set_files)
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: handle
+    )
+    driver._hold_for_upload_post = lambda: seen.setdefault(  # type: ignore[attr-defined]
+        "held",
+        driver._uploading,  # type: ignore[attr-defined]
+    )
+
+    def observe(*args: object) -> str:
+        seen["during_observe"] = driver._uploading  # type: ignore[attr-defined]
+        return "observed"
+
+    driver._observe_upload = observe  # type: ignore[attr-defined]
+    path = Path(__file__).resolve()
+
+    assert driver.upload("File Name", path) == "observed"
+
+    assert seen == {"during_set": True, "held": True, "during_observe": True}
+    assert driver._uploading is False  # type: ignore[attr-defined]
+
+
+def test_upload_closes_the_window_when_setting_the_file_fails() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import BrowserActionError
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+
+    def boom(path: str, timeout: int) -> None:
+        raise PlaywrightError("detached")
+
+    handle = SimpleNamespace(set_input_files=boom)
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: handle
+    )
+
+    with pytest.raises(BrowserActionError):
+        driver.upload("File Name", Path(__file__).resolve())
+
+    assert driver._uploading is False  # type: ignore[attr-defined]
+
+
+def test_strict_mode_waits_for_no_upload_post() -> None:
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    driver = _bare_driver(None)
+    driver._uploading = False  # type: ignore[attr-defined]
+    driver._timeout_ms = 1000  # type: ignore[attr-defined]
+    driver._net_handler = object()  # strict: not the lenient net
+    driver._lenient_net = object()  # type: ignore[attr-defined]
+    driver._require_open = lambda: None  # type: ignore[attr-defined]
+    driver._scope = lambda target: None  # type: ignore[attr-defined]
+    driver._still_allowed = lambda scope, target: None  # type: ignore[attr-defined]
+    driver._probe = lambda *args: None  # type: ignore[attr-defined]
+    driver._field = lambda scope, label, target: SimpleNamespace(  # type: ignore[attr-defined]
+        element_handle=lambda timeout: SimpleNamespace(set_input_files=lambda path, timeout: None)
+    )
+    held: list[bool] = []
+    driver._hold_for_upload_post = lambda: held.append(True)  # type: ignore[attr-defined]
+    driver._observe_upload = lambda *args: "observed"  # type: ignore[attr-defined]
+
+    driver.upload("File Name", Path(__file__).resolve())
+
+    assert held == []
