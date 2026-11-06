@@ -1501,7 +1501,12 @@ def _policy_folders(table: dict[str, Any], key: str, prefix: str) -> tuple[str, 
 def _string_groups(value: Any, key: str) -> tuple[tuple[str, ...], ...]:
     """A list of names (one group) or a list of such lists (one group per popup)."""
     if isinstance(value, list) and value and all(isinstance(item, list) for item in value):
-        return tuple(_string_list(item, key) for item in value)
+        groups = tuple(_string_list(item, key) for item in value)
+        if not all(groups):
+            raise ProviderConfigError(
+                f"{key} must not hold an empty list of names in config.toml, got {value!r}"
+            )
+        return groups
     names = _string_list(value, key)
     return (names,) if names else ()
 

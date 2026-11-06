@@ -83,6 +83,8 @@ TEMPLATES: dict[str, TaskTemplate] = {
         next_steps=(
             "Check the controls in config.toml against what your expense form shows; they are the "
             "names of the Oracle Fusion Expenses flow; none is a finalizing name.",
+            "If a popup's submit-type `OK` is refused inside the report form, review the safety "
+            "limits in docs/browser-tasks.md before setting `dialog_confirm_in_form = true`.",
             "Launch the browser and open the form: `blumkin browser launch {task} --open` (needs "
             "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
             "Record each page and dialog the flow passes through, one at a time: stay on the "

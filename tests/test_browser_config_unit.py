@@ -402,6 +402,19 @@ def test_dialog_landmarks_are_one_group_or_a_group_per_popup(
     assert tasks["other"].dialog_landmarks == ()
 
 
+def test_an_empty_landmark_group_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _config(
+        tmp_path,
+        monkeypatch,
+        "[browser.tasks.expense-report]\ndialog_landmarks = [[]]\n\n",
+    )
+
+    with pytest.raises(ProviderConfigError, match="empty list"):
+        load_config()
+
+
 def test_dialog_confirm_in_form_is_parsed_and_defaults_to_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
