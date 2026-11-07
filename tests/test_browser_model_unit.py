@@ -1440,6 +1440,18 @@ def test_a_pageless_select_step_is_judged_by_the_control_the_runner_finds(
         _load_payload(tmp_path, _with_select(payload, "expense.type", bind="kind"))
 
 
+def test_a_select_step_naming_a_selector_only_button_is_refused(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    page = payload["pages"][0]
+    button = copy.deepcopy(page["controls"][0])
+    button["name"] = "expense.type"
+    button["locators"] = [{"strategy": "css", "value": "#type"}]
+    page["controls"].append(button)
+
+    with pytest.raises(SiteModelError, match="to name a dropdown"):
+        _load_payload(tmp_path, _with_select(payload, "expense.type", bind="kind"))
+
+
 def test_a_select_step_must_name_a_dropdown(tmp_path: Path) -> None:
     payload = _with_select(_payload(tmp_path), "expense.add", bind="kind")
 

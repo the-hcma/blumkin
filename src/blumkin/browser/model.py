@@ -1175,9 +1175,14 @@ def _pick_options(
 
 
 def _recorded_kind(pages: Mapping[str, Page], control: str, page: str | None) -> ControlKind | None:
-    """The kind of the control the runner will find: the first of that name (on the page, or on
+    """The kind of the control a step names.
+
+    The control the runner will find comes first: the first of that name (on the page, or on
     the first page that has it) with a role-and-name or a label locator, as `_control_ref` does.
+    When none of them has one, the runner takes the name as written, and the first control of
+    that name still says what the step names.
     """
+    fallback: ControlKind | None = None
     for known_page in pages.values():
         if page is not None and known_page.page_id != page:
             continue
@@ -1189,7 +1194,9 @@ def _recorded_kind(pages: Mapping[str, Page], control: str, page: str | None) ->
                 for locator in known.locators
             ):
                 return known.kind
-    return None
+            if fallback is None:
+                fallback = known.kind
+    return fallback
 
 
 def _recorded_role(pages: Mapping[str, Page], control: str, page: str | None) -> str | None:
