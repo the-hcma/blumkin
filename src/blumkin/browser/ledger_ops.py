@@ -683,6 +683,29 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                 config, task, label, values[key], settle=False, **_field_kw(field_role, recorded)
             )
             return
+        if action == "select":
+            if not step.control:
+                raise LedgerError("Flow step 'select' needs a control")
+            if step.bind is not None:
+                if step.bind not in values:
+                    raise LedgerError(f"Expected a value for {step.bind!r}, got none")
+                option = values[step.bind]
+            else:
+                option = step.value or ""
+            if not option:
+                raise LedgerError("Flow step 'select' needs the option to choose")
+            label, field_role, recorded = _control_ref(site, step.control, step.page)
+            try:
+                actions.select_task(
+                    config, task, label, option, settle=False, **_field_kw(field_role, recorded)
+                )
+            except BrowserActionError as exc:
+                if step.bind is None:
+                    raise
+                # The option a parameter supplied is the user's data: the error names the
+                # parameter, not the option.
+                raise _rescrubbed(exc, step, values) from None
+            return
         if action == "verify":
             if not step.control:
                 raise LedgerError("Flow step 'verify' needs a control")

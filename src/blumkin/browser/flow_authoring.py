@@ -33,13 +33,13 @@ STEP_KEYS = frozenset(
 )
 #: The actions a flow step can have: what the ledger runner knows how to do.
 ACTIONS = frozenset(
-    {"cell", "click", "fill", "goto", "handoff", "pick", "press", "upload", "verify"}
+    {"cell", "click", "fill", "goto", "handoff", "pick", "press", "select", "upload", "verify"}
 )
 #: The most steps and parameters a spec may carry (the model's own limits are checked on save).
 _MAX_PARAMS = 12
 _MAX_STEPS = 200
 #: Actions whose second word, when it has no `=`, is the control they act on.
-_CONTROL_ACTIONS = frozenset({"click", "fill", "press", "upload", "verify"})
+_CONTROL_ACTIONS = frozenset({"click", "fill", "press", "select", "upload", "verify"})
 
 
 class FlowSpecError(ValueError):

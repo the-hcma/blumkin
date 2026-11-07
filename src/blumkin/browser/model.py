@@ -514,16 +514,18 @@ _HOST = re.compile(
     r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*"
 )
 _LOCK_FILENAME = ".lock"
-#: The steps a flow parameter can feed: a value typed into a field, a file chosen for upload, or
-#: a value a field is checked against (`verify`, which changes nothing).
-_BOUND_ACTIONS = frozenset({"fill", "upload", "verify"})
+#: The steps a flow parameter can feed: a value typed into a field, an option chosen in a
+#: dropdown, a file chosen for upload, or a value a field is checked against (`verify`, which
+#: changes nothing).
+_BOUND_ACTIONS = frozenset({"fill", "select", "upload", "verify"})
 _CELL = "cell"
 _HANDOFF = "handoff"
 _PICK = "pick"
+_SELECT = "select"
 _VERIFY = "verify"
 #: The steps that can state a heading the page must show afterwards.
 _HEADING_ACTIONS = frozenset(
-    {"cell", "click", "fill", "goto", "handoff", "pick", "press", "upload"}
+    {"cell", "click", "fill", "goto", "handoff", "pick", "press", "select", "upload"}
 )
 _LOGICAL_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
 _MAX_CELL_REF = 80
@@ -1065,10 +1067,10 @@ def _step(
         bind = _text(bind, f"{where}.bind", pattern=_LOGICAL_NAME, what="a logical name")
         if action not in _BOUND_ACTIONS and action not in (_CELL, _PICK):
             raise SiteModelError(
-                f"Expected {where}.bind only on a fill, upload, verify, cell or pick step, "
-                f"got it on {action!r}"
+                f"Expected {where}.bind only on a fill, select, upload, verify, cell or pick "
+                f"step, got it on {action!r}"
             )
-        if action in (_CELL, _PICK) and literal is not None:
+        if action in (_CELL, _PICK, _SELECT) and literal is not None:
             raise SiteModelError(f"Expected {where} with a bind or a value, not both")
         if bind not in declared:
             raise SiteModelError(
@@ -1084,7 +1086,7 @@ def _step(
                 f"Expected {where}.bind of a {'file' if action == 'upload' else 'non-file'} "
                 f"parameter for a {action} step, got {_shown(bind)}"
             )
-    elif declared and action in _BOUND_ACTIONS:
+    elif declared and action in _BOUND_ACTIONS and not (action == _SELECT and literal):
         raise SiteModelError(
             f"Expected {where} to bind a parameter (the flow declares params), got none"
         )
@@ -1094,6 +1096,13 @@ def _step(
         )
     if action == _PICK and bind is None and literal is None:
         raise SiteModelError(f"Expected a pick step to have a bind or a value in {where}, got none")
+    if action == _SELECT and (bind is None) == (literal is None):
+        raise SiteModelError(
+            f"Expected a select step to have a bind or a value, not both and not neither, "
+            f"in {where}"
+        )
+    if action == _SELECT and data["control"] is None:
+        raise SiteModelError(f"Expected a select step to name a control in {where}")
     control = data["control"]
     page = data["page"]
     if control is not None:
@@ -1109,6 +1118,13 @@ def _step(
         if control is not None and control not in {c.name for c in pages[page].controls}:
             raise SiteModelError(
                 f"Expected a control that belongs to page {page} in {where}, got {_shown(control)}"
+            )
+    if action == _SELECT and control is not None:
+        kind = _recorded_kind(pages, control, page)
+        if kind is not None and kind is not ControlKind.SELECT:
+            raise SiteModelError(
+                f"Expected a select step in {where} to name a dropdown, got {_shown(control)} "
+                f"recorded as a {kind.value}"
             )
     if action == _VERIFY and control is not None:
         role = _recorded_role(pages, control, page)
@@ -1158,6 +1174,17 @@ def _pick_options(
     return match, role
 
 
+def _recorded_kind(pages: Mapping[str, Page], control: str, page: str | None) -> ControlKind | None:
+    """The kind a control is recorded with on the page (or the first page that has it)."""
+    for known_page in pages.values():
+        if page is not None and known_page.page_id != page:
+            continue
+        for known in known_page.controls:
+            if known.name == control:
+                return known.kind
+    return None
+
+
 def _recorded_role(pages: Mapping[str, Page], control: str, page: str | None) -> str | None:
     """The role a control is recorded with, when its role-and-name locator gives one."""
     for known_page in pages.values():
@@ -1180,6 +1207,13 @@ def _cell_keys(
     if action == _PICK:
         if data["control"] is not None or any(key != "value" for key in present):
             raise SiteModelError(f"Expected a pick step with only a bind or a value in {where}")
+        text = data.get("value")
+        if text is None:
+            return None, None, None
+        return None, None, _text(text, f"{where}.value", max_len=_MAX_CELL_VALUE, plain=True)
+    if action == _SELECT:
+        if any(key != "value" for key in present):
+            raise SiteModelError(f"Expected a select step with only a bind or a value in {where}")
         text = data.get("value")
         if text is None:
             return None, None, None

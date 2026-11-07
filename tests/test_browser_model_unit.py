@@ -1011,7 +1011,7 @@ def test_a_model_without_parameters_keeps_its_stored_shape(tmp_path: Path) -> No
         (lambda f: f.update(params=f["params"] * 4), "Expected at most"),
         (
             lambda f: f["steps"][0].update(bind="date"),
-            "only on a fill, upload, verify, cell or pick",
+            "only on a fill, select, upload, verify, cell or pick",
         ),
         (lambda f: f["steps"][1].update(bind="file"), "non-file"),
         (lambda f: f["steps"][1].update(action="upload"), "of a file"),
@@ -1345,6 +1345,78 @@ def test_role_and_match_belong_to_pick_steps_only(tmp_path: Path) -> None:
     payload = _payload(tmp_path)
     payload["flows"][0]["steps"][0]["role"] = "gridcell"
     with pytest.raises(SiteModelError, match="only on a pick step"):
+        _load_payload(tmp_path, payload)
+
+
+def _select_control(page: dict[str, Any]) -> dict[str, Any]:
+    """A dropdown control shaped like the page's first control, so the payload stays valid."""
+    control = copy.deepcopy(page["controls"][0])
+    control["kind"] = "select"
+    control["name"] = "expense.type"
+    control["locators"] = [{"strategy": "role_name", "value": "combobox:Type"}]
+    return control
+
+
+def _with_select(payload: dict[str, Any], control: str, **step: Any) -> dict[str, Any]:
+    payload = copy.deepcopy(payload)
+    flow = payload["flows"][0]
+    flow["params"] = [{"kind": "text", "name": "kind"}]
+    for existing in flow["steps"]:
+        if existing["action"] in ("fill", "upload"):
+            existing["bind"] = "kind"
+    flow["steps"].append(
+        {"action": "select", "control": control, "expect": None, "page": None, **step}
+    )
+    return payload
+
+
+def test_a_select_step_round_trips_with_a_bound_option(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    page = payload["pages"][0]
+    page["controls"].append(_select_control(page))
+    loaded = _load_payload(tmp_path, _with_select(payload, "expense.type", bind="kind"))
+    assert loaded is not None
+    step = loaded.flows[0].steps[-1]
+    assert (step.action, step.control, step.bind) == ("select", "expense.type", "kind")
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+def test_a_select_step_can_carry_a_literal_option_when_the_flow_binds_other_steps(
+    tmp_path: Path,
+) -> None:
+    payload = _payload(tmp_path)
+    page = payload["pages"][0]
+    page["controls"].append(_select_control(page))
+    literal = _with_select(payload, "expense.type", value="Meals")
+
+    loaded = _load_payload(tmp_path, literal)
+
+    assert loaded is not None
+    step = loaded.flows[0].steps[-1]
+    assert (step.bind, step.value) == (None, "Meals")
+
+
+@pytest.mark.parametrize(
+    ("step", "match"),
+    [
+        ({}, "to bind a parameter"),
+        ({"bind": "kind", "value": "Meals"}, "bind or a value, not both"),
+        ({"bind": "kind", "row": "1"}, "only a bind or a value"),
+    ],
+)
+def test_a_bad_select_step_is_refused(tmp_path: Path, step: dict[str, Any], match: str) -> None:
+    payload = _payload(tmp_path)
+    payload["pages"][0]["controls"].append(_select_control(payload["pages"][0]))
+    with pytest.raises(SiteModelError, match=match):
+        _load_payload(tmp_path, _with_select(payload, "expense.type", **step))
+
+
+def test_a_select_step_must_name_a_dropdown(tmp_path: Path) -> None:
+    payload = _with_select(_payload(tmp_path), "expense.add", bind="kind")
+
+    with pytest.raises(SiteModelError, match="to name a dropdown"):
         _load_payload(tmp_path, payload)
 
 
