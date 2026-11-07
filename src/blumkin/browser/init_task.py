@@ -42,6 +42,10 @@ class TaskTemplate:
     allowed_hosts: tuple[str, ...]
     #: Buttons that confirm a dialog's own rows (valid only inside a dialog).
     dialog_confirm: tuple[str, ...] = ()
+    #: Whether a submit-type confirm may be clicked in a landmark popup inside the page's own
+    #: POST form (Oracle draws the `OK` of its popups that way): written as
+    #: `dialog_confirm_in_form = true`.
+    dialog_confirm_in_form: bool = False
     #: Controls that together mark a popup the page does not flag as a dialog.
     dialog_landmarks: tuple[tuple[str, ...], ...] = ()
     #: Names that stay finalizing for this site although the guard's own list lacks them
@@ -77,14 +81,20 @@ TEMPLATES: dict[str, TaskTemplate] = {
         ),
         allowed_hosts=(),
         dialog_confirm=("OK",),
+        # Oracle draws the `OK` of the attachments popup and of the location search inside the
+        # report's own form; the landmarks name each popup and the guard still refuses a popup
+        # that holds a finalizing control (validated live on #622, see docs/browser-tasks.md).
+        dialog_confirm_in_form=True,
         dialog_landmarks=(("Add", "Delete"), ("Reset", "Search")),
         name="expense-report",
         needs_host=True,
         next_steps=(
             "Check the controls in config.toml against what your expense form shows; they are the "
             "names of the Oracle Fusion Expenses flow; none is a finalizing name.",
-            "If a popup's submit-type `OK` is refused inside the report form, review the safety "
-            "limits in docs/browser-tasks.md before setting `dialog_confirm_in_form = true`.",
+            "The template sets `dialog_confirm_in_form = true` so a popup's submit-type `OK` "
+            "(the attachments dialog, the location search) can be clicked inside the report "
+            "form; read the safety limits in docs/browser-tasks.md and remove the line if your "
+            "form submits through its own script.",
             "Launch the browser and open the form: `blumkin browser launch {task} --open` (needs "
             "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
             "Record each page and dialog the flow passes through, one at a time: stay on the "
@@ -222,6 +232,8 @@ def render_table(
     lines.append(f"allowed_controls = {_toml_list(template.allowed_controls)}")
     if template.dialog_confirm:
         lines.append(f"dialog_confirm = {_toml_list(template.dialog_confirm)}")
+    if template.dialog_confirm_in_form:
+        lines.append("dialog_confirm_in_form = true")
     if template.dialog_landmarks:
         groups = ", ".join(_toml_list(group) for group in template.dialog_landmarks)
         lines.append(f"dialog_landmarks = [{groups}]")
