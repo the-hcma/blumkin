@@ -102,3 +102,41 @@ def test_text_with_nothing_after_it_matches_no_header_and_text_text_reaches_a_te
             assert element.inner_text().strip() == "a27" and meta["column"] == 2
         finally:
             browser.close()
+
+
+def test_an_open_editor_is_one_in_edit_mode_or_holding_focus_not_any_visible_input() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser import cdp
+    from blumkin.browser.discovery import resolve_browser
+
+    html = (
+        "<oj-data-grid>"
+        "<div class='oj-datagrid-cell' id='a'><input id='ia' type='text'></div>"
+        "<div class='oj-datagrid-cell' id='b'><input id='ib' type='text'></div>"
+        "<div class='oj-datagrid-cell' id='c'><input id='ic' type='checkbox'></div>"
+        "</oj-data-grid>"
+    )
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(html)
+            # A visible input in a cell that is not in edit mode, with no focus: not an editor.
+            assert page.evaluate(cdp._CELL_EDITING_JS, 1) is False
+            # A cell in edit mode holds an editor, focused or not.
+            page.evaluate("document.getElementById('b').classList.add('oj-datagrid-cell-edit')")
+            assert page.evaluate(cdp._CELL_EDITING_JS, 1) is True
+            page.evaluate("document.getElementById('b').classList.remove('oj-datagrid-cell-edit')")
+            assert page.evaluate(cdp._CELL_EDITING_JS, 1) is False
+            # A focused input is an editor wherever it sits.
+            page.focus("#ia")
+            assert page.evaluate(cdp._CELL_EDITING_JS, 1) is True
+            # A checkbox is never an editor.
+            page.evaluate("document.getElementById('ia').blur()")
+            page.focus("#ic")
+            assert page.evaluate(cdp._CELL_EDITING_JS, 1) is False
+        finally:
+            browser.close()
