@@ -1009,7 +1009,8 @@ action, then its control when it acts on one (click, press, fill, select, upload
 key=value words (page, bind, expect, expect_heading, starts_on, instruction, row, column, value,
 role, match, nth; quote a value with spaces in the shell's own way). `nth=N` (1-based, in DOM
 order) says which of several same-named controls a click, press, fill, select, upload or verify
-step means; the step is refused with the real count when the page has fewer. The actions are
+step means; the step is refused with the real count when the page has fewer (a verify step
+reports it as missing). The actions are
 click, press, fill, select (choose an option in a dropdown, from a bind or a literal value),
 upload, goto, cell, pick (choose a result row or, with role=gridcell, a cell by its text, or by
 its start with match=prefix), verify (check that a field holds the value of a bound parameter,

@@ -555,6 +555,7 @@ def test_the_runner_passes_a_step_s_nth_on_to_every_action_that_takes_one(
     run(FlowStep(action="click", control="OK", nth=3, **base), {})
     run(FlowStep(action="fill", control="Title", bind="v", nth=2, **base), {"v": "x"})
     run(FlowStep(action="select", control="Type", value="Meals", nth=4, **base), {})
+    run(FlowStep(action="upload", control="File", bind="f", nth=2, **base), {"f": "r.pdf"})
     run(FlowStep(action="verify", control="Title", bind="v", nth=2, **base), {"v": "x"})
     run(FlowStep(action="click", control="Save", **base), {})
 
@@ -562,6 +563,7 @@ def test_the_runner_passes_a_step_s_nth_on_to_every_action_that_takes_one(
         ("click_task", 3),
         ("fill_task", 2),
         ("select_task", 4),
+        ("upload_task", 2),
         ("verify_task", 2),
         ("click_task", None),
     ]
