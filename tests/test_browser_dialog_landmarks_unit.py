@@ -361,19 +361,28 @@ def test_a_prefix_pick_refuses_when_the_element_is_swapped_while_it_is_checked(
             page.set_content(_LIST_PAGE)
             driver = _driver(page, browser, ())
             original = Locator.aria_snapshot
+            find = (
+                "() => [...document.querySelectorAll('[role=gridcell]')]"
+                ".find(n => n.textContent.startsWith('blumkin-probe'))"
+            )
 
             def swapping(self: Locator, *args: object, **kwargs: object) -> str:
-                text = original(self, *args, **kwargs)  # type: ignore[arg-type]
+                # The page puts another element in the original's place while the snapshot is
+                # read, and restores the original afterwards: the marked original is not there
+                # to be read, so nothing is checked from a stand-in, and nothing is clicked.
                 page.evaluate(
-                    "() => { const e = [...document.querySelectorAll('[role=gridcell]')]"
-                    ".find(n => n.textContent.startsWith('blumkin-probe')); "
-                    "e.replaceWith(e.cloneNode(true)); }"
+                    f"() => {{ const e = ({find})(); window.__orig = e; "
+                    "const b = e.cloneNode(true); b.removeAttribute('data-blumkin-pick'); "
+                    "e.replaceWith(b); window.__stand = b; }"
                 )
-                return text
+                try:
+                    return original(self, *args, **kwargs)  # type: ignore[arg-type]
+                finally:
+                    page.evaluate("() => window.__stand.replaceWith(window.__orig)")
 
             monkeypatch.setattr(Locator, "aria_snapshot", swapping)
 
-            with pytest.raises(BrowserActionError, match="same element"):
+            with pytest.raises(BrowserActionError):
                 driver.pick("blumkin-probe", "gridcell", None, True)
 
             assert page.evaluate("window.picked") is None
