@@ -214,3 +214,215 @@ def test_two_popups_in_one_form_are_each_found_by_their_own_group() -> None:
             assert page.evaluate("window.attachOk") is True
         finally:
             browser.close()
+
+
+_LIST_PAGE = """
+<ul role=grid>
+  <li role=row><div role=gridcell tabindex=0
+      onclick="window.picked = 'probe'">blumkin-probe Created By Henrique 11/06/2026</div></li>
+  <li role=row><div role=gridcell tabindex=0
+      onclick="window.picked = 'other'">blumkin-other Created By Henrique 11/06/2026</div></li>
+</ul>
+"""
+
+
+def test_a_prefix_pick_chooses_the_gridcell_whose_name_starts_with_the_text() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LIST_PAGE)
+            driver = _driver(page, browser, ())
+
+            driver.pick("blumkin-probe", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") == "probe"
+        finally:
+            browser.close()
+
+
+_LABELLED_PAGE = """
+<span id=hidden aria-label="Template Submit now"></span>
+<ul role=grid>
+  <li role=row><div role=gridcell tabindex=0 aria-labelledby=hidden
+      onclick="window.picked = 'labelled'">Template</div></li>
+</ul>
+"""
+
+
+def test_a_prefix_pick_refuses_a_name_that_only_a_label_elsewhere_makes_final() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LABELLED_PAGE)
+            driver = _driver(page, browser, ())
+
+            with pytest.raises(SubmitBlockedError):
+                driver.pick("Template", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") is None
+        finally:
+            browser.close()
+
+
+_LONG_PAGE = f"""
+<ul role=grid>
+  <li role=row>
+    <div role=gridcell tabindex=0 onclick="window.picked = 'long'">Template {"x " * 1500}</div>
+  </li>
+</ul>
+"""
+
+
+def test_a_prefix_pick_refuses_a_name_longer_than_the_snapshot_it_can_check() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+    from blumkin.browser.guard import SubmitBlockedError
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LONG_PAGE)
+            driver = _driver(page, browser, ())
+
+            with pytest.raises(SubmitBlockedError, match="more names than can be checked"):
+                driver.pick("Template", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") is None
+        finally:
+            browser.close()
+
+
+def test_an_exact_pick_does_not_read_the_accessibility_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from playwright.sync_api import Locator, sync_playwright
+
+    from blumkin.browser.discovery import resolve_browser
+
+    calls: list[object] = []
+    original = Locator.aria_snapshot
+
+    def counting(self: Locator, *args: object, **kwargs: object) -> str:
+        calls.append(self)
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Locator, "aria_snapshot", counting)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LIST_PAGE)
+            driver = _driver(page, browser, ())
+
+            driver.pick("blumkin-probe Created By Henrique 11/06/2026", "gridcell")
+            assert calls == []
+
+            driver.pick("blumkin-other", "gridcell", None, True)
+            assert len(calls) == 1
+        finally:
+            browser.close()
+
+
+def test_a_prefix_pick_refuses_when_the_element_is_swapped_while_it_is_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from playwright.sync_api import Locator, sync_playwright
+
+    from blumkin.browser.cdp import BrowserActionError
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LIST_PAGE)
+            driver = _driver(page, browser, ())
+            original = Locator.aria_snapshot
+            find = (
+                "() => [...document.querySelectorAll('[role=gridcell]')]"
+                ".find(n => n.textContent.startsWith('blumkin-probe'))"
+            )
+
+            def swapping(self: Locator, *args: object, **kwargs: object) -> str:
+                # The page puts another element in the original's place while the snapshot is
+                # read, and restores the original afterwards: the marked original is not there
+                # to be read, so nothing is checked from a stand-in, and nothing is clicked.
+                page.evaluate(
+                    f"() => {{ const e = ({find})(); window.__orig = e; "
+                    "const b = e.cloneNode(true); b.removeAttribute('data-blumkin-pick'); "
+                    "e.replaceWith(b); window.__stand = b; }"
+                )
+                try:
+                    return original(self, *args, **kwargs)  # type: ignore[arg-type]
+                finally:
+                    page.evaluate("() => window.__stand.replaceWith(window.__orig)")
+
+            monkeypatch.setattr(Locator, "aria_snapshot", swapping)
+
+            with pytest.raises(BrowserActionError):
+                driver.pick("blumkin-probe", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") is None
+        finally:
+            browser.close()
+
+
+def test_a_prefix_pick_refuses_when_a_clone_carries_the_mark_instead_of_the_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from playwright.sync_api import Locator, sync_playwright
+
+    from blumkin.browser.cdp import BrowserActionError
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LIST_PAGE)
+            driver = _driver(page, browser, ())
+            original = Locator.aria_snapshot
+
+            def cloning(self: Locator, *args: object, **kwargs: object) -> str:
+                text = original(self, *args, **kwargs)  # type: ignore[arg-type]
+                # The page replaces the marked element with a clone, which keeps the mark.
+                page.evaluate(
+                    "() => { const e = document.querySelector('[data-blumkin-pick]'); "
+                    "e.replaceWith(e.cloneNode(true)); }"
+                )
+                return text
+
+            monkeypatch.setattr(Locator, "aria_snapshot", cloning)
+
+            with pytest.raises(BrowserActionError, match="same element"):
+                driver.pick("blumkin-probe", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") is None
+            assert page.evaluate("document.querySelectorAll('[data-blumkin-pick]').length") == 0
+        finally:
+            browser.close()

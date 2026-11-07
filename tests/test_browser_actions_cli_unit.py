@@ -39,6 +39,7 @@ class _Raw:
 
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
+        self.prefixes: list[bool] = []
         #: What `edit_cell` reports the cell shows, when a test sets it.
         self.cell_text: str | None = None
         self.sign_ins: list[bool] = []
@@ -150,10 +151,16 @@ class _Raw:
             self.on_event(name)
 
     def checked_pick(
-        self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
+        self,
+        name: str,
+        role: str,
+        vet: Callable[[ControlInfo], None],
+        nth: int | None = None,
+        prefix: bool = False,
     ) -> None:
         vet(self.controls.get(name, ControlInfo(tag="tr", input_type="", in_form=False)))
         self.calls.append(("pick", role, name) if nth is None else ("pick", role, name, nth))
+        self.prefixes.append(prefix)
         if self.lands_on is not None:
             self.url = self.lands_on
 

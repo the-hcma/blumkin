@@ -319,8 +319,14 @@ class GuardedDriver:
         """Show the task's indicator on the page blumkin is attached to (on `hosts` only)."""
         self._raw.mark_window(task, hosts, blocked)
 
-    def pick(self, text: str, role: str = "row", nth: int | None = None) -> None:
+    def pick(
+        self, text: str, role: str = "row", nth: int | None = None, prefix: bool = False
+    ) -> None:
         """Choose the row or cell whose text is exactly `text`, such as a search result.
+
+        With `prefix` its text only has to start with `text` (a list row that goes on with a
+        date or an author); everything the element's own names say is then checked as well, so
+        a finalizing word after the prefix refuses it too.
 
         A result of a search (a list-of-values dialog) is page data, so it cannot be declared
         in advance, and that is why `pick` is for rows and cells only: an option or a tree item
@@ -339,6 +345,10 @@ class GuardedDriver:
             raise self._refuse(action, "its text is a finalizing action")
 
         def vet(info: ControlInfo) -> None:
+            if prefix and not info.own_names_complete:
+                raise self._refuse(action, "the element has more names than can be checked")
+            if prefix and any(_is_denied(held, self._deny) for held in info.own_names):
+                raise self._refuse(action, "its full text holds a finalizing action")
             if (
                 info.holds_controls
                 or info.tag in _PICK_CONTROL_TAGS
@@ -352,7 +362,7 @@ class GuardedDriver:
                 )
             self._vet_control(action, info, None, role)
 
-        self._raw.checked_pick(text, role, vet, nth=nth)
+        self._raw.checked_pick(text, role, vet, nth=nth, prefix=prefix)
 
     def pick_account(
         self,

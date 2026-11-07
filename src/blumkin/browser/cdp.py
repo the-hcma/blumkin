@@ -27,6 +27,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -139,7 +140,9 @@ class BrowserDriver(Protocol):
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
     ) -> None: ...
 
-    def pick(self, text: str, role: str = "row", nth: int | None = None) -> None: ...
+    def pick(
+        self, text: str, role: str = "row", nth: int | None = None, prefix: bool = False
+    ) -> None: ...
 
     def pick_account(
         self,
@@ -614,6 +617,7 @@ class PlaywrightDriver:
         role: str,
         vet: Callable[[ControlInfo], None],
         nth: int | None = None,
+        prefix: bool = False,
     ) -> None:
         """Choose a row (or cell) by its text; `vet` also learns whether it holds a control.
 
@@ -622,11 +626,47 @@ class PlaywrightDriver:
         it would take the click too, so `holds_controls` tells the guard when the row holds,
         sits inside or is made of one (see `_PICK_BLOCKERS_JS`).
         """
-        handle = self._resolve(name, role, nth)
+        handle, locator = self._resolve_with_locator(name, role, nth, prefix=prefix)
         try:
             info = dataclasses.replace(
                 self._describe(handle), holds_controls=bool(handle.evaluate(_PICK_BLOCKERS_JS))
             )
+            if prefix:
+                # The accessible name a prefix matched can come from anywhere (a label elsewhere,
+                # an aria-label): the element's own accessibility snapshot holds all of it.
+                # The element that will be clicked is marked with a one-time token, and the
+                # snapshot is read through that mark: a page that swaps in another element
+                # while it is read (even one that puts the original back) has no marked element
+                # to show, so the names checked are only ever the clicked element's.
+                # (A pick is always a lookup in the page's own document, as `_resolve` makes it,
+                # so the marked element is looked up there too.)
+                token = uuid.uuid4().hex
+                handle.evaluate("(e, t) => e.setAttribute('data-blumkin-pick', t)", token)
+                try:
+                    marked = self._page.locator(f'[data-blumkin-pick="{token}"]')
+                    shown = str(marked.aria_snapshot(timeout=self._timeout_ms))
+                    again = marked.element_handle(timeout=self._timeout_ms)
+                    if not handle.evaluate("(a, b) => a === b", again):
+                        raise BrowserActionError(
+                            f"Expected the {role} named {name!r} to stay the same element "
+                            "while it was checked, got another one; nothing was clicked"
+                        )
+                finally:
+                    # Every element that carries the token, not only the original: a page that
+                    # clones the element while it is read copies the attribute with it.
+                    with contextlib.suppress(_playwright_error()):
+                        self._page.evaluate(
+                            "t => document.querySelectorAll('[data-blumkin-pick]').forEach("
+                            "e => { if (e.getAttribute('data-blumkin-pick') === t) "
+                            "e.removeAttribute('data-blumkin-pick'); })",
+                            token,
+                        )
+                info = dataclasses.replace(
+                    info,
+                    own_names=(*info.own_names, shown[:_PICK_SNAPSHOT_CHARS]),
+                    own_names_complete=info.own_names_complete
+                    and len(shown) <= _PICK_SNAPSHOT_CHARS,
+                )
             vet(info)
             handle.click(timeout=self._timeout_ms, no_wait_after=True)
         except _playwright_error() as exc:
@@ -1663,11 +1703,24 @@ class PlaywrightDriver:
             own_names_complete=bool(raw.get("ownComplete", True)),
         )
 
-    def _resolve(self, name: str, role: str, nth: int | None) -> Any:
-        """The one element of `role` named exactly `name` (the `nth` match when given)."""
+    def _resolve(self, name: str, role: str, nth: int | None, *, prefix: bool = False) -> Any:
+        """The one element of `role` named exactly `name` (the `nth` match when given).
+
+        With `prefix` its name only has to start with `name` (case-sensitive): a list row whose
+        name carries a date or an author after the text the caller knows.
+        """
+        return self._resolve_with_locator(name, role, nth, prefix=prefix)[0]
+
+    def _resolve_with_locator(
+        self, name: str, role: str, nth: int | None, *, prefix: bool = False
+    ) -> tuple[Any, Any]:
+        """The element `_resolve` finds, and the locator that found it."""
         self._require_open()
         try:
-            locator = self._page.get_by_role(role, name=name, exact=True)
+            if prefix:
+                locator = self._page.get_by_role(role, name=re.compile(f"^{re.escape(name)}"))
+            else:
+                locator = self._page.get_by_role(role, name=name, exact=True)
             if nth is not None:
                 # `nth` is not strict like a plain lookup, so look again right before the
                 # click: the page may have changed since `matching_roles` counted.
@@ -1677,7 +1730,7 @@ class PlaywrightDriver:
                         f"Expected at least {nth} {role}s named {name!r}, got {count}"
                     )
                 locator = locator.nth(nth - 1)
-            return locator.element_handle(timeout=self._timeout_ms)
+            return locator.element_handle(timeout=self._timeout_ms), locator
         except _playwright_error() as exc:
             raise self._action_error(f"find the {role} named {name!r}", exc) from exc
 
@@ -2145,6 +2198,7 @@ class RawBrowserDriver(Protocol):
         role: str,
         vet: Callable[[ControlInfo], None],
         nth: int | None = None,
+        prefix: bool = False,
     ) -> None: ...
 
     def close(self) -> None: ...
@@ -2763,6 +2817,8 @@ _CELL_JS = r"""
 #: How often and how long a commit is waited for, and how often the options of a typed cell value
 #: are polled while they load.
 _CELL_COMMIT_POLLS = 4
+#: Most characters of a matched element's accessibility snapshot a prefix pick checks.
+_PICK_SNAPSHOT_CHARS = 2000
 #: How long `upload` waits for the frame post a chosen file may start (polls of this many
 #: milliseconds), and how long it lets that post finish.
 _UPLOAD_POST_POLL_MS = 250

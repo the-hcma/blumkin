@@ -1315,6 +1315,39 @@ def test_a_bad_pick_step_is_refused(tmp_path: Path, step: dict[str, Any], match:
         _load_payload(tmp_path, _with_pick(_payload(tmp_path), **step))
 
 
+def test_a_pick_step_round_trips_with_a_role_and_a_prefix_match(tmp_path: Path) -> None:
+    payload = _with_pick(_payload(tmp_path), bind="city", role="gridcell", match="prefix")
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None
+    step = loaded.flows[0].steps[-1]
+    assert (step.role, step.match) == ("gridcell", "prefix")
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+@pytest.mark.parametrize(
+    ("step", "match"),
+    [
+        ({"bind": "city", "role": "button"}, "row or gridcell"),
+        ({"bind": "city", "match": "contains"}, "exact or prefix"),
+        ({"bind": "city", "match": ""}, "exact or prefix"),
+    ],
+)
+def test_a_bad_pick_role_or_match_is_refused(
+    tmp_path: Path, step: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(SiteModelError, match=match):
+        _load_payload(tmp_path, _with_pick(_payload(tmp_path), **step))
+
+
+def test_role_and_match_belong_to_pick_steps_only(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["flows"][0]["steps"][0]["role"] = "gridcell"
+    with pytest.raises(SiteModelError, match="only on a pick step"):
+        _load_payload(tmp_path, payload)
+
+
 def test_a_dialog_page_with_no_landmarks_at_all_is_refused(tmp_path: Path) -> None:
     with pytest.raises(SiteModelError, match="at least two distinct"):
         _load_payload(tmp_path, _with_page_kind(_payload(tmp_path), kind="dialog"))

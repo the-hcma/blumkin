@@ -638,7 +638,13 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             if not chosen:
                 raise LedgerError("Flow step 'pick' needs the text of the row to choose")
             try:
-                actions.pick_task(config, task, chosen)
+                actions.pick_task(
+                    config,
+                    task,
+                    chosen,
+                    prefix=step.match == "prefix",
+                    role=step.role or "row",
+                )
             except BrowserActionError as exc:
                 if step.bind is None:
                     raise

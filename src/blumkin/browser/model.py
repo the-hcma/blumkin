@@ -106,6 +106,10 @@ class FlowStep:
     #: A heading the page must already show before the step runs; when it does not, the run
     #: stops without making the step (the step's own `expect_heading` is checked afterwards).
     starts_on: str | None = None
+    #: A `pick` step's kind of element (`row`, the default, or `gridcell`) and how its text
+    #: matches (`exact`, the default, or `prefix`: the element's name starts with the text).
+    match: str | None = None
+    role: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -679,6 +683,8 @@ def _flow_payload(flow: Flow) -> dict[str, Any]:
             | ({"column": step.column} if step.column is not None else {})
             | ({"value": step.value} if step.value is not None else {})
             | ({"starts_on": step.starts_on} if step.starts_on is not None else {})
+            | ({"match": step.match} if step.match is not None else {})
+            | ({"role": step.role} if step.role is not None else {})
             for step in flow.steps
         ],
     }
@@ -1008,6 +1014,8 @@ def _step(
             "column",
             "expect_heading",
             "instruction",
+            "match",
+            "role",
             "row",
             "starts_on",
             "value",
@@ -1112,6 +1120,7 @@ def _step(
     expect = data["expect"]
     if expect is not None:
         expect = _text(expect, f"{where}.expect", plain=True)
+    match, pick_role = _pick_options(data, where, action)
     return FlowStep(
         action=action,
         bind=bind,
@@ -1120,11 +1129,33 @@ def _step(
         expect=expect,
         expect_heading=expect_heading,
         instruction=instruction,
+        match=match,
         page=page,
+        role=pick_role,
         row=row,
         starts_on=starts_on,
         value=literal,
     )
+
+
+def _pick_options(
+    data: Mapping[str, Any], where: str, action: str
+) -> tuple[str | None, str | None]:
+    """The `match` and `role` of a `pick` step; neither is allowed on any other step."""
+    present = [key for key in ("match", "role") if data.get(key) is not None]
+    if action != _PICK:
+        if present:
+            raise SiteModelError(
+                f"Expected {where}.{present[0]} only on a pick step, got it on {action!r}"
+            )
+        return None, None
+    match = data.get("match")
+    if match is not None and match not in ("exact", "prefix"):
+        raise SiteModelError(f"Expected {where}.match to be exact or prefix, got {_shown(match)}")
+    role = data.get("role")
+    if role is not None and role not in ("gridcell", "row"):
+        raise SiteModelError(f"Expected {where}.role to be row or gridcell, got {_shown(role)}")
+    return match, role
 
 
 def _recorded_role(pages: Mapping[str, Page], control: str, page: str | None) -> str | None:

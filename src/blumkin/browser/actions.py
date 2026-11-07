@@ -742,9 +742,13 @@ def pick_task(
     text: str,
     *,
     nth: int | None = None,
+    prefix: bool = False,
     role: str = "row",
 ) -> dict[str, Any]:
     """Choose a row, option, tree item or cell by its exact text, such as a search result.
+
+    With `prefix` the element's name only has to start with the text, and a finalizing word
+    anywhere in its names refuses it.
 
     A list-of-values dialog shows its results as rows of a table, which are neither declared
     controls nor clickable ones. The text is page data, so it is not declared: it is refused
@@ -755,7 +759,7 @@ def pick_task(
     _require_declared_controls(config, task, text)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        driver.pick(text, role, nth)
+        driver.pick(text, role, nth, prefix)
         payload: dict[str, Any] = {
             "action": "pick",
             "ok": True,
