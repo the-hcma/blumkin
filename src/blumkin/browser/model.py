@@ -1058,8 +1058,8 @@ def _step(
             )
     if expect_heading is not None and action not in _HEADING_ACTIONS:
         raise SiteModelError(
-            f"Expected {where}.expect_heading only on a click, press, fill, upload, goto or "
-            f"handoff step, got it on {action!r}"
+            f"Expected {where}.expect_heading only on a cell, click, fill, goto, handoff, pick, "
+            f"press, select or upload step, got it on {action!r}"
         )
     row, column, literal = _cell_keys(data, where, action, declared)
     bind = data.get("bind")
@@ -1175,12 +1175,19 @@ def _pick_options(
 
 
 def _recorded_kind(pages: Mapping[str, Page], control: str, page: str | None) -> ControlKind | None:
-    """The kind a control is recorded with on the page (or the first page that has it)."""
+    """The kind of the control the runner will find: the first of that name (on the page, or on
+    the first page that has it) with a role-and-name or a label locator, as `_control_ref` does.
+    """
     for known_page in pages.values():
         if page is not None and known_page.page_id != page:
             continue
         for known in known_page.controls:
-            if known.name == control:
+            if known.name != control:
+                continue
+            if any(
+                locator.strategy in (LocatorStrategy.ROLE_NAME, LocatorStrategy.LABEL)
+                for locator in known.locators
+            ):
                 return known.kind
     return None
 

@@ -482,11 +482,11 @@ def verify_item(
     )
 
 
-def _withheld(exc: BrowserActionError, name: str) -> Exception:
+def _withheld(exc: BrowserActionError, name: str, what: str = "row") -> Exception:
     """An error of the same kind as `exc` that names the parameter and quotes nothing."""
     message = (
-        f"Expected to choose the row named by parameter {name!r}, got a failure "
-        f"({type(exc).__name__}); the row text is withheld"
+        f"Expected to choose the {what} named by parameter {name!r}, got a failure "
+        f"({type(exc).__name__}); the {what} text is withheld"
     )
     try:
         return type(exc)(message)
@@ -697,14 +697,20 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             label, field_role, recorded = _control_ref(site, step.control, step.page)
             try:
                 actions.select_task(
-                    config, task, label, option, settle=False, **_field_kw(field_role, recorded)
+                    config,
+                    task,
+                    label,
+                    option,
+                    private=step.bind is not None,
+                    settle=False,
+                    **_field_kw(field_role, recorded),
                 )
             except BrowserActionError as exc:
                 if step.bind is None:
                     raise
                 # The option a parameter supplied is the user's data: the error names the
-                # parameter, not the option.
-                raise _rescrubbed(exc, step, values) from None
+                # parameter and quotes nothing (a lookup error can hold part of the option).
+                raise _withheld(exc, step.bind, "option") from None
             return
         if action == "verify":
             if not step.control:

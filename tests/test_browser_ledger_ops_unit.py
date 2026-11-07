@@ -1052,9 +1052,11 @@ def test_a_select_step_chooses_a_bound_or_literal_option_and_hides_the_option(
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
     chosen: list[tuple[str, str]] = []
+    private: list[bool] = []
 
-    def fake_select(config: Any, task: str, label: str, option: str, **_: Any) -> dict:
+    def fake_select(config: Any, task: str, label: str, option: str, **kw: Any) -> dict:
         chosen.append((label, option))
+        private.append(kw["private"])
         if option == "Secret Type":
             raise BrowserActionError(f"Expected one option named {option}, got 0")
         return {}
@@ -1074,7 +1076,9 @@ def test_a_select_step_chooses_a_bound_or_literal_option_and_hides_the_option(
         run(FlowStep(action="select", control=None, expect=None, page=None, value="x"), {})
 
     assert [option for _, option in chosen] == ["Meals", "Taxi", "Secret Type"]
-    assert "Secret Type" not in str(caught.value) and "<kind>" in str(caught.value)
+    assert private == [True, False, True]
+    assert "Secret Type" not in str(caught.value) and "'kind'" in str(caught.value)
+    assert "withheld" in str(caught.value)
 
 
 def test_a_pick_step_passes_its_role_and_prefix_match_to_the_pick(

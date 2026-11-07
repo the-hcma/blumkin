@@ -1127,7 +1127,10 @@ def test_a_heading_can_only_be_stated_on_a_step_that_acts(tmp_path: Path) -> Non
     payload = _payload(tmp_path)
     payload["flows"][0]["steps"][0]["action"] = "landmark"
     payload["flows"][0]["steps"][0]["expect_heading"] = "Edit Expense Report"
-    with pytest.raises(SiteModelError, match="only on a click, press, fill, upload, goto or"):
+    with pytest.raises(
+        SiteModelError,
+        match="only on a cell, click, fill, goto, handoff, pick, press, select or upload",
+    ):
         _load_payload(tmp_path, payload)
 
 
@@ -1411,6 +1414,26 @@ def test_a_bad_select_step_is_refused(tmp_path: Path, step: dict[str, Any], matc
     payload["pages"][0]["controls"].append(_select_control(payload["pages"][0]))
     with pytest.raises(SiteModelError, match=match):
         _load_payload(tmp_path, _with_select(payload, "expense.type", **step))
+
+
+def test_a_pageless_select_step_is_judged_by_the_control_the_runner_finds(
+    tmp_path: Path,
+) -> None:
+    payload = _payload(tmp_path)
+    first = payload["pages"][0]
+    # On the first page the control of that name has only a selector: the runner skips it and
+    # finds the same name on the next page, where it is a button.
+    unusable = _select_control(first)
+    unusable["locators"] = [{"strategy": "css", "value": "#type"}]
+    first["controls"].append(unusable)
+    second = copy.deepcopy(first)
+    second["page_id"] = "other-page"
+    second["controls"] = [copy.deepcopy(first["controls"][0])]
+    second["controls"][0]["name"] = "expense.type"
+    payload["pages"].append(second)
+
+    with pytest.raises(SiteModelError, match="to name a dropdown"):
+        _load_payload(tmp_path, _with_select(payload, "expense.type", bind="kind"))
 
 
 def test_a_select_step_must_name_a_dropdown(tmp_path: Path) -> None:

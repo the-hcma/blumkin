@@ -444,9 +444,18 @@ class GuardedDriver:
         if start is not None:
             start()
 
-    def select(self, label: str, option: str, target: FieldTarget | None = None) -> str | None:
-        """Choose an option in a dropdown; an option or field that finalizes a form is refused."""
-        action = f"select {option!r} in {label!r}"
+    def select(
+        self,
+        label: str,
+        option: str,
+        target: FieldTarget | None = None,
+        private: bool = False,
+    ) -> str | None:
+        """Choose an option in a dropdown; an option or field that finalizes a form is refused.
+
+        With `private` the option (data a flow parameter supplied) is named in no refusal.
+        """
+        action = f"select an option in {label!r}" if private else f"select {option!r} in {label!r}"
         if _is_denied(option, self._deny) or _is_denied(label, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
         if target is not None and target.role is not None and target.role not in _SELECT_ROLES:
