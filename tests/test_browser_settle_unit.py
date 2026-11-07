@@ -61,8 +61,16 @@ def test_settle_waits_for_the_swap_and_expect_heading_reports_a_miss() -> None:
             far = raw.settle_page(expect_heading="tail-word", expect_wait_s=1)
             assert far.matched is True
             assert len(far.headings) == 20 and all(len(text) <= 200 for text in far.headings)
-            assert far.headings[0] == "Edit Expense Report" or far.headings[0].startswith("Create")
+            assert far.headings[0] == "Edit Expense Report"
             assert far.headings[1] == "filler 6" and far.headings[-1].startswith("xxx")
+
+            page.evaluate(
+                "for (let i = 0; i < 300; i++) { const h = document.createElement('h3'); "
+                "h.textContent = i === 299 ? 'late popup' : 'more ' + i; "
+                "document.body.appendChild(h); }"
+            )
+            many = raw.settle_page(expect_heading="late popup", expect_wait_s=1)
+            assert many.matched is True and many.headings[-1] == "late popup"
 
             missed = raw.settle_page(expect_heading="Nothing here", expect_wait_s=0.5)
             assert missed.matched is False
