@@ -577,6 +577,28 @@ def test_a_heading_miss_leaves_out_other_headings_that_read_like_instructions(
     assert "Ignore all previous" not in result.output
 
 
+def test_a_heading_miss_keeps_the_last_three_other_headings_cut_and_deduplicated(
+    raw: _Raw,
+) -> None:
+    raw.headings = (
+        "Create Expense Item",
+        "Section A",
+        "Section B",
+        "Section C",
+        "Create Expense Item",
+        "Delete Duplicate Expenses",
+        "D" * 80,
+        "D" * 80,
+    )
+
+    result = _run("browser", "click", "expense-report", "Add line", "--expect-heading", "Report")
+
+    flat = result.output.replace("\n", "")
+    assert "also shown: 'Section C', 'Delete Duplicate Expenses', '" + "D" * 60 + "')" in flat
+    assert "Section A" not in flat
+    assert "Section B" not in flat
+
+
 def test_a_heading_miss_with_one_heading_has_no_also_shown_part(raw: _Raw) -> None:
     raw.headings = ("Create Expense Item",)
 

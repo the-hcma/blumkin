@@ -2074,11 +2074,12 @@ def _settled_report(
         report["expect_heading"] = settled.matched
         if not settled.matched and raise_on_miss:
             waited = EXPECT_HEADING_WAIT_S if expect_wait_s is None else expect_wait_s
+            also = _also_shown([text for text in headings[1:] if text != headings[0]])
             raise BrowserActionError(
                 f"Expected a heading containing {expect_heading!r} within "
                 f"{waited:g} seconds of the {what}, got "
                 f"{'a withheld heading' if report.get('heading_withheld') else first or 'none'!r} "
-                f"on {shown or 'a page'}{_also_shown(headings[1:])}; "
+                f"on {shown or 'a page'}{also}; "
                 f"the {what} WAS made, so read the page instead of repeating it"
             )
     return report
@@ -2089,13 +2090,15 @@ def _also_shown(others: Sequence[str]) -> str:
 
     A popup that opened on top of the page (a duplicate-expense warning, a confirmation) keeps
     the page's own heading first, so the miss would otherwise name only the page. Each heading
-    is page text: it is cut short, and one that reads like an instruction is left out.
+    is page text: it is cut short, one that reads like an instruction is left out, and a repeat
+    is named once. The last ones are kept, since a popup is appended to the page late.
     """
-    shown = [
+    kept = [
         text[:_ALSO_SHOWN_CHARS]
         for text in others
         if text and not scan_for_injection(text, location="page.text").to_payload()
-    ][:_ALSO_SHOWN_COUNT]
+    ]
+    shown = list(dict.fromkeys(kept))[-_ALSO_SHOWN_COUNT:]
     if not shown:
         return ""
     return " (also shown: " + ", ".join(repr(text) for text in shown) + ")"
