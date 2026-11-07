@@ -2964,7 +2964,8 @@ _HEADINGS_JS = (
     ".filter((h) => h.getClientRects().length > 0 && "
     "getComputedStyle(h).visibility !== 'hidden')"
     ".map((h) => String(h.innerText || h.textContent || '').replace(/\\s+/g, ' ').trim()"
-    ".slice(0, 1000)).filter(Boolean).slice(0, 5000)})"
+    ".slice(0, 1000)).filter(Boolean)"
+    ".filter((t, i, all) => all.length <= 5000 || i === 0 || i >= all.length - 4999)})"
 )
 
 _QUIET_DOM_JS = (
