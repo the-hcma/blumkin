@@ -61,6 +61,8 @@ def test_settle_waits_for_the_swap_and_expect_heading_reports_a_miss() -> None:
             far = raw.settle_page(expect_heading="tail-word", expect_wait_s=1)
             assert far.matched is True
             assert len(far.headings) == 20 and all(len(text) <= 200 for text in far.headings)
+            assert far.headings[0] == "Edit Expense Report" or far.headings[0].startswith("Create")
+            assert far.headings[1] == "filler 6" and far.headings[-1].startswith("xxx")
 
             missed = raw.settle_page(expect_heading="Nothing here", expect_wait_s=0.5)
             assert missed.matched is False

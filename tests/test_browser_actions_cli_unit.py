@@ -599,6 +599,21 @@ def test_a_heading_miss_keeps_the_last_three_other_headings_cut_and_deduplicated
     assert "Section B" not in flat
 
 
+def test_a_heading_miss_counts_a_repeated_heading_at_its_last_place(raw: _Raw) -> None:
+    raw.headings = (
+        "Create Expense Item",
+        "Warning",
+        "Section A",
+        "Section B",
+        "Section C",
+        "Warning",
+    )
+
+    result = _run("browser", "click", "expense-report", "Add line", "--expect-heading", "Report")
+
+    assert "also shown: 'Section B', 'Section C', 'Warning')" in result.output.replace("\n", "")
+
+
 def test_a_heading_miss_with_one_heading_has_no_also_shown_part(raw: _Raw) -> None:
     raw.headings = ("Create Expense Item",)
 

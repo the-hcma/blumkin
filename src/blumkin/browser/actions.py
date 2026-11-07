@@ -2091,14 +2091,15 @@ def _also_shown(others: Sequence[str]) -> str:
     A popup that opened on top of the page (a duplicate-expense warning, a confirmation) keeps
     the page's own heading first, so the miss would otherwise name only the page. Each heading
     is page text: it is cut short, one that reads like an instruction is left out, and a repeat
-    is named once. The last ones are kept, since a popup is appended to the page late.
+    is named once, at its last place. The last ones are kept, since a popup is added late.
     """
     kept = [
         text[:_ALSO_SHOWN_CHARS]
         for text in others
         if text and not scan_for_injection(text, location="page.text").to_payload()
     ]
-    shown = list(dict.fromkeys(kept))[-_ALSO_SHOWN_COUNT:]
+    # Keep the last place of a repeat, so a late dialog heading that echoes an earlier one counts.
+    shown = list(dict.fromkeys(reversed(kept)))[:_ALSO_SHOWN_COUNT][::-1]
     if not shown:
         return ""
     return " (also shown: " + ", ".join(repr(text) for text in shown) + ")"
