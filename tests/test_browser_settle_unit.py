@@ -70,6 +70,8 @@ def test_settle_waits_for_the_swap_and_expect_heading_reports_a_miss() -> None:
                 "document.body.appendChild(h); }"
             )
             many = raw.settle_page(expect_heading="late popup", expect_wait_s=1)
+            middle = raw.settle_page(expect_heading="more 150", expect_wait_s=1)
+            assert middle.matched is True and len(middle.headings) == 20
             assert many.matched is True and many.headings[-1] == "late popup"
 
             missed = raw.settle_page(expect_heading="Nothing here", expect_wait_s=0.5)
