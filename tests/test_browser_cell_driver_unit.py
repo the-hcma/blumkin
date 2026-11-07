@@ -550,3 +550,18 @@ def test_an_editor_stays_cancelled_when_there_is_no_next_cell_to_select() -> Non
         _edit(page, "8")
     assert [k for k, _ in page.events if k == "click"] == ["click"]
     assert ("press", "Escape") in page.events
+
+
+def test_a_refused_neighbour_cell_cancels_the_edit_and_still_refuses() -> None:
+    page = _Page()
+    page.editing = [True]
+    seen: list[ControlInfo] = []
+
+    def vet(info: ControlInfo) -> None:
+        seen.append(info)
+        if len(seen) == 2:
+            raise BrowserActionError("refused the neighbour")
+
+    with pytest.raises(BrowserActionError, match="refused the neighbour"):
+        _driver(page).edit_cell("2", "5", "8", 1, vet, _refuse_name)
+    assert ("press", "Escape") in page.events

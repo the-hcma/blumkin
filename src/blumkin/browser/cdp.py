@@ -1652,11 +1652,16 @@ class PlaywrightDriver:
         and made only on a plain cell.
         """
         if self._editor_open(grid) and neighbour is not None:
-            other = neighbour()
-            if other is not None and str(other.evaluate(_CELL_CLICK_TARGET_JS)) == "ok":
-                vet(self._describe(other))
-                other.click(timeout=self._timeout_ms)
-                self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
+            try:
+                other = neighbour()
+                if other is not None and str(other.evaluate(_CELL_CLICK_TARGET_JS)) == "ok":
+                    vet(self._describe(other))
+                    other.click(timeout=self._timeout_ms)
+                    self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
+            except BaseException:
+                # A refused or failed neighbour click must not leave the editor open.
+                self._page.keyboard.press("Escape")
+                raise
         if self._editor_open(grid):
             self._page.keyboard.press("Escape")
             raise BrowserActionError(
