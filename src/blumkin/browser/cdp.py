@@ -1441,7 +1441,9 @@ class PlaywrightDriver:
 
         Oracle ADF sends the file from a hidden frame a moment after it is chosen, so the post
         can arrive after `set_input_files` returned. A page that never posts costs the cap, and
-        nothing is waited for in strict mode, where the net lets nothing through.
+        nothing is waited for in strict mode, where the net lets nothing through. The second post
+        of the pair is caught by the grace period after the first; one that comes later than
+        `_UPLOAD_POST_GRACE_MS` is swallowed, because `upload` closes the window in its `finally`.
         """
         for _ in range(_UPLOAD_POST_POLLS):
             if self._upload_posts:
@@ -1473,8 +1475,8 @@ class PlaywrightDriver:
                 # Through the handle the probes read: a form that swaps the input in between
                 # would otherwise receive the file while the replaced one is observed.
                 # Oracle ADF posts the chosen file from a hidden frame the moment it is
-                # chosen; the safety net lets that one frame post through, and only while
-                # this runs.
+                # chosen, in two posts; the safety net lets those frame posts through, and
+                # only while this runs.
                 self._uploading = True
                 self._upload_posts = 0
                 handle.set_input_files(str(resolved), timeout=self._timeout_ms)
