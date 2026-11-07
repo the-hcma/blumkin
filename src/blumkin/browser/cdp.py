@@ -638,6 +638,8 @@ class PlaywrightDriver:
                 # snapshot is read through that mark: a page that swaps in another element
                 # while it is read (even one that puts the original back) has no marked element
                 # to show, so the names checked are only ever the clicked element's.
+                # (A pick is always a lookup in the page's own document, as `_resolve` makes it,
+                # so the marked element is looked up there too.)
                 token = uuid.uuid4().hex
                 handle.evaluate("(e, t) => e.setAttribute('data-blumkin-pick', t)", token)
                 try:
@@ -650,8 +652,15 @@ class PlaywrightDriver:
                             "while it was checked, got another one; nothing was clicked"
                         )
                 finally:
+                    # Every element that carries the token, not only the original: a page that
+                    # clones the element while it is read copies the attribute with it.
                     with contextlib.suppress(_playwright_error()):
-                        handle.evaluate("e => e.removeAttribute('data-blumkin-pick')")
+                        self._page.evaluate(
+                            "t => document.querySelectorAll('[data-blumkin-pick]').forEach("
+                            "e => { if (e.getAttribute('data-blumkin-pick') === t) "
+                            "e.removeAttribute('data-blumkin-pick'); })",
+                            token,
+                        )
                 info = dataclasses.replace(
                     info,
                     own_names=(*info.own_names, shown[:_PICK_SNAPSHOT_CHARS]),

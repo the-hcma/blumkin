@@ -388,3 +388,41 @@ def test_a_prefix_pick_refuses_when_the_element_is_swapped_while_it_is_checked(
             assert page.evaluate("window.picked") is None
         finally:
             browser.close()
+
+
+def test_a_prefix_pick_refuses_when_a_clone_carries_the_mark_instead_of_the_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from playwright.sync_api import Locator, sync_playwright
+
+    from blumkin.browser.cdp import BrowserActionError
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            page.set_content(_LIST_PAGE)
+            driver = _driver(page, browser, ())
+            original = Locator.aria_snapshot
+
+            def cloning(self: Locator, *args: object, **kwargs: object) -> str:
+                text = original(self, *args, **kwargs)  # type: ignore[arg-type]
+                # The page replaces the marked element with a clone, which keeps the mark.
+                page.evaluate(
+                    "() => { const e = document.querySelector('[data-blumkin-pick]'); "
+                    "e.replaceWith(e.cloneNode(true)); }"
+                )
+                return text
+
+            monkeypatch.setattr(Locator, "aria_snapshot", cloning)
+
+            with pytest.raises(BrowserActionError, match="same element"):
+                driver.pick("blumkin-probe", "gridcell", None, True)
+
+            assert page.evaluate("window.picked") is None
+            assert page.evaluate("document.querySelectorAll('[data-blumkin-pick]').length") == 0
+        finally:
+            browser.close()
