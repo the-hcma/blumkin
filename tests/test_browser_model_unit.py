@@ -1399,6 +1399,10 @@ def test_a_select_step_can_carry_a_literal_option_when_the_flow_binds_other_step
     assert loaded is not None
     step = loaded.flows[0].steps[-1]
     assert (step.bind, step.value) == (None, "Meals")
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+    assert again.flows[0].steps[-1].value == "Meals"
 
 
 @pytest.mark.parametrize(

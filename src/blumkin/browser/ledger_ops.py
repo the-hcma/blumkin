@@ -17,6 +17,7 @@ from typing import Any
 
 from blumkin.browser.cdp import BrowserActionError, BrowserAttachError, CellEditedError
 from blumkin.browser.flow_params import validate_cell_values, validate_params
+from blumkin.browser.guard import SubmitBlockedError
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.ledger import (
     ItemKind,
@@ -706,7 +707,9 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                     **_field_kw(field_role, recorded),
                 )
             except BrowserActionError as exc:
-                if step.bind is None:
+                if step.bind is None or isinstance(exc, SubmitBlockedError):
+                    # A guard refusal never names a private option, and its reason is the
+                    # part worth keeping.
                     raise
                 # The option a parameter supplied is the user's data: the error names the
                 # parameter and quotes nothing (a lookup error can hold part of the option).
