@@ -265,7 +265,7 @@ requires-dist = [
     { name = "google-auth", specifier = ">=2.62.0" },
     { name = "google-auth-httplib2", specifier = ">=0.4.4" },
     { name = "google-auth-oauthlib", specifier = ">=1.5.0" },
-    { name = "httplib2", specifier = ">=0.32.0" },
+    { name = "httplib2", specifier = ">=0.32.1" },
     { name = "icalendar", specifier = ">=7.3.0" },
     { name = "keyring", marker = "sys_platform == 'darwin'", specifier = ">=25.7.0" },
     { name = "keyring", marker = "extra == 'dev'", specifier = ">=25.7.0" },
@@ -615,7 +615,7 @@ wheels = [
 
 [[package]]
 name = "google-api-core"
-version = "2.43.0"
+version = "2.43.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-auth" },
@@ -625,9 +625,9 @@ dependencies = [
     { name = "protobuf" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/1c/83011225511b8a0aeee9633d58d8e6b5d858ea5502e76117bcefb620245d/google_api_core-2.43.0.tar.gz", hash = "sha256:d67355a22d995a009b6c5ca98744ea35fbf4f9c2c006aa0588c0941d1ceb5216", size = 282948, upload-time = "2026-10-22T23:43:15.125Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/ba/fbf85b78704ea02237d296134550a18c54d7fc3e76f278fe3ec05916849a/google_api_core-2.43.1.tar.gz", hash = "sha256:490ae28b0a292e7bef30382824671ded0dd5c9fc52bbd3a44099972f82c47297", size = 283625, upload-time = "2026-10-28T21:45:20.248Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/5e/ea85dbdb29e05a1dab94be7e4c07e5099b7048074f9ededf7d39636a878a/google_api_core-2.43.0-py3-none-any.whl", hash = "sha256:dd588ae9de5e372be89b87c68b1e1555fe89add1809d623182b773d14f96859a", size = 223488, upload-time = "2026-10-22T23:42:44.924Z" },
+    { url = "https://files.pythonhosted.org/packages/74/3b/3e381ef839f6dbfc61e490c680b60861be775b675989e30183595fc57ed2/google_api_core-2.43.1-py3-none-any.whl", hash = "sha256:c2b7138ceb84c756a960fd1d579c4c261534b7f7ecaafbf644c03bc4171bc830", size = 223625, upload-time = "2026-10-28T21:45:18.609Z" },
 ]
 
 [[package]]
@@ -819,14 +819,14 @@ wheels = [
 
 [[package]]
 name = "httplib2"
-version = "0.32.0"
+version = "0.32.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyparsing" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/f5/ccf58de92d61e3ad921119668f54ed36ca1d0cf5dcc5c1657dfb164fd78b/httplib2-0.32.0.tar.gz", hash = "sha256:48a0ef30a42db65d8f3399045e1d09ab0ba66e3b9efc360d07f80ea55d286025", size = 254283, upload-time = "2026-06-26T10:13:56.265Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/da/affa4b2adc11468c7d88d9b4258cac432479046edcf212284b55d4528593/httplib2-0.32.1.tar.gz", hash = "sha256:37900eb8a74576bd99fc39ae1dc8409f95f965d45b56cbcb2194bb55f58a90e1", size = 255012, upload-time = "2026-10-28T10:22:02.139Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/a0/550eec327e5f5c7b732531c489f5307efec41f047b0d703bd4ca1e5ad2db/httplib2-0.32.0-py3-none-any.whl", hash = "sha256:dc6705cacdf3fb0a2aba7629fa33c90fd93e30035db0c157325826be177e4816", size = 93148, upload-time = "2026-06-26T10:13:54.985Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/47/1d02221cde942fdd7a4ce4a940682e0b054534215ab02ffdee4955e4d66c/httplib2-0.32.1-py3-none-any.whl", hash = "sha256:82e7a6ab08fcb27879864ddf63dbb529fb032ca336c331cb1597d6dd8b47c92e", size = 92277, upload-time = "2026-10-28T10:21:57.1Z" },
 ]
 
 [[package]]
@@ -2207,11 +2207,11 @@ wheels = [
 
 [[package]]
 name = "tzdata"
-version = "2026.5"
+version = "2026.6"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d9/68/f1b440335057bfce71b6e50a9d09445aa2ecbd08359a337976627b8409e7/tzdata-2026.5.tar.gz", hash = "sha256:8cc73c0a0bfca7dbfa59235d60b2eff82231dee33f53d206db1acd9173cfc0a7", size = 200404, upload-time = "2026-10-03T09:23:14.143Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/29/6a1391d31cd00ff9e927215a224a880e1e84e826b64ba80a499e51c074d8/tzdata-2026.6.tar.gz", hash = "sha256:85d2cd9c09f81f0bb29db27759fc83af4f1e620efb814f8c5bf8b4cc4feece6d", size = 201017, upload-time = "2026-10-28T09:57:09.137Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/94/21/1e5995a1c920cce14e4bffae20c665ec10e7ed03ab25e006cd741092b718/tzdata-2026.5-py2.py3-none-any.whl", hash = "sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac", size = 347996, upload-time = "2026-10-03T09:23:12.535Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/66/9a06c2227fedfd4919f0eaaa8b94377d9730882a7e4f95823c9a331ab5e1/tzdata-2026.6-py2.py3-none-any.whl", hash = "sha256:0a10eec6e13ef16b627fabed9a5f2ba61a62b1c67f327305f4e7e412a70b4aec", size = 348210, upload-time = "2026-10-28T09:57:07.276Z" },
 ]
 
 [[package]]
