@@ -1654,13 +1654,17 @@ class PlaywrightDriver:
         if self._editor_open(grid) and neighbour is not None:
             try:
                 other = neighbour()
+                if other is not None:
+                    other.scroll_into_view_if_needed(timeout=self._timeout_ms)
                 if other is not None and str(other.evaluate(_CELL_CLICK_TARGET_JS)) == "ok":
                     vet(self._describe(other))
                     other.click(timeout=self._timeout_ms)
                     self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
-            except BaseException:
-                # A refused or failed neighbour click must not leave the editor open.
-                self._page.keyboard.press("Escape")
+            except Exception:
+                # A refused or failed neighbour click must not leave the editor open; a failing
+                # Escape must not hide the error that made it necessary.
+                with contextlib.suppress(_playwright_error()):
+                    self._page.keyboard.press("Escape")
                 raise
         if self._editor_open(grid):
             self._page.keyboard.press("Escape")

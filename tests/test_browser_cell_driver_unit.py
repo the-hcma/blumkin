@@ -565,3 +565,25 @@ def test_a_refused_neighbour_cell_cancels_the_edit_and_still_refuses() -> None:
     with pytest.raises(BrowserActionError, match="refused the neighbour"):
         _driver(page).edit_cell("2", "5", "8", 1, vet, _refuse_name)
     assert ("press", "Escape") in page.events
+
+
+def test_the_neighbour_cell_is_scrolled_into_view_before_it_is_checked_and_clicked() -> None:
+    page = _Page()
+    page.editing = [True, True, True, True, False]
+    _edit(page, "8")
+    kinds = _kinds(page)
+    last_scroll = len(kinds) - 1 - kinds[::-1].index("scroll")
+    assert kinds[last_scroll + 1 :].count("click") == 1
+
+
+def test_a_keyboard_interrupt_in_the_neighbour_step_presses_no_key() -> None:
+    page = _Page()
+    page.editing = [True]
+
+    def vet(info: ControlInfo) -> None:
+        if page.events.count(("click", "")) == 1:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _driver(page).edit_cell("2", "5", "8", 1, vet, _refuse_name)
+    assert ("press", "Escape") not in page.events
