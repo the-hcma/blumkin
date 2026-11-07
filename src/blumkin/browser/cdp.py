@@ -326,6 +326,7 @@ _MAX_CHAIN = 40
 _DEADLINE_SLACK_S = 10.0
 #: The longest the cosmetic window mark may take.
 _INDICATOR_DEADLINE_S = 5.0
+#: Most headings a settled page reports: the first, then the last ones (a popup comes late).
 HEADINGS_REPORTED = 20
 SETTLE_GRACE_MS = 300
 SETTLE_QUIET_MS = 500
@@ -1276,7 +1277,7 @@ class PlaywrightDriver:
                     self._page.wait_for_timeout(250)
                 url, headings = self._headings()
         return PageSettled(
-            headings=tuple(text[:HEADING_REPORT_CHARS] for text in headings[:HEADINGS_REPORTED]),
+            headings=tuple(text[:HEADING_REPORT_CHARS] for text in _report_headings(headings)),
             matched=matched,
             quiet=quiet,
             url=url,
@@ -2963,7 +2964,8 @@ _HEADINGS_JS = (
     ".filter((h) => h.getClientRects().length > 0 && "
     "getComputedStyle(h).visibility !== 'hidden')"
     ".map((h) => String(h.innerText || h.textContent || '').replace(/\\s+/g, ' ').trim()"
-    ".slice(0, 1000)).filter(Boolean).slice(0, 200)})"
+    ".slice(0, 1000)).filter(Boolean)"
+    ".filter((t, i, all) => all.length <= 5000 || i === 0 || i >= all.length - 4999)})"
 )
 
 _QUIET_DOM_JS = (
@@ -3446,6 +3448,17 @@ def _raw_frame_error() -> type[Exception]:
     from blumkin.browser.cdpws import RawFrameError
 
     return RawFrameError
+
+
+def _report_headings(headings: Sequence[str]) -> Sequence[str]:
+    """The headings a settled page reports: the first, then the last ones when there are many.
+
+    The first is the page's own; a popup is appended to the page late, so the tail is kept
+    rather than cut, and the popup's heading survives on a page with many section titles.
+    """
+    if len(headings) <= HEADINGS_REPORTED:
+        return headings
+    return [headings[0], *headings[-(HEADINGS_REPORTED - 1) :]]
 
 
 def _require_loopback_endpoint(endpoint: str) -> None:

@@ -74,6 +74,8 @@ _ADDRESS_SYNTAX = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)
 # a serialized ARIA snapshot never eats the quote that closes an accessible name or the
 # backslash of an escaped one.
 _ADDRESS_IN_TEXT = re.compile(r"(?i)\b(?:https?|wss?|ftp)://(?:[^\s\"'`<>\\]|'(?=[^\s\"'`<>\\]))+")
+_ALSO_SHOWN_CHARS = 60
+_ALSO_SHOWN_COUNT = 3
 _ARIA_FIELD_ROLES = r"(?:combobox|searchbox|slider|spinbutton|textbox)"
 
 # A field line's key, plain (`- textbox "Name" [attr]`) or, when the name needs it, wrapped in
@@ -2072,14 +2074,35 @@ def _settled_report(
         report["expect_heading"] = settled.matched
         if not settled.matched and raise_on_miss:
             waited = EXPECT_HEADING_WAIT_S if expect_wait_s is None else expect_wait_s
+            also = _also_shown([text for text in headings[1:] if text != headings[0]])
             raise BrowserActionError(
                 f"Expected a heading containing {expect_heading!r} within "
                 f"{waited:g} seconds of the {what}, got "
                 f"{'a withheld heading' if report.get('heading_withheld') else first or 'none'!r} "
-                f"on {shown or 'a page'}; "
+                f"on {shown or 'a page'}{also}; "
                 f"the {what} WAS made, so read the page instead of repeating it"
             )
     return report
+
+
+def _also_shown(others: Sequence[str]) -> str:
+    """The other visible headings for a heading miss, so a dialog over the form is named.
+
+    A popup that opened on top of the page (a duplicate-expense warning, a confirmation) keeps
+    the page's own heading first, so the miss would otherwise name only the page. Each heading
+    is page text: it is cut short, one that reads like an instruction is left out, and a repeat
+    is named once, at its last place. The last ones are kept, since a popup is added late.
+    """
+    kept = [
+        text[:_ALSO_SHOWN_CHARS]
+        for text in others
+        if text and not scan_for_injection(text, location="page.text").to_payload()
+    ]
+    # Keep the last place of a repeat, so a late dialog heading that echoes an earlier one counts.
+    shown = list(dict.fromkeys(reversed(kept)))[:_ALSO_SHOWN_COUNT][::-1]
+    if not shown:
+        return ""
+    return " (also shown: " + ", ".join(repr(text) for text in shown) + ")"
 
 
 def _chain_path(path: str) -> str:
