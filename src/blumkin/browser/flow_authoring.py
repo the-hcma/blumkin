@@ -24,6 +24,7 @@ STEP_KEYS = frozenset(
         "expect_heading",
         "instruction",
         "match",
+        "nth",
         "page",
         "role",
         "row",
@@ -60,6 +61,15 @@ def build_flow(name: str, params: list[str], steps: list[str]) -> Flow:
         params=tuple(_param(spec) for spec in params),
         steps=tuple(_step(spec, number) for number, spec in enumerate(steps, start=1)),
     )
+
+
+def _nth(text: str | None, number: int) -> int | None:
+    """A step's `nth=N` word as a number; the model checks its range and the actions it fits."""
+    if text is None:
+        return None
+    if not text.isascii() or not text.isdigit():
+        raise FlowSpecError(f"Expected nth in step {number} to be a whole number, got {text!r}")
+    return int(text)
 
 
 def _param(spec: str) -> FlowParam:
@@ -122,6 +132,7 @@ def _step(spec: str, number: int) -> FlowStep:
         expect_heading=fields.get("expect_heading"),
         instruction=fields.get("instruction"),
         match=fields.get("match"),
+        nth=_nth(fields.get("nth"), number),
         page=fields.get("page"),
         role=fields.get("role"),
         row=fields.get("row"),

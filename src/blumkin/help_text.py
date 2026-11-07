@@ -1007,11 +1007,13 @@ replaced only with `--replace`; `blumkin browser model diff TASK N` shows what a
 A parameter is NAME:KIND with KIND one of date, file, text, or NAME:choice=A|B|C. A step is its
 action, then its control when it acts on one (click, press, fill, select, upload, verify), then
 key=value words (page, bind, expect, expect_heading, starts_on, instruction, row, column, value,
-role, match; quote a value with spaces in the shell's own way). The actions are click, press, fill,
-select (choose an option in a dropdown, from a bind or a literal value), upload, goto, cell, pick
-(choose a result row or, with role=gridcell, a cell by its text, or by its start with
-match=prefix), verify (check that a field holds the value of a bound parameter, reporting only
-match or not) and handoff. `starts_on=HEADING` makes a step refuse to
+role, match, nth; quote a value with spaces in the shell's own way). `nth=N` (1-based, in DOM
+order) says which of several same-named controls a click, press, fill, select, upload or verify
+step means; the step is refused with the real count when the page has fewer. The actions are
+click, press, fill, select (choose an option in a dropdown, from a bind or a literal value),
+upload, goto, cell, pick (choose a result row or, with role=gridcell, a cell by its text, or by
+its start with match=prefix), verify (check that a field holds the value of a bound parameter,
+reporting only match or not) and handoff. `starts_on=HEADING` makes a step refuse to
 run unless the page already shows that heading: the run stops before the step, and resumes at it
 with `--from-step`. It needs a saved model (`blumkin browser explore`), and nothing here touches
 the browser.

@@ -1464,3 +1464,22 @@ def test_a_dialog_page_with_no_landmarks_at_all_is_refused(tmp_path: Path) -> No
         _load_payload(tmp_path, _with_page_kind(_payload(tmp_path), kind="dialog"))
     with pytest.raises(SiteModelError, match="at least two distinct"):
         _load_payload(tmp_path, _with_page_kind(_payload(tmp_path), kind="dialog", landmarks=[]))
+
+
+def test_a_step_nth_round_trips_and_is_checked(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    payload["flows"][0]["steps"][0]["nth"] = 2
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None
+    assert loaded.flows[0].steps[0].nth == 2
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+@pytest.mark.parametrize("nth", [0, 100, -1, "2", 1.5, True])
+def test_a_bad_step_nth_is_refused(tmp_path: Path, nth: object) -> None:
+    payload = _payload(tmp_path)
+    payload["flows"][0]["steps"][0]["nth"] = nth
+    with pytest.raises(SiteModelError, match="nth"):
+        _load_payload(tmp_path, payload)
