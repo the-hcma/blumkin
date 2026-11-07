@@ -274,7 +274,8 @@ and `settled`. A read straight after a click could otherwise still show the page
 An update that arrives more than about a second after the click is not waited for: use
 `--expect-heading` for a page that changes late.
 `--expect-heading TEXT` also waits up to 15 seconds for a heading containing TEXT (any case) and
-fails when none shows: the click WAS made, so read the page, and do not click again.
+fails when none shows: the click WAS made, so read the page, and do not click again. The error
+also names up to three other visible headings, so a dialog that opened over the page shows.
 Clicks one control the task declared in `[browser.tasks.TASK] allowed_controls` in
 config.toml (exact accessible names). Without `--role` the control is found by name
 across the clickable roles and the role it was found in is reported; a name that exists

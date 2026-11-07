@@ -74,6 +74,8 @@ _ADDRESS_SYNTAX = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)
 # a serialized ARIA snapshot never eats the quote that closes an accessible name or the
 # backslash of an escaped one.
 _ADDRESS_IN_TEXT = re.compile(r"(?i)\b(?:https?|wss?|ftp)://(?:[^\s\"'`<>\\]|'(?=[^\s\"'`<>\\]))+")
+_ALSO_SHOWN_CHARS = 60
+_ALSO_SHOWN_COUNT = 3
 _ARIA_FIELD_ROLES = r"(?:combobox|searchbox|slider|spinbutton|textbox)"
 
 # A field line's key, plain (`- textbox "Name" [attr]`) or, when the name needs it, wrapped in
@@ -2076,10 +2078,27 @@ def _settled_report(
                 f"Expected a heading containing {expect_heading!r} within "
                 f"{waited:g} seconds of the {what}, got "
                 f"{'a withheld heading' if report.get('heading_withheld') else first or 'none'!r} "
-                f"on {shown or 'a page'}; "
+                f"on {shown or 'a page'}{_also_shown(headings[1:])}; "
                 f"the {what} WAS made, so read the page instead of repeating it"
             )
     return report
+
+
+def _also_shown(others: Sequence[str]) -> str:
+    """The other visible headings for a heading miss, so a dialog over the form is named.
+
+    A popup that opened on top of the page (a duplicate-expense warning, a confirmation) keeps
+    the page's own heading first, so the miss would otherwise name only the page. Each heading
+    is page text: it is cut short, and one that reads like an instruction is left out.
+    """
+    shown = [
+        text[:_ALSO_SHOWN_CHARS]
+        for text in others
+        if text and not scan_for_injection(text, location="page.text").to_payload()
+    ][:_ALSO_SHOWN_COUNT]
+    if not shown:
+        return ""
+    return " (also shown: " + ", ".join(repr(text) for text in shown) + ")"
 
 
 def _chain_path(path: str) -> str:
