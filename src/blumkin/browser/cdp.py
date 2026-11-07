@@ -1433,9 +1433,8 @@ class PlaywrightDriver:
         on("request", moved)
 
     def _count_upload_post(self) -> None:
-        # One post only: the window closes as soon as the file's post has been let through.
+        # The window stays open for the whole upload: the file travels in two posts.
         self._upload_posts += 1
-        self._uploading = False
 
     def _hold_for_upload_post(self) -> None:
         """Keep the net open until the frame post of a chosen file shows up, for a short while.
@@ -3067,11 +3066,13 @@ def _navigation_net(
 ) -> Callable[[Any], None]:
     """The safety net for form posts, which lets a file upload's frame post through.
 
-    While an `upload` runs, the first multipart POST from a child frame to the page's own host
-    is let through: Oracle ADF sends the chosen file that way, and answering it with an empty
-    `204` leaves the page waiting for an upload that never completes. Every other write is
-    swallowed as before, whatever the target, and so is a second post, a post from the main
-    page, a post that is not multipart, or one made while nothing uploads.
+    While an `upload` runs, every multipart POST from a child frame to the page's own host is
+    let through: Oracle ADF sends the chosen file that way, in two posts, and answering either
+    with an empty `204` leaves the page waiting for an upload that never completes (found on a
+    live draft report: with only the first let through, `AdfPage.PAGE.isSynchronizedWithServer`
+    stayed false and the dialog's `OK` timed out). Every other write is swallowed as before,
+    whatever the target, and so is a post from the main page, a post that is not multipart, or
+    one made while nothing uploads.
     """
 
     def handler(route: Any) -> None:

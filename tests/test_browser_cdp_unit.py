@@ -3327,18 +3327,16 @@ def test_the_net_lets_only_a_multipart_post_through() -> None:
     assert _net_outcome(True, content_type="") == "fulfilled 204"
 
 
-def test_the_net_lets_only_the_first_upload_post_through() -> None:
+def test_the_net_lets_every_upload_post_through_while_the_window_is_open() -> None:
     from types import SimpleNamespace
 
     from blumkin.browser.cdp import _navigation_net
 
     page = SimpleNamespace(url="https://erp.example.com/app/page")
     window = {"open": True}
+    counted: list[int] = []
 
-    def passed() -> None:
-        window["open"] = False
-
-    handler = _navigation_net(page, lambda: window["open"], passed)
+    handler = _navigation_net(page, lambda: window["open"], lambda: counted.append(1))
     outcomes = []
     for _ in range(2):
         route = _NetRoute(
@@ -3347,7 +3345,17 @@ def test_the_net_lets_only_the_first_upload_post_through() -> None:
         handler(route)
         outcomes.append(route.outcome)
 
-    assert outcomes == ["continued", "fulfilled 204"]
+    # Oracle ADF sends the chosen file in two posts; answering either with an empty 204 leaves
+    # the page waiting forever.
+    assert outcomes == ["continued", "continued"]
+    assert len(counted) == 2
+    # Once the window is closed the same post is swallowed again.
+    window["open"] = False
+    route = _NetRoute(
+        method="POST", url="https://erp.example.com/app/upload", navigation=True, child=True
+    )
+    handler(route)
+    assert route.outcome == "fulfilled 204"
 
 
 def _bare_driver(page: object):  # noqa: ANN202
@@ -3361,7 +3369,7 @@ def _bare_driver(page: object):  # noqa: ANN202
     return driver
 
 
-def test_a_counted_upload_post_closes_the_window_and_stops_the_wait() -> None:
+def test_a_counted_upload_post_stops_the_wait_and_leaves_the_window_open() -> None:
     waited: list[int] = []
 
     class _Page:
@@ -3374,7 +3382,8 @@ def test_a_counted_upload_post_closes_the_window_and_stops_the_wait() -> None:
 
     driver._hold_for_upload_post()  # noqa: SLF001
 
-    assert driver._uploading is False  # type: ignore[attr-defined]
+    # The window stays open for the second post; `upload` closes it when it is done.
+    assert driver._uploading is True  # type: ignore[attr-defined]
     assert driver._upload_posts == 1  # type: ignore[attr-defined]
     # Two polls until the post, then the grace period.
     from blumkin.browser.cdp import _UPLOAD_POST_GRACE_MS, _UPLOAD_POST_POLL_MS
