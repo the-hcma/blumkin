@@ -726,7 +726,14 @@ class PlaywrightDriver:
             handle, meta = self._find_cell(row, column, grid)
             vet(self._describe(handle))
             if value is not None:
-                self._write_cell(handle, value, grid, vet, vet_name)
+                self._write_cell(
+                    handle,
+                    value,
+                    grid,
+                    vet,
+                    vet_name,
+                    lambda: self._neighbour_cell(row, int(meta["column"]), grid),
+                )
                 handle, meta = self._read_cell_after_edit(row, column, grid)
             text = str(handle.evaluate(_CELL_TEXT_JS))
         except _playwright_error() as exc:
@@ -1597,6 +1604,32 @@ class PlaywrightDriver:
             raise BrowserActionError(f"Expected a cell at row {row!r}, column {column!r}, got none")
         return element, dict(found.evaluate("o => o.meta"))
 
+    def _focus_opened_editor(self, grid: int) -> bool:
+        """After Delete, focus the editor it opened behind the cell; True when that was needed.
+
+        The last day column opens the editor on the key but leaves focus on the cell with the old
+        value still in it, so a Tab commits that value instead of clearing it. Nothing opens for
+        an empty cell, which is not an error.
+        """
+        for _ in range(_CELL_COMMIT_POLLS):
+            if self._cell_focus(grid) == "editor":
+                return False
+            if self._page.evaluate(_CELL_FOCUS_EDITOR_JS, grid):
+                return self._cell_focus(grid) == "editor"
+            self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
+        return False
+
+    def _neighbour_cell(self, row: str, column: int, grid: int) -> Any | None:
+        """The cell next to `column` in the same row (the one before it first), or None."""
+        for other in (column - 1, column + 1):
+            if other < 1:
+                continue
+            try:
+                return self._find_cell(row, str(other), grid)[0]
+            except BrowserActionError:
+                continue
+        return None
+
     def _read_cell_after_edit(self, row: str, column: str, grid: int) -> tuple[Any, dict[str, Any]]:
         """Find the cell again after an edit; if that fails, say that the edit was made."""
         try:
@@ -1606,8 +1639,24 @@ class PlaywrightDriver:
                 f"{exc}; the edit itself was made, so check the cell before editing it again"
             ) from exc
 
-    def _require_committed(self, grid: int) -> None:
-        """Cancel the edit and fail if an editor is still open after the commit."""
+    def _require_committed(
+        self,
+        grid: int,
+        vet: Callable[[ControlInfo], None],
+        neighbour: Callable[[], Any | None] | None = None,
+    ) -> None:
+        """Cancel the edit and fail if an editor is still open after the commit.
+
+        In the last day column Tab leaves the editor open; selecting the cell next to it commits
+        the value, as it does for a person. That click is vetted like the one on the cell itself
+        and made only on a plain cell.
+        """
+        if self._editor_open(grid) and neighbour is not None:
+            other = neighbour()
+            if other is not None and str(other.evaluate(_CELL_CLICK_TARGET_JS)) == "ok":
+                vet(self._describe(other))
+                other.click(timeout=self._timeout_ms)
+                self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
         if self._editor_open(grid):
             self._page.keyboard.press("Escape")
             raise BrowserActionError(
@@ -1622,6 +1671,7 @@ class PlaywrightDriver:
         grid: int,
         vet: Callable[[ControlInfo], None],
         vet_name: Callable[[str], None],
+        neighbour: Callable[[], Any | None] | None = None,
     ) -> None:
         """Select the cell, type `value` into its editor and commit; clear it when empty.
 
@@ -1649,8 +1699,11 @@ class PlaywrightDriver:
             self._page.keyboard.press("ControlOrMeta+A")
         if not value:
             self._page.keyboard.press("Delete")
+            if self._focus_opened_editor(grid):
+                self._page.keyboard.press("ControlOrMeta+A")
+                self._page.keyboard.press("Delete")
             self._page.keyboard.press("Tab")
-            self._require_committed(grid)
+            self._require_committed(grid, vet, neighbour)
             return
         self._page.keyboard.type(value[0])
         if self._cell_focus(grid) != "editor":
@@ -1661,7 +1714,7 @@ class PlaywrightDriver:
         if len(value) > 1:
             self._page.keyboard.type(value[1:])
         self._commit_typed_cell(value, vet, vet_name)
-        self._require_committed(grid)
+        self._require_committed(grid, vet, neighbour)
 
     def _headings(self) -> tuple[str, tuple[str, ...]]:
         """The document's address and its visible headings, read in one evaluation."""
@@ -2716,8 +2769,32 @@ _CELL_EDITING_JS = """
 (n) => {
   const g = document.querySelectorAll('oj-data-grid')[n - 1];
   if (!g) return false;
-  return [...g.querySelectorAll('input, textarea, [contenteditable=true]')].some((e) =>
-    e.offsetParent && !/^(button|submit|checkbox|radio|image|reset|hidden)$/.test(e.type || ''));
+  // JET leaves a visible, inactive number input in a cell it has touched (the last day column),
+  // so a visible input alone is not an open editor: it must sit in a cell in edit mode or hold
+  // focus.
+  return [...g.querySelectorAll('input, textarea, [contenteditable=true]')].some((e) => {
+    const plain = /^(button|submit|checkbox|radio|image|reset|hidden)$/.test(e.type || '');
+    if (!e.offsetParent || plain) return false;
+    const cell = e.closest('.oj-datagrid-cell');
+    return e === document.activeElement || !!(cell && /cell-edit/.test(cell.className));
+  });
+}
+"""
+
+#: Focuses the one visible editor in edit mode of the `grid`-th data grid; false when there is not
+#: exactly one.
+_CELL_FOCUS_EDITOR_JS = """
+(n) => {
+  const g = document.querySelectorAll('oj-data-grid')[n - 1];
+  if (!g) return false;
+  const found = [...g.querySelectorAll('input, textarea')].filter((e) => {
+    const cell = e.closest('.oj-datagrid-cell');
+    return e.offsetParent && cell && /cell-edit/.test(cell.className)
+      && !/^(button|submit|checkbox|radio|image|reset|hidden)$/.test(e.type || '');
+  });
+  if (found.length !== 1) return false;
+  found[0].focus();
+  return true;
 }
 """
 

@@ -166,6 +166,9 @@ class _Page:
         #: The error `_find_cell` reports from this call on (1-based), if any.
         self.find_error_from: int | None = None
         self.waits = 0
+        #: Whether a Delete left an editor open behind the cell that can be given focus.
+        self.editor_behind_cell = False
+        self.focused_editors = 0
         self._polls = 0
 
     def current_options(self) -> list[str]:
@@ -182,6 +185,10 @@ class _Page:
             return value
         if script is cdp._CELL_EDITING_JS:
             return self.editing.pop(0) if len(self.editing) > 1 else self.editing[0]
+        if script is cdp._CELL_FOCUS_EDITOR_JS:
+            if self.editor_behind_cell:
+                self.focused_editors += 1
+            return self.editor_behind_cell
         raise AssertionError(f"unexpected page script: {script[:40]!r}")
 
     def evaluate_handle(self, script: str, arg: Any = None) -> _Found:
@@ -505,3 +512,41 @@ def test_option_keys_keep_letters_of_any_script_and_drop_punctuation(
 
 def test_the_page_script_keeps_unicode_letters_and_digits_when_comparing_headers() -> None:
     assert "[^\\p{L}\\p{N}]" in cdp._CELL_JS
+
+
+def test_clearing_focuses_an_editor_that_delete_opened_behind_the_cell() -> None:
+    page = _Page()
+    page.focus = ["cell", "cell", "editor"]
+    page.editor_behind_cell = True
+    _edit(page, "")
+    keys = [v for k, v in page.events if k == "press"]
+    assert keys == ["Delete", "ControlOrMeta+A", "Delete", "Tab"]
+    assert page.focused_editors == 1
+
+
+def test_clearing_presses_tab_when_delete_opens_no_editor() -> None:
+    page = _Page()
+    page.focus = ["cell"]
+    _edit(page, "")
+    assert [v for k, v in page.events if k == "press"] == ["Delete", "Tab"]
+    assert page.focused_editors == 0
+
+
+def test_an_editor_tab_left_open_is_committed_by_selecting_the_next_cell() -> None:
+    page = _Page()
+    page.editing = [True, True, True, True, False]
+    vetted: list[ControlInfo] = []
+    _edit(page, "8", vetted)
+    assert [k for k, _ in page.events if k == "click"] == ["click", "click"]
+    assert ("press", "Escape") not in page.events
+    assert len(vetted) == 2
+
+
+def test_an_editor_stays_cancelled_when_there_is_no_next_cell_to_select() -> None:
+    page = _Page()
+    page.editing = [True]
+    page.find_error_from = 2
+    with pytest.raises(BrowserActionError):
+        _edit(page, "8")
+    assert [k for k, _ in page.events if k == "click"] == ["click"]
+    assert ("press", "Escape") in page.events
