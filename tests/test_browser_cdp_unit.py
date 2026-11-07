@@ -3614,3 +3614,27 @@ def test_an_error_while_waiting_for_the_upload_post_is_a_browser_action_error() 
         driver.upload("File Name", Path(__file__).resolve())
 
     assert driver._uploading is False  # type: ignore[attr-defined]
+
+
+def test_the_driver_lets_at_most_four_upload_posts_through_in_one_upload() -> None:
+    from types import SimpleNamespace
+
+    from blumkin.browser.cdp import PlaywrightDriver
+
+    page = SimpleNamespace(
+        url="https://erp.example.com/app/page", context=SimpleNamespace(), on=lambda *a: None
+    )
+    driver = PlaywrightDriver(
+        browser=SimpleNamespace(), page=page, playwright=SimpleNamespace(), timeout_s=1
+    )
+    driver._uploading = True  # type: ignore[attr-defined]
+    driver._upload_posts = 0  # type: ignore[attr-defined]
+    outcomes = []
+    for _ in range(6):
+        route = _NetRoute(
+            method="POST", url="https://erp.example.com/app/upload", navigation=True, child=True
+        )
+        driver._lenient_net(route)  # type: ignore[attr-defined]
+        outcomes.append(route.outcome)
+
+    assert outcomes == ["continued"] * 4 + ["fulfilled 204"] * 2

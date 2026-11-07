@@ -477,7 +477,11 @@ class PlaywrightDriver:
         self._net_handler: Any = None
         self._uploading = False
         self._upload_posts = 0
-        self._lenient_net = _navigation_net(page, lambda: self._uploading, self._count_upload_post)
+        self._lenient_net = _navigation_net(
+            page,
+            lambda: self._uploading and self._upload_posts < _UPLOAD_POSTS_MAX,
+            self._count_upload_post,
+        )
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -2825,6 +2829,9 @@ _PICK_SNAPSHOT_CHARS = 2000
 _UPLOAD_POST_POLL_MS = 250
 _UPLOAD_POST_POLLS = 16
 _UPLOAD_POST_GRACE_MS = 2000
+#: Most file posts one `upload` lets through: Oracle ADF sends two, so a few more is slack, not
+#: an open door for a page that keeps posting.
+_UPLOAD_POSTS_MAX = 4
 _CELL_OPTION_POLL_MS = 500
 _CELL_OPTION_POLLS = 16
 
