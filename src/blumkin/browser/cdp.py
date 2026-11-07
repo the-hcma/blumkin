@@ -477,7 +477,11 @@ class PlaywrightDriver:
         self._net_handler: Any = None
         self._uploading = False
         self._upload_posts = 0
-        self._lenient_net = _navigation_net(page, lambda: self._uploading, self._count_upload_post)
+        self._lenient_net = _navigation_net(
+            page,
+            lambda: self._uploading and self._upload_posts < _UPLOAD_POSTS_MAX,
+            self._count_upload_post,
+        )
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -1440,16 +1444,17 @@ class PlaywrightDriver:
         on("request", moved)
 
     def _count_upload_post(self) -> None:
-        # One post only: the window closes as soon as the file's post has been let through.
+        # The window stays open for the whole upload: the file travels in two posts.
         self._upload_posts += 1
-        self._uploading = False
 
     def _hold_for_upload_post(self) -> None:
         """Keep the net open until the frame post of a chosen file shows up, for a short while.
 
         Oracle ADF sends the file from a hidden frame a moment after it is chosen, so the post
         can arrive after `set_input_files` returned. A page that never posts costs the cap, and
-        nothing is waited for in strict mode, where the net lets nothing through.
+        nothing is waited for in strict mode, where the net lets nothing through. The second post
+        of the pair is caught by the grace period after the first; one that comes later than
+        `_UPLOAD_POST_GRACE_MS` is swallowed, because `upload` closes the window in its `finally`.
         """
         for _ in range(_UPLOAD_POST_POLLS):
             if self._upload_posts:
@@ -1481,8 +1486,8 @@ class PlaywrightDriver:
                 # Through the handle the probes read: a form that swaps the input in between
                 # would otherwise receive the file while the replaced one is observed.
                 # Oracle ADF posts the chosen file from a hidden frame the moment it is
-                # chosen; the safety net lets that one frame post through, and only while
-                # this runs.
+                # chosen, in two posts; the safety net lets those frame posts through, and
+                # only while this runs.
                 self._uploading = True
                 self._upload_posts = 0
                 handle.set_input_files(str(resolved), timeout=self._timeout_ms)
@@ -2910,6 +2915,9 @@ _PICK_SNAPSHOT_CHARS = 2000
 _UPLOAD_POST_POLL_MS = 250
 _UPLOAD_POST_POLLS = 16
 _UPLOAD_POST_GRACE_MS = 2000
+#: Most file posts one `upload` lets through: Oracle ADF sends two, so a few more is slack, not
+#: an open door for a page that keeps posting.
+_UPLOAD_POSTS_MAX = 4
 _CELL_OPTION_POLL_MS = 500
 _CELL_OPTION_POLLS = 16
 
@@ -3153,11 +3161,13 @@ def _navigation_net(
 ) -> Callable[[Any], None]:
     """The safety net for form posts, which lets a file upload's frame post through.
 
-    While an `upload` runs, the first multipart POST from a child frame to the page's own host
-    is let through: Oracle ADF sends the chosen file that way, and answering it with an empty
-    `204` leaves the page waiting for an upload that never completes. Every other write is
-    swallowed as before, whatever the target, and so is a second post, a post from the main
-    page, a post that is not multipart, or one made while nothing uploads.
+    While an `upload` runs, every multipart POST from a child frame to the page's own host is
+    let through: Oracle ADF sends the chosen file that way, in two posts, and answering either
+    with an empty `204` leaves the page waiting for an upload that never completes (found on a
+    live draft report: with only the first let through, `AdfPage.PAGE.isSynchronizedWithServer`
+    stayed false and the dialog's `OK` timed out). Every other write is swallowed as before,
+    whatever the target, and so is a post from the main page, a post that is not multipart, or
+    one made while nothing uploads.
     """
 
     def handler(route: Any) -> None:
