@@ -17,6 +17,7 @@ from typing import Any
 
 from blumkin.browser.cdp import BrowserActionError, BrowserAttachError, CellEditedError
 from blumkin.browser.flow_params import validate_cell_values, validate_params
+from blumkin.browser.guard import SubmitBlockedError
 from blumkin.browser.handoff import HandoffResult
 from blumkin.browser.ledger import (
     ItemKind,
@@ -482,11 +483,11 @@ def verify_item(
     )
 
 
-def _withheld(exc: BrowserActionError, name: str) -> Exception:
+def _withheld(exc: BrowserActionError, name: str, what: str = "row") -> Exception:
     """An error of the same kind as `exc` that names the parameter and quotes nothing."""
     message = (
-        f"Expected to choose the row named by parameter {name!r}, got a failure "
-        f"({type(exc).__name__}); the row text is withheld"
+        f"Expected to choose the {what} named by parameter {name!r}, got a failure "
+        f"({type(exc).__name__}); the {what} text is withheld"
     )
     try:
         return type(exc)(message)
@@ -682,6 +683,37 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             actions.fill_task(
                 config, task, label, values[key], settle=False, **_field_kw(field_role, recorded)
             )
+            return
+        if action == "select":
+            if not step.control:
+                raise LedgerError("Flow step 'select' needs a control")
+            if step.bind is not None:
+                if step.bind not in values:
+                    raise LedgerError(f"Expected a value for {step.bind!r}, got none")
+                option = values[step.bind]
+            else:
+                option = step.value or ""
+            if not option:
+                raise LedgerError("Flow step 'select' needs the option to choose")
+            label, field_role, recorded = _control_ref(site, step.control, step.page)
+            try:
+                actions.select_task(
+                    config,
+                    task,
+                    label,
+                    option,
+                    private=step.bind is not None,
+                    settle=False,
+                    **_field_kw(field_role, recorded),
+                )
+            except BrowserActionError as exc:
+                if step.bind is None or isinstance(exc, SubmitBlockedError):
+                    # A guard refusal never names a private option, and its reason is the
+                    # part worth keeping.
+                    raise
+                # The option a parameter supplied is the user's data: the error names the
+                # parameter and quotes nothing (a lookup error can hold part of the option).
+                raise _withheld(exc, step.bind, "option") from None
             return
         if action == "verify":
             if not step.control:

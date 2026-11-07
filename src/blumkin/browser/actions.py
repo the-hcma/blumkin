@@ -1121,10 +1121,14 @@ def select_task(
     frame: int | None = None,
     host: str | None = None,
     nth: int | None = None,
+    private: bool = False,
     role: str | None = None,
     settle: bool = True,
 ) -> dict[str, Any]:
     """Choose `option` in the dropdown (a native select or an ARIA combobox) labelled `label`.
+
+    With `private` (an option a flow parameter supplied) the guard keeps the option out of its
+    refusals and its log.
 
     Narrowing and frames work as for `fill_task`. An option or field whose name is a
     finalizing action (such as "Submit") is refused. The read-back is the option the field
@@ -1133,7 +1137,7 @@ def select_task(
     target = _field_target(config, task, "selecting", exact, frame, host, nth, role)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        read_back = driver.select(label, option, target)
+        read_back = driver.select(label, option, target, private=private)
         payload = _field_payload("select", task, label, target, read_back, option)
         if settle:
             payload.update(

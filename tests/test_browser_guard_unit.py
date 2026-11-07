@@ -1902,6 +1902,21 @@ def test_pick_refuses_a_role_that_is_a_control_and_a_bad_nth() -> None:
     assert raw.calls == []
 
 
+def test_a_private_select_names_no_option_in_its_refusal(caplog: pytest.LogCaptureFixture) -> None:
+    _, driver = _guard()
+
+    with caplog.at_level("INFO"), pytest.raises(SubmitBlockedError) as plain:
+        driver.select("Type", "Submit report")
+    with caplog.at_level("INFO"), pytest.raises(SubmitBlockedError) as hidden:
+        driver.select("Type", "Submit report", None, True)
+
+    assert "Submit report" in str(plain.value)
+    assert "Submit report" not in str(hidden.value)
+    assert "Submit report" not in " ".join(
+        record.getMessage() for record in caplog.records if "an option in" in record.getMessage()
+    )
+
+
 def test_a_prefix_pick_reaches_the_driver_and_checks_the_whole_name() -> None:
     raw, driver = _guard()
     raw.controls["blumkin-probe"] = ControlInfo(

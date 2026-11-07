@@ -484,6 +484,21 @@ def test_a_step_resolves_its_control_on_the_page_it_names_and_matches_the_whole_
     assert fields[1] == {"label": "Unrecorded", "settle": False}  # as written: substring match
 
 
+def test_a_select_spec_names_its_control_and_binds_or_gives_the_option() -> None:
+    flow = build_flow(
+        "item",
+        ["kind:choice=Meals|Taxi"],
+        ["select expense.type bind=kind", "select expense.type value=Meals"],
+    )
+
+    first, second = flow.steps
+    assert (first.action, first.control, first.bind) == ("select", "expense.type", "kind")
+    assert (second.control, second.value, second.bind) == ("expense.type", "Meals", None)
+
+    with pytest.raises(FlowSpecError, match="name the control"):
+        build_flow("item", [], ["select bind=kind"])
+
+
 def test_a_pick_spec_can_name_a_role_and_a_prefix_match() -> None:
     flow = build_flow("lov", ["name:text"], ["pick bind=name role=gridcell match=prefix"])
 

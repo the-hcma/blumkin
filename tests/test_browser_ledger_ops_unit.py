@@ -1042,6 +1042,65 @@ def test_the_default_runner_picks_a_row_by_a_bound_text_or_a_literal_and_hides_t
     assert "withheld" in str(caught.value)
 
 
+def test_a_select_step_chooses_a_bound_or_literal_option_and_hides_the_option(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import BrowserActionError
+    from blumkin.browser.ledger import LedgerError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    chosen: list[tuple[str, str]] = []
+    private: list[bool] = []
+
+    def fake_select(config: Any, task: str, label: str, option: str, **kw: Any) -> dict:
+        chosen.append((label, option))
+        private.append(kw["private"])
+        if option == "Secret Type":
+            raise BrowserActionError(f"Expected one option named {option}, got 0")
+        return {}
+
+    monkeypatch.setattr(actions, "select_task", fake_select)
+    run = ledger_ops._default_run_step("expense-report")
+
+    run(FlowStep(action="select", control="Type", expect=None, page=None, bind="kind"),
+        {"kind": "Meals"})  # fmt: skip
+    run(FlowStep(action="select", control="Type", expect=None, page=None, value="Taxi"), {})
+    with pytest.raises(BrowserActionError) as caught:
+        run(FlowStep(action="select", control="Type", expect=None, page=None, bind="kind"),
+            {"kind": "Secret Type"})  # fmt: skip
+    with pytest.raises(LedgerError, match="'kind'"):
+        run(FlowStep(action="select", control="Type", expect=None, page=None, bind="kind"), {})
+    with pytest.raises(LedgerError, match="needs a control"):
+        run(FlowStep(action="select", control=None, expect=None, page=None, value="x"), {})
+
+    assert [option for _, option in chosen] == ["Meals", "Taxi", "Secret Type"]
+    assert private == [True, False, True]
+    assert "Secret Type" not in str(caught.value) and "'kind'" in str(caught.value)
+    assert "withheld" in str(caught.value)
+
+
+def test_a_guard_refusal_of_a_bound_select_keeps_its_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.guard import SubmitBlockedError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    def refuse(config: Any, task: str, label: str, option: str, **_: Any) -> dict:
+        raise SubmitBlockedError("Expected to select an option in 'Type', got a refusal: x")
+
+    monkeypatch.setattr(actions, "select_task", refuse)
+    run = ledger_ops._default_run_step("expense-report")
+
+    with pytest.raises(SubmitBlockedError, match="got a refusal"):
+        run(FlowStep(action="select", control="Type", expect=None, page=None, bind="kind"),
+            {"kind": "Submit report"})  # fmt: skip
+
+
 def test_a_pick_step_passes_its_role_and_prefix_match_to_the_pick(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
