@@ -194,7 +194,7 @@ def model_flows(config: BrowserSetup, task: str, name: str | None = None) -> dic
     flows = [flow for flow in model.flows if name is None or flow.name == name]
     if name is not None and not flows:
         known = ", ".join(flow.name for flow in model.flows) or "none"
-        raise PageIdError(f"Expected one of the model's flows ({known}), got {name!r}")
+        raise FlowSpecError(f"Expected one of the model's flows ({known}), got {name!r}")
     return {
         "flows": [
             {
