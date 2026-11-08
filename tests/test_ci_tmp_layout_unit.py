@@ -69,14 +69,42 @@ def test_the_layout_helper_wraps_the_wrapper_in_its_tool_layouts(
     helpers = tmp_path / "helpers"
     (helpers / "scripts" / "dev").mkdir(parents=True)
     fake = helpers / "scripts" / "dev" / "with-tmp-layout"
-    # Record the tool, then stop: the real command would need uv and the network.
+    # Record each tool and follow a nested layout call, but stop at the wrapper itself:
+    # running it would need uv and the network.
     fake.write_text(
-        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$1" >> "$TMPDIR/layout-tools"\nshift 2\nexit 0\n'
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$1" >> "$TMPDIR/layout-tools"\n'
+        "shift 2\n"
+        f'if [[ "$1" == {fake} ]]; then exec "$@"; fi\n'
+        "exit 0\n"
     )
     fake.chmod(0o755)
     done = _run(wrapper, tmp_path, REPOSITORY_HELPERS_DIR=str(helpers))
     assert done.returncode == 0, done.stderr
-    assert (tmp_path / "layout-tools").read_text().split() == [_WRAPPERS[wrapper][0]]
+    assert (tmp_path / "layout-tools").read_text().split() == _WRAPPERS[wrapper]
+
+
+@pytest.mark.parametrize("wrapper", [".github/ci/python-static", ".github/ci/pytest-hermetic"])
+def test_a_host_without_the_layout_helper_runs_the_wrapper_unchanged(
+    wrapper: str, tmp_path: Path
+) -> None:
+    stub_dir = tmp_path / "stub"
+    stub_dir.mkdir()
+    uv = stub_dir / "uv"
+    # A stand-in uv: log the call, answer the interpreter version probe, succeed.
+    uv.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$TMPDIR/uv-calls"\n'
+        'if [[ "$*" == *" -c "* ]]; then cut -d. -f1,2 .python-version; fi\n'
+        "exit 0\n"
+    )
+    uv.chmod(0o755)
+    path = f"{stub_dir}:{os.environ.get('PATH', '')}"
+    done = _run(wrapper, tmp_path, GITHUB_ACTIONS=None, PATH=path)
+    assert done.returncode == 0, done.stderr
+    calls = (tmp_path / "uv-calls").read_text()
+    assert ("run pytest" if "pytest" in wrapper else "run ruff check") in calls
+    assert not (tmp_path / "layout-tools").exists()
 
 
 def test_the_pytest_wrapper_nests_the_pytest_layout_inside_the_uv_one() -> None:

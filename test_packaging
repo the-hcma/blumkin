@@ -22,7 +22,9 @@ readonly repo_root
 # anywhere (a local preflight helper, say), like restore_build_metadata assumes.
 cd "$repo_root"
 
-temp_root="$(mktemp -d "${TMP_LAYOUT_DIR:-${TMPDIR:-/tmp}}/packaging.XXXXXX")"
+temp_parent="${TMP_LAYOUT_DIR:-${TMPDIR:-/tmp}}"
+mkdir -p "$temp_parent"
+temp_root="$(mktemp -d "$temp_parent/packaging.XXXXXX")"
 build_dir="$temp_root/dist"
 venv_dir="$temp_root/venv"
 outside_dir="$temp_root/outside"
