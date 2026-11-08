@@ -158,34 +158,40 @@ def model_flow_add(
     return payload | {"saved": True, "version": saved.version}
 
 
-def _refuse_finalizing_clicks(model: SiteModel, flow: Flow) -> None:
-    """A flow cannot click or press a control the model records as finalizing.
-
-    A recorded flow only holds clicks that were made through the guard, so it never has one; a
-    written one could, and `click` would refuse it only when the flow runs.
-    """
-    finalizing = {
-        (page.page_id, control.name)
-        for page in model.pages
-        for control in page.controls
-        if control.safety.value == "finalizing"
+def model_flows(config: BrowserSetup, task: str, name: str | None = None) -> dict[str, Any]:
+    """The flows of the task's current model, with their parameters and steps (one by `name`)."""
+    model = _stored(config, task, None)
+    flows = [flow for flow in model.flows if name is None or flow.name == name]
+    if name is not None and not flows:
+        known = ", ".join(flow.name for flow in model.flows) or "none"
+        raise FlowSpecError(f"Expected one of the model's flows ({known}), got {name!r}")
+    return {
+        "flows": [
+            {
+                "name": flow.name,
+                "params": [
+                    {
+                        key: value
+                        for key, value in dataclasses.asdict(param).items()
+                        if value not in (None, ())
+                    }
+                    for param in flow.params
+                ],
+                "steps": [
+                    {
+                        key: value
+                        for key, value in dataclasses.asdict(step).items()
+                        if value is not None
+                    }
+                    for step in flow.steps
+                ],
+            }
+            for flow in flows
+        ],
+        "ok": True,
+        "task": task,
+        "version": model.version,
     }
-    for number, step in enumerate(flow.steps, start=1):
-        if step.action not in ("click", "press") or step.control is None:
-            continue
-        # A step that names its page is judged by that page's control (names repeat across
-        # pages); one that does not is judged by every page, so none can slip through.
-        hit = (
-            (step.page, step.control) in finalizing
-            if step.page is not None
-            else any(name == step.control for _page, name in finalizing)
-        )
-        if hit:
-            raise FlowSpecError(
-                f"Expected step {number} not to click {step.control!r}, got a control the "
-                "model records as finalizing; blumkin never submits, so hand that step to the "
-                "person with a handoff step"
-            )
 
 
 def model_versions(config: BrowserSetup, task: str) -> dict[str, Any]:
@@ -230,6 +236,36 @@ def _diff_payload(task: str, old: int, new: int, diff: ModelDiff) -> dict[str, A
         "safety_changed": {page: list(names) for page, names in diff.safety_changed.items()},
         "task": task,
     }
+
+
+def _refuse_finalizing_clicks(model: SiteModel, flow: Flow) -> None:
+    """A flow cannot click or press a control the model records as finalizing.
+
+    A recorded flow only holds clicks that were made through the guard, so it never has one; a
+    written one could, and `click` would refuse it only when the flow runs.
+    """
+    finalizing = {
+        (page.page_id, control.name)
+        for page in model.pages
+        for control in page.controls
+        if control.safety.value == "finalizing"
+    }
+    for number, step in enumerate(flow.steps, start=1):
+        if step.action not in ("click", "press") or step.control is None:
+            continue
+        # A step that names its page is judged by that page's control (names repeat across
+        # pages); one that does not is judged by every page, so none can slip through.
+        hit = (
+            (step.page, step.control) in finalizing
+            if step.page is not None
+            else any(name == step.control for _page, name in finalizing)
+        )
+        if hit:
+            raise FlowSpecError(
+                f"Expected step {number} not to click {step.control!r}, got a control the "
+                "model records as finalizing; blumkin never submits, so hand that step to the "
+                "person with a handoff step"
+            )
 
 
 def _stored(config: BrowserSetup, task: str, version: int | None) -> SiteModel:

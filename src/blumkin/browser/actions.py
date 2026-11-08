@@ -953,6 +953,7 @@ def read_task(
     task: str,
     *,
     aria: bool = False,
+    compact: bool = False,
     frame: int | None = None,
     host: str | None = None,
     wait_s: float = 0.0,
@@ -962,6 +963,10 @@ def read_task(
     limit: int = MAX_READ_CHARS,
 ) -> dict[str, Any]:
     """Read the page's visible text, flagged when it looks like it is trying to instruct.
+
+    `compact` returns the text with each line's runs of whitespace (spaces, tabs and the
+    non-breaking spaces Oracle pages use) collapsed to one space and its blank lines dropped
+    (the injection scan has already seen the page as it was).
 
     `frame` reads a child frame instead (its number from `frames_task`), which needs the
     task to declare `allowed_hosts`; `aria` returns the ARIA snapshot (roles and accessible
@@ -983,6 +988,10 @@ def read_task(
         )
     if within is not None and not aria:
         raise ValueError("Expected --within together with --aria, got a text read")
+    if compact and aria:
+        raise ValueError(
+            "Expected --compact on a text read, got --aria (it would flatten the tree)"
+        )
     scope_role, scope_name = parse_within(within) if within is not None else ("", None)
     hosts = _declared_hosts(config, task)
     if frame is not None and not hosts:
@@ -1061,7 +1070,8 @@ def read_task(
                         cleaned, location="page.text"
                     ).to_payload(),
                 )
-            shown, more, next_offset = window(page.text, offset, limit)
+            body = _compacted(page.text) if compact else page.text
+            shown, more, next_offset = window(body, offset, limit)
             return {
                 "action": "read",
                 "frame": frame,
@@ -1077,7 +1087,7 @@ def read_task(
                 "title": redact_addresses(_one_line(driver.title()))
                 if on_sign_in
                 else _one_line(driver.title()),
-                "total_chars": len(page.text),
+                "total_chars": len(body),
                 "truncated": more,
                 "untrusted": UNTRUSTED_NOTE,
                 "url": _display_url(driver.url) if on_sign_in else driver.url,
@@ -1671,6 +1681,12 @@ def _clean_download_name(suggested: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9._ ()-]", "_", stem).lstrip("._ ()-")
     extension = re.sub(r"[^A-Za-z0-9.]", "_", extension)
     return f"{stem or 'download'}{extension}" if extension else stem
+
+
+def _compacted(text: str) -> str:
+    """`text` with whitespace runs (non-breaking spaces too) as one space and no blank lines."""
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
 
 
 def _dialog_name(match: re.Match[str]) -> str:

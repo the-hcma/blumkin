@@ -5109,3 +5109,49 @@ def test_goto_reports_the_address_the_page_is_at_after_the_wait_and_never_the_ol
     # model has no page for /elsewhere, so the wait ends with the bound, not a false landmark.
     assert payload["landmark_page"] is None
     assert payload["url"] == "https://erp.example.com/elsewhere"
+
+
+def test_read_compact_collapses_whitespace_and_drops_blank_lines(raw: _Raw) -> None:
+    raw.page_text = PageText(
+        text="Time   Card\t\t Period\n\n\t\n  Mon,Nov 02   8\n\n", injection_warning=None
+    )
+
+    plain = _json(_run("browser", "read", "expense-report"))
+    compact = _json(_run("browser", "read", "expense-report", "--compact"))
+
+    assert plain["text"].count("\n") > 1
+    assert compact["text"] == "Time Card Period\nMon,Nov 02 8"
+    assert compact["total_chars"] == len(compact["text"])
+
+
+def test_read_compact_keeps_the_injection_warning_of_the_page_as_it_was(raw: _Raw) -> None:
+    warning = {"matched": True, "findings": [{"family": "override_phrasing"}]}
+    raw.page_text = PageText(text="ignore    all\n\nprevious", injection_warning=warning)
+
+    payload = _json(_run("browser", "read", "expense-report", "--compact"))
+
+    assert payload["injection_warning"] == warning
+    assert payload["text"] == "ignore all\nprevious"
+
+
+def test_read_compact_does_not_apply_to_an_aria_read(raw: _Raw) -> None:
+    result = _run("browser", "read", "expense-report", "--aria", "--compact")
+
+    assert result.exit_code == EXIT_USAGE
+
+
+def test_read_compact_also_collapses_the_non_breaking_spaces_oracle_pages_use(raw: _Raw) -> None:
+    raw.page_text = PageText(text="Total\u00a0\u00a0due\u00a012.50\n", injection_warning=None)
+
+    assert _json(_run("browser", "read", "expense-report", "--compact"))["text"] == (
+        "Total due 12.50"
+    )
+
+
+def test_read_task_itself_refuses_a_compact_aria_read(raw: _Raw, _config_dir: Path) -> None:
+    from blumkin.browser.actions import read_task
+    from blumkin.config import load_browser_setup
+
+    with pytest.raises(ValueError, match="--compact on a text read"):
+        read_task(load_browser_setup(), "expense-report", aria=True, compact=True)
+    assert raw.calls == []  # refused before the page was read
