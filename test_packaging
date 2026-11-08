@@ -3,6 +3,17 @@
 # outside the repo, and smoke the console script. Catches missing package data
 # and entry-point mistakes that an editable install hides.
 set -euo pipefail
+# Temp files and caches follow $TMPDIR/<project>/<branch>/<tool> (repository-helpers#832).
+# CI exports REPOSITORY_HELPERS_DIR through the setup-tmp-layout action; without a clone, run unchanged.
+layout_bin="${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/with-tmp-layout"
+if [[ -z "${CI_TMP_LAYOUT:-}" ]]; then
+  if [[ -x "$layout_bin" ]]; then
+    CI_TMP_LAYOUT=1 exec "$layout_bin" uv -- bash "$0" "$@"
+  elif [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+    echo 'ERROR: with-tmp-layout missing; add the setup-tmp-layout action step before this one' >&2
+    exit 1
+  fi
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root
@@ -11,7 +22,7 @@ readonly repo_root
 # anywhere (a local preflight helper, say), like restore_build_metadata assumes.
 cd "$repo_root"
 
-temp_root="$(mktemp -d)"
+temp_root="$(mktemp -d "${TMP_LAYOUT_DIR:-${TMPDIR:-/tmp}}/packaging.XXXXXX")"
 build_dir="$temp_root/dist"
 venv_dir="$temp_root/venv"
 outside_dir="$temp_root/outside"
