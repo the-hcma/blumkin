@@ -620,3 +620,40 @@ def test_a_fill_or_press_spec_reads_its_value() -> None:
     )
 
     assert [step.value for step in flow.steps] == ["P-1", None, "Tab"]
+
+
+def test_an_upload_step_whose_control_is_recorded_as_a_button_finds_the_input_by_its_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        actions, "upload_task", lambda c, t, label, path, **k: seen.append({"label": label, **k})
+    )
+    run = ledger_ops._default_run_step("expense-report", _two_page_model())
+
+    run(FlowStep(action="upload", control="save", expect=None, page="draft", bind="f"), {"f": "r"})
+
+    assert seen == [{"label": "Save Draft", "settle": False, "nth": None}]  # no role, no exact
+
+
+def test_an_upload_step_recorded_by_its_label_keeps_the_whole_name_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        actions, "upload_task", lambda c, t, label, path, **k: seen.append({"label": label, **k})
+    )
+    monkeypatch.setattr(
+        ledger_ops, "_control_ref", lambda site, control, page, **k: ("Receipt", None, True)
+    )
+    run = ledger_ops._default_run_step("expense-report", _two_page_model())
+
+    run(FlowStep(action="upload", control="save", expect=None, page="draft", bind="f"), {"f": "r"})
+
+    assert seen == [{"label": "Receipt", "exact": True, "settle": False, "nth": None}]
