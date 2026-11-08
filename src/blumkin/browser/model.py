@@ -532,8 +532,6 @@ _VERIFY = "verify"
 _HEADING_ACTIONS = frozenset(
     {"cell", "click", "fill", "goto", "handoff", "pick", "press", "select", "upload"}
 )
-#: The steps that can say which of several same-named controls they mean.
-_NTH_ACTIONS = frozenset({"click", "fill", "press", "select", "upload", "verify"})
 _LOGICAL_NAME = re.compile(r"[a-z][a-z0-9_.\[\]-]{0,63}")
 _MAX_CELL_REF = 80
 _MAX_CELL_VALUE = 80
@@ -551,6 +549,8 @@ _MAX_PAGES = 200
 _MAX_PARAMS = 12
 _MAX_STEPS = 200
 _MAX_TEXT = 200
+#: The steps that can say which of several same-named controls they mean.
+_NTH_ACTIONS = frozenset({"click", "fill", "press", "select", "upload", "verify"})
 _STORE_DIRNAME = "browser-models"
 _TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 _DIGIT_RUN = re.compile(r"\d{6,}")
