@@ -524,8 +524,10 @@ _LOCK_FILENAME = ".lock"
 #: changes nothing).
 _BOUND_ACTIONS = frozenset({"fill", "select", "upload", "verify"})
 _CELL = "cell"
+_FILL = "fill"
 _HANDOFF = "handoff"
 _PICK = "pick"
+_PRESS = "press"
 _SELECT = "select"
 _VERIFY = "verify"
 #: The steps that can state a heading the page must show afterwards.
@@ -1080,7 +1082,7 @@ def _step(
                 f"Expected {where}.bind only on a fill, select, upload, verify, cell or pick "
                 f"step, got it on {action!r}"
             )
-        if action in (_CELL, _PICK, _SELECT) and literal is not None:
+        if action in (_CELL, _FILL, _PICK, _SELECT) and literal is not None:
             raise SiteModelError(f"Expected {where} with a bind or a value, not both")
         if bind not in declared:
             raise SiteModelError(
@@ -1096,7 +1098,7 @@ def _step(
                 f"Expected {where}.bind of a {'file' if action == 'upload' else 'non-file'} "
                 f"parameter for a {action} step, got {_shown(bind)}"
             )
-    elif declared and action in _BOUND_ACTIONS and not (action == _SELECT and literal):
+    elif declared and action in _BOUND_ACTIONS and not (action in (_FILL, _SELECT) and literal):
         raise SiteModelError(
             f"Expected {where} to bind a parameter (the flow declares params), got none"
         )
@@ -1257,6 +1259,13 @@ def _cell_keys(
     if action == _SELECT:
         if any(key != "value" for key in present):
             raise SiteModelError(f"Expected a select step with only a bind or a value in {where}")
+        text = data.get("value")
+        if text is None:
+            return None, None, None
+        return None, None, _text(text, f"{where}.value", max_len=_MAX_CELL_VALUE, plain=True)
+    if action in (_FILL, _PRESS):
+        if any(key != "value" for key in present):
+            raise SiteModelError(f"Expected a {action} step with only a bind or a value in {where}")
         text = data.get("value")
         if text is None:
             return None, None, None
