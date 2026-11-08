@@ -1483,3 +1483,37 @@ def test_a_bad_step_nth_is_refused(tmp_path: Path, nth: object) -> None:
     payload["flows"][0]["steps"][0]["nth"] = nth
     with pytest.raises(SiteModelError, match="nth"):
         _load_payload(tmp_path, payload)
+
+
+def _filled_flow(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    flow = payload["flows"][0]
+    flow["params"] = [{"kind": "text", "name": "kind"}]
+    for existing in flow["steps"]:
+        if existing["action"] in ("fill", "upload"):
+            existing["bind"] = "kind"
+    fill = next(step for step in flow["steps"] if step["action"] == "fill")
+    return flow, fill
+
+
+def test_a_fill_step_can_carry_a_literal_value_and_a_press_step_a_key(tmp_path: Path) -> None:
+    flow, fill = _filled_flow(_payload(tmp_path))
+    flow["steps"].append(dict(fill, bind=None, value="P-1"))
+    flow["steps"].append(dict(fill, action="press", bind=None, value="Tab"))
+    payload = {**_payload(tmp_path), "flows": [flow]}
+
+    loaded = _load_payload(tmp_path, payload)
+
+    assert loaded is not None
+    assert [s.value for s in loaded.flows[0].steps[-2:]] == ["P-1", "Tab"]
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+def test_a_fill_step_with_both_a_bind_and_a_value_is_refused(tmp_path: Path) -> None:
+    payload = _payload(tmp_path)
+    _, fill = _filled_flow(payload)
+    fill["value"] = "P-1"
+
+    with pytest.raises(SiteModelError, match="bind or a value, not both"):
+        _load_payload(tmp_path, payload)

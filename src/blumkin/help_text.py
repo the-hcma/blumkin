@@ -1011,7 +1011,9 @@ role, match, nth; quote a value with spaces in the shell's own way). `nth=N` (1-
 order) says which of several same-named controls a click, press, fill, select, upload or verify
 step means; the step is refused with the real count when the page has fewer (a verify step
 reports it as missing). The actions are
-click, press, fill, select (choose an option in a dropdown, from a bind or a literal value),
+click, press (with value=KEY it sends that key, such as Tab or ArrowDown, and otherwise clicks),
+fill (a bound parameter, or a literal value for a fixed text), select (choose an option in a
+dropdown, from a bind or a literal value),
 upload, goto, cell, pick (choose a result row or, with role=gridcell, a cell by its text, or by
 its start with match=prefix), verify (check that a field holds the value of a bound parameter,
 reporting only match or not) and handoff. `starts_on=HEADING` makes a step refuse to

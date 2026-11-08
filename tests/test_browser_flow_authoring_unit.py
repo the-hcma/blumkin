@@ -567,3 +567,56 @@ def test_the_runner_passes_a_step_s_nth_on_to_every_action_that_takes_one(
         ("verify_task", 2),
         ("click_task", None),
     ]
+
+
+def test_a_press_step_with_a_value_sends_that_key_and_one_without_still_clicks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    pressed: list[tuple[str, str, int | None]] = []
+    clicked: list[str] = []
+    monkeypatch.setattr(
+        actions,
+        "press_task",
+        lambda c, t, label, key, **k: pressed.append((label, key, k.get("nth"))),
+    )
+    monkeypatch.setattr(actions, "click_task", lambda c, t, name, **k: clicked.append(name))
+    run = ledger_ops._default_run_step("expense-report", None)
+    base = {"expect": None, "page": None}
+
+    run(FlowStep(action="press", control="Location", value="Tab", nth=2, **base), {})
+    run(FlowStep(action="press", control="Open", **base), {})
+
+    assert pressed == [("Location", "Tab", 2)]
+    assert clicked == ["Open"]
+
+
+def test_a_fill_step_with_a_literal_value_types_it_and_needs_no_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    typed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        actions, "fill_task", lambda c, t, label, value, **k: typed.append((label, value))
+    )
+    run = ledger_ops._default_run_step("expense-report", None)
+    base = {"expect": None, "page": None}
+
+    run(FlowStep(action="fill", control="Project", value="P-1", **base), {})
+    run(FlowStep(action="fill", control="Amount", bind="amount", **base), {"amount": "9.50"})
+
+    assert typed == [("Project", "P-1"), ("Amount", "9.50")]
+
+
+def test_a_fill_or_press_spec_reads_its_value() -> None:
+    flow = build_flow(
+        "item",
+        ["amount:text"],
+        ["fill project value=P-1", "fill amount bind=amount", "press location value=Tab"],
+    )
+
+    assert [step.value for step in flow.steps] == ["P-1", None, "Tab"]

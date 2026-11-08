@@ -621,6 +621,19 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             raise StepNotMadeError("the page does not show the heading the step starts on")
 
     def _run_action(step: FlowStep, action: str, values: Mapping[str, str]) -> str | None:
+        if action == "press" and step.value:
+            if not step.control:
+                raise LedgerError("Flow step 'press' needs a control")
+            label, field_role, recorded = _control_ref(site, step.control, step.page)
+            actions.press_task(
+                config,
+                task,
+                label,
+                step.value,
+                nth=step.nth,
+                **_field_kw(field_role, recorded),
+            )
+            return
         if action in {"click", "press"}:
             if not step.control:
                 raise LedgerError(f"Flow step {action!r} needs a control")
@@ -677,14 +690,18 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             if not step.control:
                 raise LedgerError("Flow step 'fill' needs a control")
             key = step.bind or step.control
-            if key not in values:
+            if step.bind is None and step.value is not None:
+                typed = step.value
+            elif key not in values:
                 raise LedgerError(f"Expected a value for {key!r}, got none")
+            else:
+                typed = values[key]
             label, field_role, recorded = _control_ref(site, step.control, step.page)
             actions.fill_task(
                 config,
                 task,
                 label,
-                values[key],
+                typed,
                 settle=False,
                 nth=step.nth,
                 **_field_kw(field_role, recorded),
