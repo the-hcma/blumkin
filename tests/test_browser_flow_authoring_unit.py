@@ -480,8 +480,14 @@ def test_a_step_resolves_its_control_on_the_page_it_names_and_matches_the_whole_
     run(FlowStep(action="fill", control="Unrecorded", expect=None, page=None, bind="v"), {"v": "1"})
 
     assert seen == [("Submit Report", "button"), ("Save Draft", "button")]
-    assert fields[0] == {"label": "Save Draft", "role": "button", "exact": True, "settle": False}
-    assert fields[1] == {"label": "Unrecorded", "settle": False}  # as written: substring match
+    assert fields[0] == {
+        "label": "Save Draft",
+        "role": "button",
+        "exact": True,
+        "settle": False,
+        "nth": None,
+    }
+    assert fields[1] == {"label": "Unrecorded", "settle": False, "nth": None}  # as written
 
 
 def test_a_select_spec_names_its_control_and_binds_or_gives_the_option() -> None:
@@ -512,3 +518,52 @@ def test_pick_is_a_flow_action_that_takes_a_bind_or_a_value_and_no_control() -> 
     first, second = flow.steps
     assert (first.action, first.bind, first.control) == ("pick", "city", None)
     assert (second.value, second.bind) == ("Boston, MA", None)
+
+
+def test_a_step_spec_can_say_which_of_several_same_named_controls_it_means() -> None:
+    flow = build_flow(
+        "attach",
+        ["title:text", "file:file"],
+        ["fill title bind=title nth=2", "upload file bind=file nth=2", "click ok nth=1"],
+    )
+
+    assert [step.nth for step in flow.steps] == [2, 2, 1]
+
+
+@pytest.mark.parametrize("text", ["two", "-1", "1.5", "\u0662"])
+def test_a_non_numeric_nth_is_refused_when_the_spec_is_read(text: str) -> None:
+    with pytest.raises(FlowSpecError, match="nth in step 1 to be a whole number"):
+        build_flow("attach", [], [f"click ok nth={text}"])
+
+
+def test_the_runner_passes_a_step_s_nth_on_to_every_action_that_takes_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    seen: list[tuple[str, int | None]] = []
+    for name in ("click_task", "fill_task", "select_task", "upload_task", "verify_task"):
+        monkeypatch.setattr(
+            actions,
+            name,
+            lambda *a, _n=name, **k: seen.append((_n, k.get("nth"))) or {"status": "match"},
+        )
+    run = ledger_ops._default_run_step("expense-report", None)
+    base = {"expect": None, "page": None}
+
+    run(FlowStep(action="click", control="OK", nth=3, **base), {})
+    run(FlowStep(action="fill", control="Title", bind="v", nth=2, **base), {"v": "x"})
+    run(FlowStep(action="select", control="Type", value="Meals", nth=4, **base), {})
+    run(FlowStep(action="upload", control="File", bind="f", nth=2, **base), {"f": "r.pdf"})
+    run(FlowStep(action="verify", control="Title", bind="v", nth=2, **base), {"v": "x"})
+    run(FlowStep(action="click", control="Save", **base), {})
+
+    assert seen == [
+        ("click_task", 3),
+        ("fill_task", 2),
+        ("select_task", 4),
+        ("upload_task", 2),
+        ("verify_task", 2),
+        ("click_task", None),
+    ]

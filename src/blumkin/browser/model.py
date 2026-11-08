@@ -110,6 +110,11 @@ class FlowStep:
     #: matches (`exact`, the default, or `prefix`: the element's name starts with the text).
     match: str | None = None
     role: str | None = None
+    #: Which of several controls of one name a `click`, `press`, `fill`, `select`, `upload` or
+    #: `verify` step means: 1-based, in DOM order, as `--nth` is on the command line. The step
+    #: is refused with the real count when the page has fewer; None means the name must be
+    #: unique.
+    nth: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,10 +544,13 @@ _MAX_FLOWS = 50
 _MAX_HEADING = 100
 _MAX_INSTRUCTION = 300
 _MAX_LOCATORS = 10
+_MAX_NTH = 99
 _MAX_PAGES = 200
 _MAX_PARAMS = 12
 _MAX_STEPS = 200
 _MAX_TEXT = 200
+#: The steps that can say which of several same-named controls they mean.
+_NTH_ACTIONS = frozenset({"click", "fill", "press", "select", "upload", "verify"})
 _STORE_DIRNAME = "browser-models"
 _TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 _DIGIT_RUN = re.compile(r"\d{6,}")
@@ -686,6 +694,7 @@ def _flow_payload(flow: Flow) -> dict[str, Any]:
             | ({"value": step.value} if step.value is not None else {})
             | ({"starts_on": step.starts_on} if step.starts_on is not None else {})
             | ({"match": step.match} if step.match is not None else {})
+            | ({"nth": step.nth} if step.nth is not None else {})
             | ({"role": step.role} if step.role is not None else {})
             for step in flow.steps
         ],
@@ -1017,6 +1026,7 @@ def _step(
             "expect_heading",
             "instruction",
             "match",
+            "nth",
             "role",
             "row",
             "starts_on",
@@ -1137,6 +1147,7 @@ def _step(
     if expect is not None:
         expect = _text(expect, f"{where}.expect", plain=True)
     match, pick_role = _pick_options(data, where, action)
+    nth = _step_nth(data, where, action)
     return FlowStep(
         action=action,
         bind=bind,
@@ -1146,12 +1157,30 @@ def _step(
         expect_heading=expect_heading,
         instruction=instruction,
         match=match,
+        nth=nth,
         page=page,
         role=pick_role,
         row=row,
         starts_on=starts_on,
         value=literal,
     )
+
+
+def _step_nth(data: Mapping[str, Any], where: str, action: str) -> int | None:
+    """The `nth` of a step that acts on one of several same-named controls, or None."""
+    nth = data.get("nth")
+    if nth is None:
+        return None
+    if action not in _NTH_ACTIONS:
+        raise SiteModelError(
+            f"Expected {where}.nth only on a click, fill, press, select, upload or verify step, "
+            f"got it on {action!r}"
+        )
+    if not isinstance(nth, int) or isinstance(nth, bool) or not 1 <= nth <= _MAX_NTH:
+        raise SiteModelError(
+            f"Expected {where}.nth to be a whole number from 1 to {_MAX_NTH}, got {_shown(nth)}"
+        )
+    return nth
 
 
 def _pick_options(

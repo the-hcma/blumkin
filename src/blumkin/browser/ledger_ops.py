@@ -627,7 +627,7 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             name, role, _recorded = _control_ref(
                 site, step.control, step.page, default_role="button"
             )
-            actions.click_task(config, task, name, role=role)
+            actions.click_task(config, task, name, role=role, nth=step.nth)
             return
         if action == "pick":
             if step.bind is not None:
@@ -681,7 +681,13 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                 raise LedgerError(f"Expected a value for {key!r}, got none")
             label, field_role, recorded = _control_ref(site, step.control, step.page)
             actions.fill_task(
-                config, task, label, values[key], settle=False, **_field_kw(field_role, recorded)
+                config,
+                task,
+                label,
+                values[key],
+                settle=False,
+                nth=step.nth,
+                **_field_kw(field_role, recorded),
             )
             return
         if action == "select":
@@ -704,6 +710,7 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                     option,
                     private=step.bind is not None,
                     settle=False,
+                    nth=step.nth,
                     **_field_kw(field_role, recorded),
                 )
             except BrowserActionError as exc:
@@ -724,7 +731,12 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             label, field_role, recorded = _control_ref(site, step.control, step.page)
             try:
                 checked = actions.verify_task(
-                    config, task, label, values[key], **_field_kw(field_role, recorded)
+                    config,
+                    task,
+                    label,
+                    values[key],
+                    nth=step.nth,
+                    **_field_kw(field_role, recorded),
                 )
             except BrowserActionError as exc:
                 raise _rescrubbed(exc, step, values) from None
@@ -753,7 +765,13 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             target = Path(os.path.join(os.getcwd(), path)) if step.bind else Path(path)
             label, field_role, recorded = _control_ref(site, step.control, step.page)
             actions.upload_task(
-                config, task, label, target, settle=False, **_field_kw(field_role, recorded)
+                config,
+                task,
+                label,
+                target,
+                settle=False,
+                nth=step.nth,
+                **_field_kw(field_role, recorded),
             )
             return
         if action in {"expect", "check", "landmark"}:
