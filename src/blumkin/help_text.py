@@ -611,6 +611,11 @@ one) is waited through: the page address is polled for up to `--sign-in-wait` se
 command finishes as soon as the page is on an allowed host (`waited_for_sign_in_s` says how
 long, `sign_in_host` where). If the page is still on the sign-in page when the time is up
 (`sign_in_timeout`), sign in and run the command again; the browser keeps running.
+When the task has a saved model that records a page for the address it landed on, the command
+also waits (up to 20 seconds) until the page shows that page's landmark controls, so a `cell` or
+a click right after it does not hit a card that is still being built: `landmark_page` names the
+page that showed and `waited_for_page_s` how long; if the time passes first, `landmark_timeout`
+is true and the text output warns, and the goto itself still succeeded.
 With `--json`, `chain` lists the addresses the page moved through when there was more than one
 (host and path only; a segment that may be an id or an address is masked, and a host that is
 neither allowed nor a sign-in host shows only its name), so a redirect loop can be seen.
@@ -681,7 +686,7 @@ Examples:
   blumkin browser init-task --template expense-report --host erp.example.com \\
     --form-url https://erp.example.com/expenses --upload-dir ~/Documents/receipts --yes
   blumkin browser init-task --template time-sheet --host erp.example.com \\
-    --form-url https://erp.example.com/timecards --yes
+    --form-url https://erp.example.com/timecards --sign-in-host idp.example.com --yes
 
 Creates the task's browser profile (empty; your sign-in lives there later) and prints the
 `[browser.tasks.TASK]` table the template starts from: the hosts the site uses, including the
@@ -692,7 +697,9 @@ already exists is never changed, and a config.toml that is not valid TOML, or is
 not a regular file, is left alone. The profile is created either way. TASK defaults to the
 template name. The Teams template's `*.sharepoint.com` covers every organization's SharePoint:
 narrow it to your tenant's host. Templates: expense-report, teams-transcript, time-sheet. The
-time-sheet template needs `--host` too, takes `--form-url`, declares `Copy Previous Time Card`
+time-sheet template needs `--host` too, takes `--form-url` and `--sign-in-host` (it writes
+`sign_in_account = true`, so `blumkin browser sign-in` can click your work account's tile, and
+`sign_in_hosts` for an identity provider that is not built in), declares `Copy Previous Time Card`
 and `Save` and keeps `Submit` and `Clear Time Card` refused (`extra_deny_names`); the project,
 task, hours and period stay in your own task definition. The expense-report
 template needs `--host` (the site's host differs per organization) and fills in the controls of

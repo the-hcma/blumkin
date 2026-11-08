@@ -4983,3 +4983,99 @@ def test_a_cell_value_that_starts_like_a_finalizing_action_is_refused_on_any_pat
             cell_task(load_browser_setup(), "expense-report", "1", "2", value)
 
     assert [call for call in raw.calls if call[0] == "edit_cell"] == []
+
+
+# --------------------------------------------------------------------------- goto waits (#692)
+
+_CARD = "https://erp.example.com/timecards"
+_CARD_LANDMARKS = '- button "Save"\n- button "Templates"\n- grid "Time Card"\n'
+
+
+def _card_model(config_dir: Path) -> None:
+    from blumkin.browser.model import (
+        Page,
+        SiteModel,
+        default_store,
+        save_model,
+    )
+
+    page = Page(
+        page_id="time-card",
+        url_template="/timecards",
+        fingerprint=("button:Save", "button:Templates", "grid:Time Card"),
+        controls=(),
+    )
+    save_model(
+        default_store(config_dir),
+        SiteModel(
+            blumkin_version="1.0.0",
+            flows=(),
+            hosts=("erp.example.com",),
+            pages=(page,),
+            recorded_at="2026-11-08T12:00:00Z",
+            task="expense-report",
+            version=1,
+        ),
+    )
+
+
+def _goto_card(raw: _Raw, texts: list[str]) -> tuple[dict[str, Any], _Clock]:
+    from blumkin.browser.actions import goto_task
+    from blumkin.config import load_browser_setup
+
+    clock = _Clock()
+    raw.on_wait = clock.sleep
+    reads = iter(texts)
+    last = texts[-1]
+    raw.aria_snapshot = lambda: next(reads, last)  # type: ignore[method-assign]
+    payload = goto_task(load_browser_setup(), "expense-report", _CARD, now=clock.now)
+    return payload, clock
+
+
+def test_goto_waits_until_a_page_the_model_records_shows_its_landmarks(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    _card_model(_config_dir)
+
+    payload, clock = _goto_card(raw, ["", '- heading "Loading"\n', _CARD_LANDMARKS])
+
+    assert payload["landmark_page"] == "time-card"
+    assert payload["waited_for_page_s"] == 2.0
+    assert "landmark_timeout" not in payload
+    assert clock.sleeps == 2
+
+
+def test_goto_says_so_when_the_bound_passes_without_the_landmarks(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import GOTO_LANDMARK_WAIT_S
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    _card_model(_config_dir)
+
+    payload, clock = _goto_card(raw, ['- heading "Loading"\n'])
+
+    assert payload["landmark_page"] is None
+    assert payload["landmark_timeout"] is True
+    assert payload["waited_for_page_s"] == GOTO_LANDMARK_WAIT_S
+    assert payload["url"] == _CARD  # the goto itself still succeeded
+
+
+def test_goto_without_a_model_waits_for_nothing_and_reads_no_page(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+
+    payload, clock = _goto_card(raw, [_CARD_LANDMARKS])
+
+    assert "landmark_page" not in payload and "landmark_timeout" not in payload
+    assert clock.sleeps == 0
+
+
+def test_the_goto_text_warns_only_when_the_landmark_wait_ran_out() -> None:
+    from blumkin.cli import _goto_notes
+
+    assert _goto_notes({"landmark_page": "time-card", "waited_for_page_s": 2.0}) == []
+    (line,) = _goto_notes({"landmark_timeout": True, "waited_for_page_s": 20.0})
+    assert "20.0s" in line and "read the page" in line

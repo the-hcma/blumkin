@@ -586,6 +586,39 @@ def test_the_time_sheet_table_seeds_the_controls_and_refuses_clear_and_submit(
     assert [profile.task for profile in list_profiles(config)] == ["time-sheet"]
 
 
+def test_the_time_sheet_table_writes_the_sign_in_keys_the_loader_accepts(config: Path) -> None:
+    result = _run(
+        "--template", "time-sheet", "--host", "erp.example.com",
+        "--form-url", "https://erp.example.com/timecards",
+        "--sign-in-host", "IDP.example.com", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+    assert policy.sign_in_account is True
+    assert policy.sign_in_hosts == ("idp.example.com",)
+    assert policy.form_url == "https://erp.example.com/timecards"
+
+
+def test_the_time_sheet_table_picks_the_account_even_without_a_sign_in_host(
+    config: Path,
+) -> None:
+    result = _run("--template", "time-sheet", "--host", "erp.example.com", "--yes")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    policy = load_browser_setup().browser.tasks["time-sheet"]
+    assert policy.sign_in_account is True
+    assert policy.sign_in_hosts == ()
+
+
+def test_a_template_that_does_not_pick_the_account_takes_no_sign_in_host(config: Path) -> None:
+    result = _run("--template", "teams-transcript", "--sign-in-host", "idp.example.com")
+
+    assert result.exit_code == EXIT_USAGE
+    assert "--sign-in-host" in _payload(result)["message"]
+    assert "sign_in_account" not in _run("--template", "teams-transcript").output
+
+
 def test_clear_time_card_is_refused_by_the_guard_the_template_configures(config: Path) -> None:
     from blumkin.browser.guard import is_finalizing_name
 

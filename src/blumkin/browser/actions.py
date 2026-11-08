@@ -153,6 +153,8 @@ MAX_TITLE_CHARS = 200
 DEFAULT_SIGN_IN_WAIT_S = 120.0
 #: How long `sign-in` waits, after the click, for the page to reach one of the task's hosts.
 DEFAULT_PICK_WAIT_S = 20.0
+#: How long `goto` waits for a page the task's model records to show its landmarks.
+GOTO_LANDMARK_WAIT_S = 20.0
 
 #: Identity providers `goto` waits through. Only providers whose host is the same for everyone
 #: are built in: anyone can register an Okta, Auth0, OneLogin or Ping tenant, so those are named
@@ -584,12 +586,69 @@ def goto_task(
         if waited is not None:
             payload["sign_in_host"] = waited[1]
             payload["waited_for_sign_in_s"] = round(waited[0], 1)
+        payload.update(_wait_for_model_page(config, task, driver, pause, now))
         chain = _chain_report(driver.navigations(), hosts, sign_in_hosts)
         if len(chain) > 1:
             payload["chain"] = chain
         return payload
 
     return _with_driver(config, task, act, check_before=False, check_after=True)
+
+
+def _wait_for_model_page(
+    config: BrowserSetup,
+    task: str,
+    driver: GuardedDriver,
+    pause: Callable[[float], None],
+    now: Callable[[], float],
+) -> dict[str, Any]:
+    """Wait (bounded) until a page the task's model records for this address shows its landmarks.
+
+    An Oracle page navigates well before its grid and dialogs are built, and a `cell` or a click
+    in that gap fails as if the product were broken. With a stored model, the page's own
+    controls are read until one of the model's pages for this address is not `incompatible`
+    with them, for up to `GOTO_LANDMARK_WAIT_S`. Nothing is returned (and nothing waited for)
+    when the task has no model or the model records no page with a usable fingerprint here.
+    The result names the page that showed, or says the bound passed without one.
+    """
+    # Local imports: the explorer and the model import this module.
+    from blumkin.browser.drift import Grade, check_page, has_thin_fingerprint
+    from blumkin.browser.explore import parse_aria_snapshot, url_template
+    from blumkin.browser.model import SiteModelError, load_model, resolve_store
+
+    try:
+        model = load_model(resolve_store(config), task)
+    except OSError, SiteModelError, ValueError:
+        return {}
+    if model is None:
+        return {}
+    template = url_template(driver.url)
+    pages = [
+        page
+        for page in model.pages
+        if page.kind == "page" and page.url_template == template and not has_thin_fingerprint(page)
+    ]
+    if not pages:
+        return {}
+    started = now()
+    while True:
+        try:
+            controls = parse_aria_snapshot(driver.aria_snapshot())
+        except BrowserActionError:
+            controls = ()  # still loading: the next read tries again
+        for page in pages:
+            if controls and check_page(page, controls).grade is not Grade.INCOMPATIBLE:
+                return {
+                    "landmark_page": page.page_id,
+                    "waited_for_page_s": round(now() - started, 1),
+                }
+        if now() - started >= GOTO_LANDMARK_WAIT_S:
+            return {
+                "landmark_page": None,
+                "landmark_timeout": True,
+                "waited_for_page_s": round(now() - started, 1),
+            }
+        pause(1.0)
 
 
 def mask_email(address: str) -> str:
