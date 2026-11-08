@@ -616,8 +616,9 @@ def _browser_action(
     task: str,
     call: Callable[[], dict[str, Any]],
     done: str,
+    notes: Callable[[dict[str, Any]], list[str]] | None = None,
 ) -> None:
-    """Run one guarded browser action and render its result."""
+    """Run one guarded browser action and render its result (`notes` adds lines to the text)."""
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = call()
@@ -626,7 +627,17 @@ def _browser_action(
     if as_json:
         emit_json(payload)
         return
-    emit_lines([f"{task}: {done}"])
+    emit_lines([f"{task}: {done}", *(notes(payload) if notes else [])])
+
+
+def _goto_notes(payload: dict[str, Any]) -> list[str]:
+    """The line `goto` adds when the task's model page did not show within the wait."""
+    if not payload.get("landmark_timeout"):
+        return []
+    return [
+        f"  warning: none of the model's pages for this address showed its landmarks within "
+        f"{payload['waited_for_page_s']}s; read the page before acting on it"
+    ]
 
 
 def _raise_option[F: Callable[..., Any]](command: F) -> F:
@@ -2698,6 +2709,13 @@ def browser() -> None:
     help="The page the task works on (https, on one of the hosts): what `browser goto` and "
     "`browser launch --open` open.",
 )
+@click.option(
+    "--sign-in-host",
+    "sign_in_hosts",
+    multiple=True,
+    help="An identity-provider host that is not built in (repeatable), for the templates that "
+    "pick your account at sign-in (time-sheet).",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_init_task(
@@ -2708,6 +2726,7 @@ def browser_init_task(
     hosts: tuple[str, ...],
     upload_dirs: tuple[str, ...],
     form_url: str,
+    sign_in_hosts: tuple[str, ...],
     as_json_flag: bool,
 ) -> None:
     """Create a task's browser profile and its starting policy from a built-in template."""
@@ -2724,6 +2743,7 @@ def browser_init_task(
             hosts=hosts,
             upload_dirs=upload_dirs,
             form_url=form_url,
+            sign_in_hosts=sign_in_hosts,
         )
     except InitTaskError as exc:
         _emit_error(error="usage_error", message=str(exc), as_json=as_json)
@@ -3438,6 +3458,7 @@ def browser_goto(
             on_sign_in=(lambda: _raise_quietly(task)) if raise_window else None,
         ),
         "opened",
+        notes=_goto_notes,
     )
 
 

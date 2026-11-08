@@ -59,6 +59,9 @@ class TaskTemplate:
     summary: str
     #: Whether `--form-url` applies (a template that uploads takes one as well).
     takes_form_url: bool = False
+    #: Whether the task picks the user's own account on the identity provider's chooser (written
+    #: as `sign_in_account = true`) and takes `--sign-in-host` for a provider that is not built in.
+    takes_sign_in: bool = False
     #: Where uploads may be read from when the caller names no folder.
     upload_dirs: tuple[str, ...] = ()
 
@@ -141,7 +144,10 @@ TEMPLATES: dict[str, TaskTemplate] = {
             "Put the values that are yours (the project, task and time reporting code, the "
             "period and its anchor day, the default hours) in your task definition, not here.",
             "Launch the browser and open the card: `blumkin browser launch {task} --open` (needs "
-            "`--form-url` here or `form_url` in config.toml), then sign in by hand.",
+            "`--form-url` here or `form_url` in config.toml). If the sign-in page offers an "
+            "account chooser, `blumkin browser sign-in {task}` clicks your work account's tile "
+            "(the template set `sign_in_account = true`); sign in by hand for any password or "
+            "MFA code.",
             "Read the card's `Time Card Period` and start the period on its first day (Oracle's "
             "can start on a Sunday), then follow the time-sheet skill: ledger first, fill, "
             "save, and hand the final click to the user with `blumkin browser ledger handoff "
@@ -149,6 +155,7 @@ TEMPLATES: dict[str, TaskTemplate] = {
         ),
         summary="Fill in a time card through the task browser (never submits).",
         takes_form_url=True,
+        takes_sign_in=True,
     ),
 }
 
@@ -162,11 +169,14 @@ def init_task(
     hosts: Sequence[str] = (),
     upload_dirs: Sequence[str] = (),
     form_url: str = "",
+    sign_in_hosts: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Create the task's profile; add its policy to `config.toml` when `write` is true.
 
     `hosts`, `upload_dirs` and `form_url` replace what the template starts with; a template whose
     site differs per organization (`needs_host`) refuses to go on without a host.
+    `sign_in_hosts` names identity-provider hosts that are not built in, for a template that
+    picks the user's account (`takes_sign_in`).
     """
     template = TEMPLATES.get(template_name)
     if template is None:
@@ -189,8 +199,14 @@ def init_task(
             f"Expected no --form-url for the {template.name!r} template (it uploads nothing "
             "and opens no form), got one"
         )
+    if sign_in_hosts and not template.takes_sign_in:
+        raise InitTaskError(
+            f"Expected no --sign-in-host for the {template.name!r} template (it does not pick "
+            "an account at sign-in), got one"
+        )
     chosen_dirs = tuple(upload_dirs) or template.upload_dirs
     chosen_url = form_url.strip()
+    chosen_sign_in = tuple(host.strip().lower() for host in sign_in_hosts)
     try:
         validate_task_name(task)
         create_profile(config_dir, task)
@@ -198,7 +214,12 @@ def init_task(
         raise InitTaskError(str(exc)) from exc
     path = config_dir / "config.toml"
     table = render_table(
-        task, template, hosts=chosen_hosts, upload_dirs=chosen_dirs, form_url=chosen_url
+        task,
+        template,
+        hosts=chosen_hosts,
+        upload_dirs=chosen_dirs,
+        form_url=chosen_url,
+        sign_in_hosts=chosen_sign_in,
     )
     _check_policy(task, table)
     declared, written = _update_config(path, task, table, write=write)
@@ -223,6 +244,7 @@ def render_table(
     hosts: Sequence[str] | None = None,
     upload_dirs: Sequence[str] | None = None,
     form_url: str = "",
+    sign_in_hosts: Sequence[str] = (),
 ) -> str:
     """The `[browser.tasks.<task>]` table for `template`, as TOML text."""
     lines = [f"[browser.tasks.{task}]"]
@@ -244,6 +266,10 @@ def render_table(
         lines.append(f"upload_dirs = {_toml_list(folders)}")
     if form_url:
         lines.append(f"form_url = {_toml_string(form_url)}")
+    if template.takes_sign_in:
+        lines.append("sign_in_account = true")
+        if sign_in_hosts:
+            lines.append(f"sign_in_hosts = {_toml_list(sign_in_hosts)}")
     return "\n".join(lines) + "\n"
 
 
