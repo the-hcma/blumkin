@@ -988,6 +988,10 @@ def read_task(
         )
     if within is not None and not aria:
         raise ValueError("Expected --within together with --aria, got a text read")
+    if compact and aria:
+        raise ValueError(
+            "Expected --compact on a text read, got --aria (it would flatten the tree)"
+        )
     scope_role, scope_name = parse_within(within) if within is not None else ("", None)
     hosts = _declared_hosts(config, task)
     if frame is not None and not hosts:

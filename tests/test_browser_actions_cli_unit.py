@@ -5146,3 +5146,12 @@ def test_read_compact_also_collapses_the_non_breaking_spaces_oracle_pages_use(ra
     assert _json(_run("browser", "read", "expense-report", "--compact"))["text"] == (
         "Total due 12.50"
     )
+
+
+def test_read_task_itself_refuses_a_compact_aria_read(raw: _Raw, _config_dir: Path) -> None:
+    from blumkin.browser.actions import read_task
+    from blumkin.config import load_browser_setup
+
+    with pytest.raises(ValueError, match="--compact on a text read"):
+        read_task(load_browser_setup(), "expense-report", aria=True, compact=True)
+    assert raw.calls == []  # refused before the page was read
