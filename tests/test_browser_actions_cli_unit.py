@@ -5079,3 +5079,33 @@ def test_the_goto_text_warns_only_when_the_landmark_wait_ran_out() -> None:
     assert _goto_notes({"landmark_page": "time-card", "waited_for_page_s": 2.0}) == []
     (line,) = _goto_notes({"landmark_timeout": True, "waited_for_page_s": 20.0})
     assert "20.0s" in line and "read the page" in line
+
+
+def test_goto_reports_the_address_the_page_is_at_after_the_wait_and_never_the_old_pages_landmarks(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import goto_task
+    from blumkin.config import load_browser_setup
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    _card_model(_config_dir)
+    clock = _Clock()
+    raw.on_wait = clock.sleep
+    reads: list[str] = []
+
+    def moving_snapshot() -> str:
+        reads.append("read")
+        if len(reads) == 1:
+            # The page moves on to another allowed address during the first read.
+            raw.url_script = ["https://erp.example.com/elsewhere"]
+            raw._url = "https://erp.example.com/elsewhere"  # noqa: SLF001
+        return _CARD_LANDMARKS
+
+    raw.aria_snapshot = moving_snapshot  # type: ignore[method-assign]
+
+    payload = goto_task(load_browser_setup(), "expense-report", _CARD, now=clock.now)
+
+    # The controls were read at /timecards but the page is now elsewhere: not accepted, and the
+    # model has no page for /elsewhere, so the wait ends with the bound, not a false landmark.
+    assert payload["landmark_page"] is None
+    assert payload["url"] == "https://erp.example.com/elsewhere"

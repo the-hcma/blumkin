@@ -587,6 +587,7 @@ def goto_task(
             payload["sign_in_host"] = waited[1]
             payload["waited_for_sign_in_s"] = round(waited[0], 1)
         payload.update(_wait_for_model_page(config, task, driver, pause, now))
+        payload["url"] = driver.url  # the address after the wait, not the one it started at
         chain = _chain_report(driver.navigations(), hosts, sign_in_hosts)
         if len(chain) > 1:
             payload["chain"] = chain
@@ -622,20 +623,29 @@ def _wait_for_model_page(
         return {}
     if model is None:
         return {}
-    template = url_template(driver.url)
-    pages = [
-        page
-        for page in model.pages
-        if page.kind == "page" and page.url_template == template and not has_thin_fingerprint(page)
-    ]
-    if not pages:
+
+    def candidates(url: str) -> list[Any]:
+        template = url_template(url)
+        return [
+            page
+            for page in model.pages
+            if page.kind == "page"
+            and page.url_template == template
+            and not has_thin_fingerprint(page)
+        ]
+
+    if not candidates(driver.url):
         return {}
     started = now()
     while True:
+        url = driver.url
         try:
             controls = parse_aria_snapshot(driver.aria_snapshot())
         except BrowserActionError:
             controls = ()  # still loading: the next read tries again
+        # The page may have moved to another address while it was read: the candidates are the
+        # model's pages for the address the controls were read at, never an earlier one.
+        pages = candidates(url) if driver.url == url else []
         for page in pages:
             if controls and check_page(page, controls).grade is not Grade.INCOMPATIBLE:
                 return {
