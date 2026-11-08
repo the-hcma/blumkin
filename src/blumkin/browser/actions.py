@@ -1679,6 +1679,12 @@ def _clean_download_name(suggested: str) -> str:
     return f"{stem or 'download'}{extension}" if extension else stem
 
 
+def _compacted(text: str) -> str:
+    """`text` with whitespace runs (non-breaking spaces too) as one space and no blank lines."""
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
 def _dialog_name(match: re.Match[str]) -> str:
     """A control's accessible name from its line: unescaped, with YAML's doubled quotes undone."""
     name = re.sub(r"\\(.)", r"\1", match.group("name"))
@@ -1886,12 +1892,6 @@ def _expand_home(text: str, blocked: type[BrowserActionError] = UploadBlockedErr
     if text.startswith("~") and not text.startswith("~/"):
         raise blocked(f"Expected an absolute path or one starting with ~/, got {text!r}")
     return Path(text).expanduser()
-
-
-def _compacted(text: str) -> str:
-    """`text` with whitespace runs (non-breaking spaces too) as one space and no blank lines."""
-    lines = (" ".join(line.split()) for line in text.splitlines())
-    return "\n".join(line for line in lines if line)
 
 
 def _one_line(text: str) -> str:
