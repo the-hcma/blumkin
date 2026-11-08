@@ -953,6 +953,7 @@ def read_task(
     task: str,
     *,
     aria: bool = False,
+    compact: bool = False,
     frame: int | None = None,
     host: str | None = None,
     wait_s: float = 0.0,
@@ -962,6 +963,9 @@ def read_task(
     limit: int = MAX_READ_CHARS,
 ) -> dict[str, Any]:
     """Read the page's visible text, flagged when it looks like it is trying to instruct.
+
+    `compact` returns the text with each line's runs of spaces and tabs collapsed to one space
+    and its blank lines dropped (the injection scan has already seen the page as it was).
 
     `frame` reads a child frame instead (its number from `frames_task`), which needs the
     task to declare `allowed_hosts`; `aria` returns the ARIA snapshot (roles and accessible
@@ -1061,7 +1065,8 @@ def read_task(
                         cleaned, location="page.text"
                     ).to_payload(),
                 )
-            shown, more, next_offset = window(page.text, offset, limit)
+            body = _compacted(page.text) if compact else page.text
+            shown, more, next_offset = window(body, offset, limit)
             return {
                 "action": "read",
                 "frame": frame,
@@ -1077,7 +1082,7 @@ def read_task(
                 "title": redact_addresses(_one_line(driver.title()))
                 if on_sign_in
                 else _one_line(driver.title()),
-                "total_chars": len(page.text),
+                "total_chars": len(body),
                 "truncated": more,
                 "untrusted": UNTRUSTED_NOTE,
                 "url": _display_url(driver.url) if on_sign_in else driver.url,
@@ -1880,6 +1885,12 @@ def _expand_home(text: str, blocked: type[BrowserActionError] = UploadBlockedErr
     if text.startswith("~") and not text.startswith("~/"):
         raise blocked(f"Expected an absolute path or one starting with ~/, got {text!r}")
     return Path(text).expanduser()
+
+
+def _compacted(text: str) -> str:
+    """`text` with each line's runs of whitespace collapsed to one space and blank lines dropped."""
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
 
 
 def _one_line(text: str) -> str:

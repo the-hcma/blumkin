@@ -150,6 +150,7 @@ from blumkin.browser.model_commands import (
     model_check,
     model_diff,
     model_flow_add,
+    model_flows,
     model_versions,
 )
 from blumkin.browser.profiles import (
@@ -4175,6 +4176,44 @@ def browser_model_flow_add(
     emit_lines(lines)
 
 
+@browser_model.command("flows", epilog=help_text.BROWSER_MODEL_FLOWS_EPILOG)
+@click.argument("task")
+@click.argument("name", required=False)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_model_flows(
+    ctx: click.Context, task: str, name: str | None, as_json_flag: bool
+) -> None:
+    """List the flows of the task's current model with their parameters and steps."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = model_flows(load_browser_setup(), task, name)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    lines = [f"{task}: model version {payload['version']}, {len(payload['flows'])} flow(s)"]
+    for flow in payload["flows"]:
+        params = " ".join(
+            f"{p['name']}:{p['kind']}" + (f"={'|'.join(p['choices'])}" if p.get("choices") else "")
+            for p in flow["params"]
+        )
+        lines.append(f"{sanitize_terminal(flow['name'])}" + (f" ({params})" if params else ""))
+        for number, step in enumerate(flow["steps"], 1):
+            words = " ".join(
+                f"{key}={step[key]}"
+                for key in sorted(step)
+                if key not in ("action", "control") and step[key]
+            )
+            lines.append(
+                sanitize_terminal(
+                    f"  {number}. {step['action']} {step.get('control', '')} {words}".rstrip()
+                )
+            )
+    emit_lines(lines)
+
+
 @browser_model.command("versions", epilog=help_text.BROWSER_MODEL_VERSIONS_EPILOG)
 @click.argument("task")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
@@ -4403,6 +4442,12 @@ def browser_grid(
 @click.argument("task")
 @click.option("--aria", is_flag=True, help="Show the ARIA snapshot (roles and names), not text.")
 @click.option(
+    "--compact",
+    "compact",
+    is_flag=True,
+    help="With text: collapse runs of spaces and tabs and drop blank lines.",
+)
+@click.option(
     "--frame",
     "frame",
     type=click.IntRange(min=1),
@@ -4457,6 +4502,7 @@ def browser_read(
     ctx: click.Context,
     task: str,
     aria: bool,
+    compact: bool,
     frame: int | None,
     host: str | None,
     within: str | None,
@@ -4468,6 +4514,8 @@ def browser_read(
 ) -> None:
     """Read the page, or one child frame (`--frame`), as text or an ARIA snapshot (untrusted)."""
     as_json = _as_json(ctx, as_json_flag)
+    if compact and aria:
+        raise click.UsageError("--compact applies to a text read, not --aria")
     if host is not None and frame is None:
         raise click.UsageError("--host needs --frame")
     if wait_s is not None and frame is None:
@@ -4484,6 +4532,7 @@ def browser_read(
             load_browser_setup(),
             task,
             aria=aria,
+            compact=compact,
             frame=frame,
             host=host,
             wait_s=wait_s or 0.0,

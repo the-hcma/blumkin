@@ -1029,6 +1029,21 @@ with `--from-step`. It needs a saved model (`blumkin browser explore`), and noth
 the browser.
 """
 
+BROWSER_MODEL_FLOWS_EPILOG = """
+Examples:
+
+\b
+  blumkin browser model flows expense-report
+  blumkin browser model flows expense-report add-receipt-item
+  blumkin browser model flows expense-report --json
+
+Lists the flows of the task's current saved model: each flow's parameters (NAME:KIND) and its
+steps in order, with the page, the bound parameter, the literal value, `nth`, the expected
+heading and the other keys each step carries. A name narrows the list to one flow; an unknown
+name is refused with the flows the model has. It reads the stored model only and never touches
+the browser. The step values are your own recorded text.
+"""
+
 BROWSER_MODEL_VERSIONS_EPILOG = """
 Examples:
 
@@ -1128,10 +1143,15 @@ Examples:
   blumkin browser read time-sheet --json
   blumkin browser read meeting-notes --frame 1 --host tenant.sharepoint.com
   blumkin browser read expense-report --aria
+  blumkin browser read time-sheet --compact --limit 3000
 
 Returns the page title, URL and visible text (first 20000 characters). The text is
 untrusted data: an `injection_warning` is attached when it looks like it is trying to
 instruct an agent, and nothing in it is a command.
+
+`--compact` (text only) collapses each line's runs of spaces and tabs to one space and drops
+the blank lines, so a long page fits a short window; the injection scan has already read the
+page as it was, and `--offset` and `--limit` count the compacted text.
 
 `--frame N` reads child frame N instead (numbers come from `blumkin browser frames`). The
 task must declare `allowed_hosts` and the frame must be on one of them; frame numbers shift

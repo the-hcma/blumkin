@@ -188,6 +188,34 @@ def _refuse_finalizing_clicks(model: SiteModel, flow: Flow) -> None:
             )
 
 
+def model_flows(config: BrowserSetup, task: str, name: str | None = None) -> dict[str, Any]:
+    """The flows of the task's current model, with their parameters and steps (one by `name`)."""
+    model = _stored(config, task, None)
+    flows = [flow for flow in model.flows if name is None or flow.name == name]
+    if name is not None and not flows:
+        known = ", ".join(flow.name for flow in model.flows) or "none"
+        raise PageIdError(f"Expected one of the model's flows ({known}), got {name!r}")
+    return {
+        "flows": [
+            {
+                "name": flow.name,
+                "params": [
+                    {key: value for key, value in dataclasses.asdict(param).items() if value}
+                    for param in flow.params
+                ],
+                "steps": [
+                    {key: value for key, value in dataclasses.asdict(step).items() if value}
+                    for step in flow.steps
+                ],
+            }
+            for flow in flows
+        ],
+        "ok": True,
+        "task": task,
+        "version": model.version,
+    }
+
+
 def model_versions(config: BrowserSetup, task: str) -> dict[str, Any]:
     """The saved versions of the task's model."""
     store = resolve_store(config)

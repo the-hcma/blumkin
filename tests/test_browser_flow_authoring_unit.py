@@ -657,3 +657,64 @@ def test_an_upload_step_recorded_by_its_label_keeps_the_whole_name_match(
     run(FlowStep(action="upload", control="save", expect=None, page="draft", bind="f"), {"f": "r"})
 
     assert seen == [{"label": "Receipt", "exact": True, "settle": False, "nth": None}]
+
+
+# ------------------------------------------------------------------ model flows (#695)
+
+
+def _flows(*args: str) -> Any:
+    return CliRunner().invoke(main, ["--json", "browser", "model", "flows", *args])
+
+
+def test_model_flows_lists_each_flow_with_its_params_and_steps(_config_dir: Path) -> None:
+    names = _store(_config_dir)
+    amount = next(n for n in names if "amount" in n)
+    assert (
+        _run(
+            "expense-report", "fill-amount", "--yes", "--param", "total:text", "--step",
+            f"fill {amount} page=expense-list bind=total",
+        ).exit_code
+        == EXIT_SUCCESS
+    )  # fmt: skip
+
+    payload = _json(_flows("expense-report"))
+
+    assert payload["version"] == max(list_versions(default_store(_config_dir), "expense-report"))
+    (flow,) = payload["flows"]
+    assert flow["params"] == [{"kind": "text", "name": "total"}]
+    assert flow["steps"][0]["bind"] == "total" and flow["steps"][0]["action"] == "fill"
+
+
+def test_model_flows_names_one_flow_params_and_steps_and_refuses_an_unknown_name(
+    _config_dir: Path,
+) -> None:
+    names = _store(_config_dir)
+    add_line = next(n for n in names if "add" in n)
+    assert (
+        _run(
+            "expense-report", "go", "--yes", "--step",
+            f"click {add_line} page=expense-list expect_heading='Edit Report'",
+        ).exit_code
+        == EXIT_SUCCESS
+    )  # fmt: skip
+
+    one = _json(_flows("expense-report", "go"))
+    missing = _flows("expense-report", "nope")
+    text = CliRunner().invoke(main, ["browser", "model", "flows", "expense-report", "go"])
+
+    (flow,) = one["flows"]
+    assert flow["name"] == "go" and flow["params"] == []
+    assert flow["steps"] == [
+        {
+            "action": "click",
+            "control": add_line,
+            "page": "expense-list",
+            "expect_heading": "Edit Report",
+        }
+    ]
+    assert missing.exit_code == EXIT_USAGE and "go" in _json(missing)["message"]
+    assert "1. click" in text.output and "expect_heading=Edit Report" in text.output
+
+
+def test_model_flows_without_a_saved_model_is_not_found(_config_dir: Path) -> None:
+    assert _flows("expense-report").exit_code == EXIT_NOT_FOUND
