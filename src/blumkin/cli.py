@@ -4195,16 +4195,19 @@ def browser_model_flows(
         return
     lines = [f"{task}: model version {payload['version']}, {len(payload['flows'])} flow(s)"]
     for flow in payload["flows"]:
-        params = " ".join(
-            f"{p['name']}:{p['kind']}" + (f"={'|'.join(p['choices'])}" if p.get("choices") else "")
-            for p in flow["params"]
+        params = sanitize_terminal(
+            " ".join(
+                f"{p['name']}:{p['kind']}"
+                + (f"={'|'.join(p['choices'])}" if p.get("choices") else "")
+                for p in flow["params"]
+            )
         )
         lines.append(f"{sanitize_terminal(flow['name'])}" + (f" ({params})" if params else ""))
         for number, step in enumerate(flow["steps"], 1):
             words = " ".join(
-                f"{key}={step[key]}"
+                f"{key}={step[key]!r}" if step[key] == "" else f"{key}={step[key]}"
                 for key in sorted(step)
-                if key not in ("action", "control") and step[key]
+                if key not in ("action", "control")
             )
             lines.append(
                 sanitize_terminal(
@@ -4445,7 +4448,7 @@ def browser_grid(
     "--compact",
     "compact",
     is_flag=True,
-    help="With text: collapse runs of spaces and tabs and drop blank lines.",
+    help="With text: collapse runs of whitespace to one space and drop blank lines.",
 )
 @click.option(
     "--frame",

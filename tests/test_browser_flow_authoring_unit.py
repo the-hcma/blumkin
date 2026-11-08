@@ -718,3 +718,20 @@ def test_model_flows_names_one_flow_params_and_steps_and_refuses_an_unknown_name
 
 def test_model_flows_without_a_saved_model_is_not_found(_config_dir: Path) -> None:
     assert _flows("expense-report").exit_code == EXIT_NOT_FOUND
+
+
+def test_model_flows_keeps_the_empty_value_of_a_step_that_clears_a_cell(_config_dir: Path) -> None:
+    _store(_config_dir)
+    assert (
+        _run(
+            "expense-report", "clear-day", "--yes", "--step",
+            "cell row=1 column=2 value=''",
+        ).exit_code
+        == EXIT_SUCCESS
+    )  # fmt: skip
+
+    (flow,) = _json(_flows("expense-report", "clear-day"))["flows"]
+    text = CliRunner().invoke(main, ["browser", "model", "flows", "expense-report", "clear-day"])
+
+    assert flow["steps"][0]["value"] == ""  # a clearing step is not shown as a read-only one
+    assert "value=''" in text.output

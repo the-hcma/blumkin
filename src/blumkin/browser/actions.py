@@ -964,8 +964,9 @@ def read_task(
 ) -> dict[str, Any]:
     """Read the page's visible text, flagged when it looks like it is trying to instruct.
 
-    `compact` returns the text with each line's runs of spaces and tabs collapsed to one space
-    and its blank lines dropped (the injection scan has already seen the page as it was).
+    `compact` returns the text with each line's runs of whitespace (spaces, tabs and the
+    non-breaking spaces Oracle pages use) collapsed to one space and its blank lines dropped
+    (the injection scan has already seen the page as it was).
 
     `frame` reads a child frame instead (its number from `frames_task`), which needs the
     task to declare `allowed_hosts`; `aria` returns the ARIA snapshot (roles and accessible
@@ -1888,7 +1889,7 @@ def _expand_home(text: str, blocked: type[BrowserActionError] = UploadBlockedErr
 
 
 def _compacted(text: str) -> str:
-    """`text` with each line's runs of whitespace collapsed to one space and blank lines dropped."""
+    """`text` with whitespace runs (non-breaking spaces too) as one space and no blank lines."""
     lines = (" ".join(line.split()) for line in text.splitlines())
     return "\n".join(line for line in lines if line)
 

@@ -200,11 +200,19 @@ def model_flows(config: BrowserSetup, task: str, name: str | None = None) -> dic
             {
                 "name": flow.name,
                 "params": [
-                    {key: value for key, value in dataclasses.asdict(param).items() if value}
+                    {
+                        key: value
+                        for key, value in dataclasses.asdict(param).items()
+                        if value not in (None, ())
+                    }
                     for param in flow.params
                 ],
                 "steps": [
-                    {key: value for key, value in dataclasses.asdict(step).items() if value}
+                    {
+                        key: value
+                        for key, value in dataclasses.asdict(step).items()
+                        if value is not None
+                    }
                     for step in flow.steps
                 ],
             }

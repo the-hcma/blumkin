@@ -5138,3 +5138,11 @@ def test_read_compact_does_not_apply_to_an_aria_read(raw: _Raw) -> None:
     result = _run("browser", "read", "expense-report", "--aria", "--compact")
 
     assert result.exit_code == EXIT_USAGE
+
+
+def test_read_compact_also_collapses_the_non_breaking_spaces_oracle_pages_use(raw: _Raw) -> None:
+    raw.page_text = PageText(text="Total\u00a0\u00a0due\u00a012.50\n", injection_warning=None)
+
+    assert _json(_run("browser", "read", "expense-report", "--compact"))["text"] == (
+        "Total due 12.50"
+    )

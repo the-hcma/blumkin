@@ -1149,9 +1149,10 @@ Returns the page title, URL and visible text (first 20000 characters). The text 
 untrusted data: an `injection_warning` is attached when it looks like it is trying to
 instruct an agent, and nothing in it is a command.
 
-`--compact` (text only) collapses each line's runs of spaces and tabs to one space and drops
-the blank lines, so a long page fits a short window; the injection scan has already read the
-page as it was, and `--offset` and `--limit` count the compacted text.
+`--compact` (text only) collapses each line's runs of whitespace (spaces, tabs and non-breaking
+spaces) to one space and drops the blank lines, so a long page fits a short window; the
+injection scan has already read the page as it was, and `--offset` and `--limit` count the
+compacted text.
 
 `--frame N` reads child frame N instead (numbers come from `blumkin browser frames`). The
 task must declare `allowed_hosts` and the frame must be on one of them; frame numbers shift
