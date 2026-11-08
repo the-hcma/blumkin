@@ -124,8 +124,12 @@ jobs:
         with:
           version: latest
 
+      - uses: the-hcma/repository-helpers/actions/setup-tmp-layout@bfee0e1f2d682e83c6207a0d6a0f7feefa576fd8
+
       - name: Regenerate uv.lock
-        run: uv lock
+        run: |
+          layout="$REPOSITORY_HELPERS_DIR/scripts/dev/with-tmp-layout"
+          "$layout" uv -- uv lock
 
       - name: Commit and push if changed
         id: push
@@ -168,6 +172,8 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: latest
+
+      - uses: the-hcma/repository-helpers/actions/setup-tmp-layout@bfee0e1f2d682e83c6207a0d6a0f7feefa576fd8
 
       - name: Python lint & format checks
         run: bash .github/ci/python-static
@@ -248,6 +254,8 @@ jobs:
         with:
           version: latest
 
+      - uses: the-hcma/repository-helpers/actions/setup-tmp-layout@bfee0e1f2d682e83c6207a0d6a0f7feefa576fd8
+
       - name: Set up Python 3.14
         run: uv python install 3.14
 
@@ -262,21 +270,26 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install dependencies
-        run: uv sync --group dev
+        run: |
+          layout="$REPOSITORY_HELPERS_DIR/scripts/dev/with-tmp-layout"
+          "$layout" uv -- uv sync --group dev
 
       - name: Embed build metadata
         run: |
-          version="$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          layout="$REPOSITORY_HELPERS_DIR/scripts/dev/with-tmp-layout"
+          version="$("$layout" uv -- uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           export BLUMKIN_EMBED_VERSION="${version}"
           export BLUMKIN_EMBED_COMMIT="${GITHUB_SHA}"
-          uv run python scripts/embed_build_metadata
+          "$layout" uv -- uv run python scripts/embed_build_metadata
 
       - name: Build distributions
         # macOS must stay `--wheel`-only: if this ever grows an `--sdist`
         # leg, both jobs would try to build the identical
         # `blumkin-<version>.tar.gz` and the merged dist/ would collide
         # (see PR #331 review).
-        run: uv build ${{ matrix.build_args }}
+        run: |
+          layout="$REPOSITORY_HELPERS_DIR/scripts/dev/with-tmp-layout"
+          "$layout" uv -- uv build ${{ matrix.build_args }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -303,6 +316,8 @@ jobs:
         with:
           version: latest
 
+      - uses: the-hcma/repository-helpers/actions/setup-tmp-layout@bfee0e1f2d682e83c6207a0d6a0f7feefa576fd8
+
       - name: Set up Python 3.14
         run: uv python install 3.14
 
@@ -327,5 +342,6 @@ jobs:
 
       - name: Verify PyPI release
         run: |
-          version="$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          layout="$REPOSITORY_HELPERS_DIR/scripts/dev/with-tmp-layout"
+          version="$("$layout" uv -- uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           ./scripts/verify-pypi-release "$version"
