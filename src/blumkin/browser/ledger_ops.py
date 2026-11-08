@@ -781,9 +781,10 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             # which would pick a different file.
             target = Path(os.path.join(os.getcwd(), path)) if step.bind else Path(path)
             label, field_role, recorded = _control_ref(site, step.control, step.page)
-            if field_role not in FIELD_ROLES:
+            if field_role is not None and field_role not in FIELD_ROLES:
                 # A file input is recorded under the role the page gives its trigger (a button);
                 # the upload finds the input by its label, as `browser upload` does by hand.
+                # A control recorded by its label alone (no role) keeps its whole-name match.
                 field_role, recorded = None, False
             actions.upload_task(
                 config,

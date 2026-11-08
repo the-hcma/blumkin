@@ -1,4 +1,9 @@
-"""The guard's dialog scan: a long row of text does not hide a dialog's controls from it."""
+"""The guard's dialog scan: a long text is read in windows, not taken as an unchecked dialog.
+
+Real-browser tests, like the others in this suite: they run with `BLUMKIN_BROWSER_TESTS=1`. The
+guard's own handling of an incomplete scan is covered without a browser in
+`test_browser_guard_unit.py`.
+"""
 
 from __future__ import annotations
 
@@ -8,18 +13,19 @@ import pytest
 
 from blumkin.browser.cdp import _DESCRIBE_CONTROL_JS
 
-_ROW = "File Receipts Category 2026-11-07_probe-cab_1.00-USD_e144191e.pdf Probe Cab: test ride"
-_PAGE = (
-    '<form method="post"><div id="d" role="dialog">'
-    + "".join(f'<div onclick="void 0">{_ROW} {n}</div>' for n in range(6))
-    + '<button id="ok" type="button">OK</button>'
-    + '<div onclick="void 0">'
-    + "x" * 3000
-    + "</div></div></form>"
-)
 _LONG_THEN_SUBMIT = (
     '<form method="post"><div role="dialog"><div onclick="void 0">'
     + "word " * 60
+    + 'Submit report</div><button id="ok" type="button">OK</button></div></form>'
+)
+_FAR_BEYOND_A_ROW = (
+    '<form method="post"><div role="dialog"><div onclick="void 0">'
+    + "x" * 3000
+    + '</div><button id="ok" type="button">OK</button></div></form>'
+)
+_MID_RANGE_THEN_SUBMIT = (
+    '<form method="post"><div role="dialog"><div onclick="void 0">'
+    + "word " * 300
     + 'Submit report</div><button id="ok" type="button">OK</button></div></form>'
 )
 
@@ -56,7 +62,15 @@ def test_a_row_of_text_over_two_hundred_characters_still_leaves_the_dialog_check
     assert any("Submit report" in str(text) for text in raw["dialogControls"])  # type: ignore[attr-defined]
 
 
+def test_a_text_of_over_a_thousand_characters_is_read_in_overlapping_windows() -> None:
+    _needs_a_browser()
+    raw = _describe(_MID_RANGE_THEN_SUBMIT, [])
+
+    assert raw["dialogComplete"] is True
+    assert any("Submit report" in str(text) for text in raw["dialogControls"])  # type: ignore[attr-defined]
+
+
 def test_a_text_far_beyond_any_row_still_marks_the_dialog_unchecked() -> None:
     _needs_a_browser()
 
-    assert _describe(_PAGE, [])["dialogComplete"] is False
+    assert _describe(_FAR_BEYOND_A_ROW, [])["dialogComplete"] is False
