@@ -12,7 +12,8 @@ Entries are appended under an exclusive lock with one write and an fsync, so con
 writers cannot interleave and a crash leaves at most a torn last line. A reader ignores a
 torn last line, and the next writer cuts it off; a damaged line anywhere else is an error
 rather than a silently skipped one. The journal holds identifiers, states, model versions and
-file hashes only, never a field value, an amount, a vendor or a path (the report's total is
+file hashes, plus the short notes of the decisions and answers (one line each, checked to hold no
+amount or instruction), never a field value, an amount or a path (the report's total is
 therefore recorded only as "confirmed with the user", never as an amount). It is kept private
 (`0700` directories, `0600` file).
 """
@@ -424,7 +425,7 @@ def record_decisions(
 
     A text that is already an open decision is not recorded twice. Each text is one short
     line, with no amount and nothing that reads as an instruction, and an instance holds at
-    most `_MAX_DECISIONS` of them.
+    most `_MAX_OPEN_DECISIONS` open at once (and `_MAX_DECISIONS` numbers over its life).
     """
     _check_task(task)
     _check_instance(instance)
@@ -440,17 +441,21 @@ def record_decisions(
             )
         _require_open(folded, "record a decision")
         waiting = {d.text for d in folded.decisions.values() if d.answer is None}
+        fresh = list(dict.fromkeys(text for text in checked if text not in waiting))
+        # Everything is checked before the first line is written: a refused call keeps nothing.
+        if len(waiting) + len(fresh) > _MAX_OPEN_DECISIONS:
+            raise LedgerError(
+                f"Expected at most {_MAX_OPEN_DECISIONS} open decisions in an instance, got "
+                f"{len(waiting) + len(fresh)}; answer some with `ledger decide` first"
+            )
         count = len(folded.decisions)
-        for text in checked:
-            if text in waiting:
-                continue
-            if count >= _MAX_DECISIONS:
-                raise LedgerError(
-                    f"Expected at most {_MAX_DECISIONS} decisions in an instance, got more; "
-                    "answer some with `ledger decide` first"
-                )
+        if count + len(fresh) > _MAX_DECISIONS:
+            raise LedgerError(
+                f"Expected an instance to use at most {_MAX_DECISIONS} decision numbers, got "
+                "more (answered ones keep theirs); start a new instance"
+            )
+        for text in fresh:
             count += 1
-            waiting.add(text)
             _append(journal, {"event": "decision", "id": f"d{count}", "text": text})
         return _status(journal, task, instance)
 
@@ -1075,7 +1080,8 @@ _JOURNAL_FILENAME = "journal.jsonl"
 _LOCK_FILENAME = ".lock"
 _AMOUNT = re.compile(r"[$€£¥]|\d[\d,]*[.,]\d{2}(?!\d)")
 _DECISION_ID = re.compile(r"d[1-9][0-9]{0,2}")
-_MAX_DECISIONS = 50
+_MAX_DECISIONS = 500
+_MAX_OPEN_DECISIONS = 50
 _MAX_EXPECTED = 1000
 _MAX_NOTE = 300
 _MAX_STEP = 201

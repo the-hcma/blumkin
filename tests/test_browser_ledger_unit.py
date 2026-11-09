@@ -957,14 +957,46 @@ def test_a_decision_that_reads_as_an_instruction_is_refused(tmp_path: Path) -> N
         )  # fmt: skip
 
 
-def test_a_decision_needs_an_open_instance_and_the_count_is_capped(tmp_path: Path) -> None:
+def test_the_open_cap_counts_open_decisions_only_and_answering_frees_room(
+    tmp_path: Path,
+) -> None:
     begin_instance(tmp_path, "expense-report", "trip")
     record_decisions(
         tmp_path, "expense-report", "trip", [f"Question number {n}" for n in range(50)]
     )
 
-    with pytest.raises(LedgerError, match="at most 50 decisions"):
+    with pytest.raises(LedgerError, match="at most 50 open decisions"):
         record_decisions(tmp_path, "expense-report", "trip", ["One question too many"])
+    resolve_decision(tmp_path, "expense-report", "trip", "d1", "done")
+
+    status = record_decisions(tmp_path, "expense-report", "trip", ["One question too many"])
+
+    assert status.decisions[-1].id == "d51" and len(status.open_decisions()) == 50
+
+
+def test_a_refused_call_writes_none_of_its_decisions(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+    record_decisions(
+        tmp_path, "expense-report", "trip", [f"Question number {n}" for n in range(49)]
+    )
+    before = _journal(tmp_path, "expense-report", "trip").read_text()
+
+    with pytest.raises(LedgerError, match="at most 50 open decisions"):
+        record_decisions(tmp_path, "expense-report", "trip", ["First new one", "Second new one"])
+
+    assert _journal(tmp_path, "expense-report", "trip").read_text() == before
+
+
+def test_the_decision_numbers_of_an_instance_run_out_and_it_says_to_start_a_new_one(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+    for n in range(500):
+        record_decisions(tmp_path, "expense-report", "trip", [f"Question number {n}"])
+        resolve_decision(tmp_path, "expense-report", "trip", f"d{n + 1}", "ok")
+
+    with pytest.raises(LedgerError, match="at most 500 decision numbers.*start a new instance"):
+        record_decisions(tmp_path, "expense-report", "trip", ["One more"])
     mark_submitted(tmp_path, "expense-report", "trip")
     with pytest.raises(LedgerError, match="record a decision"):
         record_decisions(tmp_path, "expense-report", "trip", ["After the submit"])
@@ -988,8 +1020,18 @@ def test_a_hand_edited_decision_entry_that_is_malformed_makes_the_journal_unread
 ) -> None:
     begin_instance(tmp_path, "expense-report", "trip")
     journal = _journal(tmp_path, "expense-report", "trip")
-    entry = {"at": "2026-11-09T12:00:00Z", "event": "decision", "id": "d7", "text": "Skipped ids"}
-    journal.write_text(journal.read_text() + json.dumps(entry) + "\n")
+    last = json.loads(journal.read_text().splitlines()[-1])
+    base = {"at": "2026-11-09T12:00:00Z", "event": "decision", "seq": last["seq"] + 1}
 
+    def with_entry(entry: dict[str, Any]) -> None:
+        journal.write_text(journal.read_text() + json.dumps(entry) + "\n")
+
+    # In sequence, so the fold reaches the decision check: a skipped id is what it refuses.
+    with_entry({**base, "id": "d7", "text": "Skipped ids"})
     with pytest.raises(LedgerJournalError):
         instance_status(tmp_path, "expense-report", "trip")
+
+    journal.write_text("".join(journal.read_text().splitlines(keepends=True)[:-1]))
+    assert instance_status(tmp_path, "expense-report", "trip").decisions == ()  # the edit undone
+    with_entry({**base, "id": "d1", "text": "A proper one"})
+    assert instance_status(tmp_path, "expense-report", "trip").decisions[0].id == "d1"
