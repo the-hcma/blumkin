@@ -1393,8 +1393,8 @@ since its last navigation from the browser's own timing buffer: the initiator (f
 xmlhttprequest, script, ...), the HTTP status when the browser exposes it, the time and a
 masked path on an allowed or sign-in host (a query, a fragment and long ids are never shown,
 and, once the task declares `allowed_hosts`, another host shows only its name). The timing
-buffer has no request method, body or header. For the method, add `--watch SECONDS` (more than
-0, at most 120): the page's own network events are listened to for that long, and each request
+buffer has no request method, body or header. For the method, add `--watch SECONDS` (0.1 to
+120): the page's own network events are listened to for that long, and each request
 made meanwhile is listed with its method, masked path, status and kind, so run it as a
 background command, act on the page, then read what it saw. A body or header is never read and
 nothing is held back. Read-only: nothing is clicked, typed or intercepted. Once the task

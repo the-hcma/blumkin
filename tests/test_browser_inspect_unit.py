@@ -228,10 +228,6 @@ def test_watch_requests_sees_a_post_made_during_the_wait_with_its_method_and_no_
             assert "12.50" not in repr(entries)  # no body is ever read
             # Nothing was held back or changed: both requests really went out, once each.
             assert sorted(m for m, u in served if "/api/" in u) == ["GET", "POST"]
-            # The listeners are gone: a later request is not recorded by a finished watch.
-            page.evaluate("fetch('http://example.test/api/later')")
-            page.wait_for_timeout(200)
-            assert all("/api/later" not in entry.url for entry in entries)
         finally:
             browser.close()
 
@@ -244,7 +240,7 @@ def test_watch_requests_refuses_a_time_outside_its_bounds() -> None:
     with sync_playwright() as playwright:
         browser, _page_, driver = _page(playwright)
         try:
-            for seconds in (0, -1, MAX_WATCH_S + 1):
+            for seconds in (0, 0.05, -1, MAX_WATCH_S + 1):
                 with pytest.raises(ValueError, match="seconds to watch"):
                     driver.watch_requests(seconds)
         finally:

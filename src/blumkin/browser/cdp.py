@@ -296,6 +296,9 @@ class RequestEntry:
     url: str
     #: The HTTP method, known only for a request seen while watching (the timing buffer has none).
     method: str = ""
+    #: For a watched request that did not complete normally: `failed`, or `pending` (started
+    #: during the watch and still unanswered when it ended).
+    outcome: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,7 +430,8 @@ _MAX_INSPECT_CLASSES = 30
 _MAX_READ_BACK = 100_000
 #: Most resources `list_requests` returns (the newest ones).
 _MAX_REQUESTS = 200
-#: Longest `watch_requests` waits, in seconds.
+#: Shortest and longest `watch_requests` waits, in seconds.
+MIN_WATCH_S = 0.1
 MAX_WATCH_S = 120.0
 
 #: Most matches listed when a label is ambiguous.
@@ -1508,56 +1512,20 @@ class PlaywrightDriver:
         """The requests the page makes during the next `seconds`: method, address, status, kind.
 
         Listens to the page's own network events (nothing is intercepted, changed or held back,
-        and no body or header is read), so it sees what a click or a save really sends. The
-        newest `_MAX_REQUESTS` are kept. Run it while something else acts on the page.
+        and no body or header is read), so it sees what a click or a save really sends. Only
+        requests that began during the watch count; one still unanswered when it ends is
+        listed as `pending`. The newest `_MAX_REQUESTS` are kept. Run it while something else
+        acts on the page.
         """
         self._require_open()
-        if not 0 < seconds <= MAX_WATCH_S:
+        if not MIN_WATCH_S <= seconds <= MAX_WATCH_S:
             raise ValueError(
-                f"Expected more than 0 and at most {MAX_WATCH_S:.0f} seconds to watch, got "
-                f"{seconds!r}"
+                f"Expected {MIN_WATCH_S} to {MAX_WATCH_S:.0f} seconds to watch, got {seconds!r}"
             )
-        started: dict[Any, float] = {}
-        seen: collections.deque[RequestEntry] = collections.deque(maxlen=_MAX_REQUESTS)
-
-        def entry(request: Any, status: int) -> RequestEntry:
-            kind = str(getattr(request, "resource_type", "") or "")
-            method = str(getattr(request, "method", "") or "").upper()
-            began = started.pop(request, None)
-            return RequestEntry(
-                kind=kind if _INSPECT_KIND.fullmatch(kind) else "other",
-                ms=0 if began is None else max(0, round((time.monotonic() - began) * 1000)),
-                status=max(0, status),
-                url=str(getattr(request, "url", "")),
-                method=method if _INSPECT_METHOD.fullmatch(method) else "OTHER",
-            )
-
-        def on_request(request: Any) -> None:
-            started[request] = time.monotonic()
-
-        def on_response(response: Any) -> None:
-            seen.append(entry(response.request, int(response.status)))
-
-        def on_failed(request: Any) -> None:
-            seen.append(entry(request, 0))
-
-        page = self._page
-        page.on("request", on_request)
-        page.on("response", on_response)
-        page.on("requestfailed", on_failed)
         try:
-            page.wait_for_timeout(round(seconds * 1000))
+            return _watch(self._page, seconds)
         except _playwright_error() as exc:
             raise self._action_error("watch the page's requests", exc) from exc
-        finally:
-            for name, callback in (
-                ("request", on_request),
-                ("response", on_response),
-                ("requestfailed", on_failed),
-            ):
-                with contextlib.suppress(_playwright_error()):
-                    page.remove_listener(name, callback)
-        return tuple(seen)
 
     def select(
         self,
@@ -3772,6 +3740,60 @@ def _sync_playwright() -> Any:
             "to restore it, then retry the browser command"
         ) from exc
     return sync_playwright()
+
+
+def _watch(page: Any, seconds: float) -> tuple[RequestEntry, ...]:
+    """Listen to `page`'s network events for `seconds` and say what its requests did.
+
+    Only a request whose start was seen counts, so one already in flight when the watch began
+    is not attributed to it; a request still unanswered at the end is reported `pending`. The
+    listeners are removed whatever happens.
+    """
+    started: dict[Any, float] = {}
+    seen: collections.deque[RequestEntry] = collections.deque(maxlen=_MAX_REQUESTS)
+
+    def on_request(request: Any) -> None:
+        started[request] = time.monotonic()
+
+    def finish(request: Any, status: int, outcome: str) -> None:
+        began = started.pop(request, None)
+        if began is not None:
+            seen.append(_watched_entry(request, status, outcome, began))
+
+    def on_response(response: Any) -> None:
+        finish(response.request, int(response.status), "")
+
+    def on_failed(request: Any) -> None:
+        finish(request, 0, "failed")
+
+    listeners = (("request", on_request), ("response", on_response), ("requestfailed", on_failed))
+    for name, callback in listeners:
+        page.on(name, callback)
+    try:
+        page.wait_for_timeout(round(seconds * 1000))
+    finally:
+        for name, callback in listeners:
+            with contextlib.suppress(_playwright_error()):
+                page.remove_listener(name, callback)
+    pending = [
+        _watched_entry(request, 0, "pending", began)
+        for request, began in sorted(started.items(), key=lambda item: item[1])
+    ]
+    return (*seen, *pending)[-_MAX_REQUESTS:]
+
+
+def _watched_entry(request: Any, status: int, outcome: str, began: float) -> RequestEntry:
+    """One watched request as an entry, its text fields kept to plain tokens."""
+    kind = str(getattr(request, "resource_type", "") or "")
+    method = str(getattr(request, "method", "") or "").upper()
+    return RequestEntry(
+        kind=kind if _INSPECT_KIND.fullmatch(kind) else "other",
+        method=method if _INSPECT_METHOD.fullmatch(method) else "OTHER",
+        ms=max(0, round((time.monotonic() - began) * 1000)),
+        outcome=outcome,
+        status=max(0, status),
+        url=str(getattr(request, "url", "")),
+    )
 
 
 def _web_host(url: str) -> str:

@@ -89,6 +89,7 @@ from blumkin.browser.aria_view import parse_within
 from blumkin.browser.cdp import (
     MAX_WAIT_S,
     MAX_WATCH_S,
+    MIN_WATCH_S,
     BrowserActionError,
     BrowserAttachError,
     BrowserDependencyError,
@@ -4816,7 +4817,7 @@ def browser_options(
 @click.option(
     "--watch",
     "watch",
-    type=click.FloatRange(min=0.1, max=MAX_WATCH_S),
+    type=click.FloatRange(min=MIN_WATCH_S, max=MAX_WATCH_S),
     default=None,
     help="With --requests: listen for this many seconds instead and list the requests the "
     "page makes, with their method (run it as a background command while something acts).",
@@ -4869,7 +4870,8 @@ def browser_inspect(
             else f"{task}: {payload['count']} resource(s) loaded since the last navigation"
         ]
         lines.extend(
-            f"  {entry.get('method', ''):<7} {entry['kind']:<14} {entry['status'] or '-':>4} "
+            f"  {entry.get('method', ''):<7} {entry['kind']:<14} "
+            f"{entry.get('outcome') or entry['status'] or '-':>7} "
             f"{entry['ms']:>5} ms  {sanitize_terminal(entry['where'])}"
             for entry in payload["requests"]
         )

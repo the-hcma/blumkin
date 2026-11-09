@@ -718,6 +718,7 @@ def inspect_task(
                         "where": _chain_report([entry.url], hosts, sign_in_hosts)[0],
                     }
                     | ({"method": entry.method} if entry.method else {})
+                    | ({"outcome": entry.outcome} if entry.outcome else {})
                     for entry in entries
                 ],
                 "task": task,
