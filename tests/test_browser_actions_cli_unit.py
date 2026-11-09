@@ -5236,6 +5236,10 @@ def test_inspect_rejects_a_role_that_is_neither_a_field_nor_a_thing_to_look_at(
     result = _run("browser", "inspect", "expense-report", "Amount", "--role", "banner")
 
     assert result.exit_code != EXIT_SUCCESS
+    message = _json(result)["message"]
+    assert "Expected a role (" in message and "button" in message  # not "a field role"
+    fill = _json(_run("browser", "fill", "expense-report", "Amount", "1", "--role", "button"))
+    assert "Expected a field role (" in fill["message"]  # the field commands keep their wording
     assert raw.calls == [] or all(call[0] == "close" for call in raw.calls)
 
 

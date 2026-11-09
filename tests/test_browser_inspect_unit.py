@@ -134,7 +134,10 @@ def test_list_requests_reads_the_timing_buffer_and_filters_the_initiator_kind() 
             page.route("**/*", lambda route: route.fulfill(status=200, body="ok"))
             page.goto("http://example.test/start")
             page.evaluate("fetch('http://example.test/api/items?token=SECRET')")
-            page.wait_for_timeout(300)
+            page.wait_for_function(
+                "performance.getEntriesByType('resource')"
+                ".some((e) => e.name.includes('/api/items'))"
+            )
             driver = PlaywrightDriver(browser=browser, page=page, playwright=None, timeout_s=2)
 
             entries = driver.list_requests()

@@ -1737,7 +1737,8 @@ def _field_target(
     if host is not None and frame is None:
         raise ValueError("Expected a frame number with a frame host, got none")
     if role is not None and role not in roles:
-        raise ValueError(f"Expected a field role ({', '.join(sorted(roles))}), got {role!r}")
+        noun = "field role" if roles is FIELD_ROLES else "role"
+        raise ValueError(f"Expected a {noun} ({', '.join(sorted(roles))}), got {role!r}")
     if frame is None:
         return FieldTarget(exact=exact, nth=nth, role=role)
     hosts = _declared_hosts(config, task)

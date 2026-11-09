@@ -1378,7 +1378,12 @@ class PlaywrightDriver:
             self._still_allowed(scope, target)
             # One element for all three reads: a locator would be found again for each, and a
             # page that re-renders in between could make the facts describe different elements.
-            handle = chosen.element_handle()
+            handle = chosen.element_handle(timeout=self._timeout_ms)
+            if handle is None:
+                raise BrowserActionError(
+                    f"Expected the element labelled {label!r} to stay on the page while it is "
+                    "inspected, got none (the page re-rendered)"
+                )
             try:
                 facts = handle.evaluate(_INSPECT_JS)
                 visible = bool(handle.is_visible())
@@ -1474,7 +1479,7 @@ class PlaywrightDriver:
         """
         self._require_open()
         try:
-            found = self._page.evaluate(_REQUESTS_JS) or []
+            found = self._page.evaluate(_REQUESTS_JS, _MAX_REQUESTS) or []
         except _playwright_error() as exc:
             raise self._action_error("read the page's resource timing", exc) from exc
         entries: list[RequestEntry] = []
@@ -2728,7 +2733,7 @@ _INSPECT_JS = (
 
 #: The resources the page loaded since its last navigation, from the browser's timing buffer.
 _REQUESTS_JS = (
-    "() => performance.getEntriesByType('resource').slice(-1000).map((e) => "
+    "(count) => performance.getEntriesByType('resource').slice(-count).map((e) => "
     "({url: String(e.name), kind: String(e.initiatorType || ''), "
     "status: Number(e.responseStatus || 0), ms: Math.round(Number(e.duration || 0))}))"
 )
