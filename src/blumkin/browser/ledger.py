@@ -12,8 +12,9 @@ Entries are appended under an exclusive lock with one write and an fsync, so con
 writers cannot interleave and a crash leaves at most a torn last line. A reader ignores a
 torn last line, and the next writer cuts it off; a damaged line anywhere else is an error
 rather than a silently skipped one. The journal holds identifiers, states, model versions and
-file hashes, plus the short notes of the decisions and answers (one line each, checked to hold no
-amount or instruction), never a field value, an amount or a path (the report's total is
+file hashes, plus the short notes of the decisions and answers (one line each; a best-effort
+check refuses the common ways of writing an amount and instruction-like wording, and the rule
+stays the writer's: never an amount), never a field value or a path (the report's total is
 therefore recorded only as "confirmed with the user", never as an amount). It is kept private
 (`0700` directories, `0600` file).
 """
@@ -199,8 +200,9 @@ class Phase(StrEnum):
 class DecisionRecord:
     """A question left for the person (`d1`, `d2`, ...), open until it is answered.
 
-    The text and the answer are short single lines the writer checked: never an amount and
-    nothing that reads as an instruction. They are the person's and the agent's own notes, and
+    The text and the answer are short single lines. The writer refuses the common ways of
+    writing an amount and instruction-like wording, but that check is a heuristic: the rule
+    (never an amount) stays the writer's. They are the person's and the agent's own notes, and
     still data to whoever reads them later.
     """
 
@@ -656,7 +658,8 @@ def _append(journal: Path, entry: dict[str, Any]) -> None:
 
 
 def _check_note(text: Any, what: str) -> str:
-    """A decision or an answer: one short printable line, no amount, nothing instruction-like.
+    """A decision or an answer: one short printable line, refused when it looks like an amount
+    or reads as an instruction (both best-effort, not a guarantee).
 
     The amount check and the scan are the writer's only: the fold checks the shape alone, so a
     journal never becomes unreadable because a later blumkin scans differently.
@@ -1084,10 +1087,22 @@ _ITEM = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _INSTANCE = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?")
 _JOURNAL_FILENAME = "journal.jsonl"
 _LOCK_FILENAME = ".lock"
-#: A currency sign, or digits with exactly two decimals that are not part of a longer dotted
-#: or slashed run (`2026-11-09`, `09.11.2026` and `2026.11.09` are dates, `12.50` and `12.50.`
-#: at the end of a sentence are amounts). A time such as `14.30` reads as money: write `14:30`.
-_AMOUNT = re.compile(r"[$€£¥]|(?<![\d.,:/-])\d[\d,]*[.,]\d{2}(?!\d|[.,]\d)")
+#: The common ways of writing an amount: a currency sign, digits with exactly two decimals that
+#: are not part of a longer dotted or slashed run (`2026-11-09`, `09.11.2026` and `2026.11.09`
+#: are dates, `12.50` and `12.50.` at the end of a sentence are amounts), or a number next to a
+#: currency code or word (`45 EUR`, `CHF 30`, `12 dollars`). A heuristic: it cannot recognise
+#: every spelling, and a time such as `14.30` reads as money (write `14:30`).
+_CURRENCY = (
+    r"(?:USD|EUR|GBP|CHF|JPY|CAD|AUD|INR|CNY|BRL|MXN|SEK|NOK|DKK|NZD|SGD|HKD"
+    r"|dollars?|euros?|pounds?|cents?|bucks)"
+)
+_AMOUNT = re.compile(
+    r"[$€£¥₹₩₽₺₪฿₫₱]"
+    r"|(?<![\d.,:/-])\d[\d,]*[.,]\d{2}(?!\d|[.,]\d)"
+    rf"|\d\s*{_CURRENCY}\b"
+    rf"|\b{_CURRENCY}\s*\d",
+    re.IGNORECASE,
+)
 _DECISION_ID = re.compile(r"d[1-9][0-9]{0,2}")
 _MAX_DECISIONS = 500
 _MAX_OPEN_DECISIONS = 50

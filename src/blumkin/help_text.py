@@ -814,10 +814,12 @@ Examples:
 
 Answers an open decision: a question that `ledger handoff --decision` left for the person and
 the ledger kept (`ledger status` and the next handoff list the open ones as `d1`, `d2`, ...).
-`--answer` is one short line of at most 300 characters with no amount (a number with cents or
-a currency sign) and nothing that reads as an instruction. An unknown or already answered
-decision is refused, and an instance that was submitted or discarded takes no more answers.
-A journal that holds a decision entry is not read by a blumkin from before this command.
+`--answer` is one short line of at most 300 characters that is not an amount (a best-effort
+check refuses a currency sign, a currency code or word next to a number, and digits with cents;
+the rule stays yours: never an amount) and does not read as an instruction. An unknown or
+already answered decision is refused, and an instance that was submitted or discarded takes no
+more answers. A journal that holds a decision entry is not read by a blumkin from before this
+command.
 """
 
 BROWSER_LEDGER_DISCARD_EPILOG = """
@@ -857,8 +859,9 @@ Examples:
 
 Records the last clicks left for the user (--step, repeatable, at least one) and any open
 decisions (--decision, repeatable). The user makes the final submit; blumkin never does. Each
-decision is also kept in the ledger (one short line, no amount, nothing that reads as an
-instruction; the same text is never kept twice while it is open), so the next session sees
+decision is also kept in the ledger (one short line, never an amount: a best-effort check
+refuses the common forms, and one that reads as an instruction; the same text is never kept
+twice while it is open), so the next session sees
 what is still waiting: `ledger status` and the next handoff list the open ones as `d1`, `d2`,
 ..., and `ledger decide` closes one with the person's answer. An instance that was submitted
 or discarded only prints them.

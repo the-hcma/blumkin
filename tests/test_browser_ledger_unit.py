@@ -938,6 +938,12 @@ def test_answering_a_decision_closes_it_and_only_an_open_one(tmp_path: Path) -> 
         "It cost 12.50.",
         "Paid 12,50 total",
         "Taxi 7.05, then lunch",
+        "Taxi 45 EUR",
+        "CHF 30 for the train",
+        "12 dollars",
+        "usd 12",
+        "50 cents",
+        "₹500",
     ],
 )
 def test_a_decision_is_one_short_printable_line_without_an_amount(
