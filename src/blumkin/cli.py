@@ -127,14 +127,21 @@ from blumkin.browser.guard import CLICKABLE_ROLES, PICK_ROLES, SubmitBlockedErro
 from blumkin.browser.handoff import HandoffError, format_handoff_human
 from blumkin.browser.init_task import TEMPLATES, InitTaskError, init_task
 from blumkin.browser.launcher import DEFAULT_CLOSE_TIMEOUT_S, BrowserCloseError, BrowserLaunchError
-from blumkin.browser.ledger import LedgerError, LedgerJournalError, LedgerNotFoundError
+from blumkin.browser.ledger import (
+    EXCLUDE_REASONS,
+    LedgerError,
+    LedgerJournalError,
+    LedgerNotFoundError,
+)
 from blumkin.browser.ledger_commands import (
     ledger_apply,
     ledger_begin,
     ledger_close,
     ledger_discard,
+    ledger_exclude,
     ledger_expect,
     ledger_handoff,
+    ledger_include,
     ledger_list,
     ledger_reconcile,
     ledger_record,
@@ -982,7 +989,11 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
         return
     lines = [f"{payload['task']}/{payload['instance']}: {payload['summary']}"]
     if items:
-        lines += [f"  {i['kind']} {i['item']}: {i['state']}" for i in payload["items"]]
+        lines += [
+            f"  {i['kind']} {i['item']}: {i['state']}"
+            + (f" ({i['excluded_reason']})" if i.get("excluded_reason") else "")
+            for i in payload["items"]
+        ]
         if payload.get("on_server") or payload.get("local_only"):
             lines.append(
                 f"  on the server (read back): {len(payload['on_server'])}; "
@@ -3664,6 +3675,65 @@ def browser_ledger_expect(
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("exclude", epilog=help_text.BROWSER_LEDGER_EXCLUDE_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.argument("kind", type=click.Choice(["day", "receipt"]))
+@click.argument("item")
+@click.option(
+    "--reason",
+    required=True,
+    type=click.Choice(EXCLUDE_REASONS),
+    help="Why the person left it out (fixed words, never free text).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm that the person chose to leave it out.")
+@click.pass_context
+def browser_ledger_exclude(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    reason: str,
+    as_json_flag: bool,
+    yes: bool,
+) -> None:
+    """Record that the person left an item out, so no later session files it again."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_exclude(load_browser_setup(), task, instance, kind, item, reason, yes=yes)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json, items=True)
+
+
+@browser_ledger.command("include", epilog=help_text.BROWSER_LEDGER_INCLUDE_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.argument("kind", type=click.Choice(["day", "receipt"]))
+@click.argument("item")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--yes", is_flag=True, help="Confirm that the person wants the item back.")
+@click.pass_context
+def browser_ledger_include(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    as_json_flag: bool,
+    yes: bool,
+) -> None:
+    """Take an excluded item back into the report (it is staged again)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_include(load_browser_setup(), task, instance, kind, item, yes=yes)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json, items=True)
 
 
 @browser_ledger.command("discard", epilog=help_text.BROWSER_LEDGER_DISCARD_EPILOG)

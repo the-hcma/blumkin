@@ -8,7 +8,14 @@ from typing import Any
 
 import pytest
 
-from blumkin.browser.ledger import ItemKind, ItemState, begin_instance, record_item
+from blumkin.browser.ledger import (
+    ItemKind,
+    ItemState,
+    LedgerError,
+    begin_instance,
+    exclude_item,
+    record_item,
+)
 from blumkin.browser.ledger_ops import (
     HandoffRequired,
     apply_item,
@@ -1384,3 +1391,32 @@ def test_a_disk_error_while_saving_the_stop_never_hides_why_the_flow_stopped(
 
     assert paused.paused is not None
     assert instance_status_items(tmp_path)[0].state is ItemState.STAGED
+
+
+def test_apply_refuses_an_excluded_item_before_any_step_runs(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    stage_item(tmp_path, "expense-report", "trip-1", ItemKind.RECEIPT, "r1", sha256="c" * 64)
+    exclude_item(tmp_path, "expense-report", "trip-1", ItemKind.RECEIPT, "r1", "duplicate")
+    ran: list[str] = []
+
+    with pytest.raises(LedgerError, match="excluded .duplicate."):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.RECEIPT, "r1",
+            flow_name="add-line", values={"Amount": "8"}, sha256="c" * 64, model=_model(),
+            run_step=lambda step, _values: ran.append(step.action),
+        )  # fmt: skip
+
+    assert ran == []  # the browser was never touched
+
+
+def test_the_handoff_names_an_excluded_receipt_and_why_without_asking_for_it(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    stage_item(tmp_path, "expense-report", "trip-1", ItemKind.RECEIPT, "r1", sha256="d" * 64)
+    exclude_item(tmp_path, "expense-report", "trip-1", ItemKind.RECEIPT, "r1", "duplicate")
+
+    handoff = handoff_from_ledger(tmp_path, "expense-report", "trip-1", steps=("Review.",))
+
+    assert any("receipt r1: excluded" in line and "duplicate" in line for line in handoff.summary)
+    assert not any("in progress" in d for d in handoff.open_decisions)

@@ -33,6 +33,9 @@ from typing import Any
 
 from blumkin.browser.profiles import BrowserProfileError, ensure_private_dir, validate_task_name
 
+#: Why a person leaves an item out of the report: fixed words, never free text.
+EXCLUDE_REASONS = ("duplicate", "not-an-expense", "other", "personal")
+
 
 class ItemKind(StrEnum):
     """What kind of thing is being filed."""
@@ -58,11 +61,18 @@ class ItemRecord:
     #: (see `record_resume`). Any later change of the item's state clears it.
     resume_flow: str | None = None
     resume_step: int | None = None
+    #: Why an `excluded` item was left out, one of `EXCLUDE_REASONS` (never free text).
+    excluded_reason: str | None = None
 
 
 class ItemState(StrEnum):
-    """Where an item is: staged, filled into the form, then verified or failed."""
+    """Where an item is: staged, filled into the form, then verified or failed.
 
+    `excluded` is the person's decision to leave the item out of the report (a duplicate, for
+    example): nothing stages or applies it again until `include_item` takes it back.
+    """
+
+    EXCLUDED = "excluded"
     STAGED = "staged"
     FILLED = "filled"
     VERIFIED = "verified"
@@ -148,10 +158,13 @@ class LedgerStatus:
             parts.append("nothing filed yet")
         pending = sum(1 for i in self.items if i.state in (ItemState.STAGED, ItemState.FILLED))
         failed = sum(1 for i in self.items if i.state is ItemState.FAILED)
+        excluded = sum(1 for i in self.items if i.state is ItemState.EXCLUDED)
         if pending:
             parts.append(f"{pending} in progress")
         if failed:
             parts.append(f"{failed} failed")
+        if excluded:
+            parts.append(f"{excluded} excluded")
         if self.report is not None:
             parts.append(_report_text(self.report))
         if self.session is not None:
@@ -222,6 +235,42 @@ def discard_instance(config_dir: Path, task: str, instance: str) -> LedgerStatus
     return _close(config_dir, task, instance, "discarded", "discard")
 
 
+def exclude_item(
+    config_dir: Path, task: str, instance: str, kind: ItemKind, item: str, reason: str
+) -> LedgerStatus:
+    """Record that the person deliberately left an item out, so no later session files it again.
+
+    The item must already be in the ledger and not read back from the page (a verified item is
+    on the server: delete it there first). `stage` and `apply` refuse an excluded item and its
+    receipt file until `include_item` takes it back; `reason` is one of `EXCLUDE_REASONS`.
+    """
+    _check_task(task)
+    _check_instance(instance)
+    if reason not in EXCLUDE_REASONS:
+        raise LedgerError(f"Expected a reason of {', '.join(EXCLUDE_REASONS)}, got {reason!r}")
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "exclude an item")
+        held = folded.items.get((kind, item))
+        if held is None or held.state in (ItemState.EXCLUDED, ItemState.VERIFIED):
+            raise LedgerError(
+                f"Expected a staged, filled or failed {kind.value} {item!r} to exclude, got "
+                f"{'none' if held is None else held.state.value}"
+            )
+        _append(
+            journal,
+            {"event": "exclude", "item": item, "kind": kind.value, "reason": reason},
+        )
+        return _status(journal, task, instance)
+
+
 def expect_items(
     config_dir: Path, task: str, instance: str, expected: Mapping[ItemKind, int]
 ) -> LedgerStatus:
@@ -284,6 +333,32 @@ def record_resume(
             journal,
             {"event": "resume", "flow": flow, "item": item, "kind": kind.value, "step": step},
         )
+        return _status(journal, task, instance)
+
+
+def include_item(
+    config_dir: Path, task: str, instance: str, kind: ItemKind, item: str
+) -> LedgerStatus:
+    """Take an excluded item back: it is staged again, as if the person had changed their mind."""
+    _check_task(task)
+    _check_instance(instance)
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "include an item")
+        held = folded.items.get((kind, item))
+        if held is None or held.state is not ItemState.EXCLUDED:
+            raise LedgerError(
+                f"Expected an excluded {kind.value} {item!r} to include, got "
+                f"{'none' if held is None else held.state.value}"
+            )
+        _append(journal, {"event": "include", "item": item, "kind": kind.value})
         return _status(journal, task, instance)
 
 
@@ -369,6 +444,14 @@ def record_item(
             )
         _require_open(folded, "record an item")
         previous = folded.items.get((kind, item))
+        if previous is None and sha256 is not None:
+            for held in folded.items.values():
+                if held.state is ItemState.EXCLUDED and held.sha256 == sha256:
+                    raise LedgerError(
+                        f"Expected a receipt file that was not excluded, got the file of "
+                        f"{held.item!r} (excluded: {held.excluded_reason}); run `ledger include` "
+                        "for it first if the person changed their mind"
+                    )
         entry = _item_entry(kind, item, state, previous, model_version, sha256, low_confidence)
         _append(journal, entry)
         return _record(entry, _now())
@@ -592,6 +675,12 @@ def _item_entry(
         if kind is ItemKind.RECEIPT and sha256 is None:
             raise LedgerError(f"Expected a sha256 for the new receipt {item!r}, got none")
     else:
+        if previous.state is ItemState.EXCLUDED:
+            raise LedgerError(
+                f"Expected {item!r} to stay out of the report (excluded: "
+                f"{previous.excluded_reason}), got a change to {state.value}; run `ledger "
+                "include` first if the person changed their mind"
+            )
         if state not in _NEXT[previous.state]:
             raise LedgerError(
                 f"Expected {item!r} to go from {previous.state.value} to one of "
@@ -795,6 +884,31 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
         if held is None or held.state is not ItemState.STAGED:
             raise ValueError("resume for an item that is not staged")
         folded.items[key] = replace(held, resume_flow=entry["flow"], resume_step=entry["step"])
+    elif event == "exclude":
+        folded.session = None
+        key = (ItemKind(entry["kind"]), entry["item"])
+        held = folded.items.get(key)
+        if (
+            held is None
+            or held.state in (ItemState.EXCLUDED, ItemState.VERIFIED)
+            or entry["reason"] not in EXCLUDE_REASONS
+        ):
+            raise ValueError("bad exclude")
+        folded.items[key] = replace(
+            held,
+            at=at,
+            excluded_reason=entry["reason"],
+            resume_flow=None,
+            resume_step=None,
+            state=ItemState.EXCLUDED,
+        )
+    elif event == "include":
+        folded.session = None
+        key = (ItemKind(entry["kind"]), entry["item"])
+        held = folded.items.get(key)
+        if held is None or held.state is not ItemState.EXCLUDED:
+            raise ValueError("include for an item that is not excluded")
+        folded.items[key] = replace(held, at=at, excluded_reason=None, state=ItemState.STAGED)
     elif event == "expect":
         changed = _check_expected({ItemKind(k): v for k, v in dict(entry["expected"]).items()})
         folded.expected = {**folded.expected, **changed}
@@ -818,6 +932,7 @@ _MAX_EXPECTED = 1000
 _MAX_STEP = 201
 _MAX_JOURNAL_BYTES = 8 * 1024 * 1024
 _NEXT: dict[ItemState, tuple[ItemState, ...]] = {
+    ItemState.EXCLUDED: (),
     ItemState.STAGED: (ItemState.FILLED, ItemState.FAILED),
     ItemState.FILLED: (ItemState.VERIFIED, ItemState.FAILED),
     ItemState.VERIFIED: (),

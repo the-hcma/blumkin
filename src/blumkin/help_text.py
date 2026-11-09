@@ -773,6 +773,23 @@ expense report. `--expect KIND=COUNT` (repeatable; kinds are day and receipt) sa
 items to expect, so status can read "3 of 10 days filed".
 """
 
+BROWSER_LEDGER_EXCLUDE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger exclude expense-report trip-lisbon receipt r4 --reason duplicate --yes
+
+Records that the person deliberately left an item out of the report (for example the receipt
+whose expense they deleted in the duplicate dialog), so no later session files it again. The
+item must already be in the ledger and not verified (a verified item is on the server). `--reason`
+is one of duplicate, not-an-expense, personal or other (fixed words, never free text). `stage`
+and `apply` then refuse the item, and refuse a new receipt id with the same file, `ledger status`
+and `ledger handoff` say it was excluded and why, and the expected count is left as it was
+(change it with `ledger expect`). Needs `--yes`; say yes only if the person chose it. Undo it
+with `ledger include`. A journal that holds such an entry is not read by a blumkin from before
+this command.
+"""
+
 BROWSER_LEDGER_EXPECT_EPILOG = """
 Examples:
 
@@ -825,6 +842,17 @@ Examples:
 
 Records the last clicks left for the user (--step, repeatable, at least one) and any open
 decisions (--decision, repeatable). The user makes the final submit; blumkin never does.
+"""
+
+BROWSER_LEDGER_INCLUDE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger include expense-report trip-lisbon receipt r4 --yes
+
+Takes an excluded item back into the report: it is staged again and `stage` and `apply` accept
+it. Needs `--yes`; say yes only if the person asks for the item back. An item that is not
+excluded is refused.
 """
 
 BROWSER_LEDGER_LIST_EPILOG = """
