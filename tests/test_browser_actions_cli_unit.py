@@ -5308,3 +5308,18 @@ def test_inspect_task_refuses_any_narrowing_with_requests_even_a_zero_nth(
         with pytest.raises(ValueError, match="without a label narrowing"):
             call()
     assert raw.calls == []  # refused before the page was touched
+
+
+def test_inspect_is_refused_on_a_sign_in_page_or_any_page_off_the_allowed_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize"
+
+    element = _run("browser", "inspect", "expense-report", "Amount")
+    resources = _run("browser", "inspect", "expense-report", "--requests")
+
+    for result in (element, resources):
+        assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
+    # Refused before the page was asked anything: nothing was inspected or listed.
+    assert [call[0] for call in raw.calls if call[0] in ("inspect_field", "list_requests")] == []
