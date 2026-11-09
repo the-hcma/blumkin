@@ -673,8 +673,12 @@ def inspect_task(
     nth: int | None = None,
     requests: bool = False,
     role: str | None = None,
+    watch: float | None = None,
 ) -> dict[str, Any]:
     """Facts about one element, or the resources the page loaded: never a value or a body.
+
+    With `requests` and `watch` (seconds), the requests the page makes during that time are
+    listened to instead (method, masked path, status, kind): run it while something else acts.
 
     With a `label`, the element is found as `fill` finds it (its role may also be a button,
     link, cell or dialog) and its tag, role, plain-word class names, visibility, enabled and
@@ -688,6 +692,8 @@ def inspect_task(
         raise ValueError("Expected either a label to inspect or --requests, got neither or both")
     if requests and (exact or frame is not None or host is not None or nth is not None or role):
         raise ValueError("Expected --requests without a label narrowing (--exact, --nth, ...)")
+    if watch is not None and not requests:
+        raise ValueError("Expected --watch together with --requests, got a label")
     target = (
         None
         if requests
@@ -698,8 +704,8 @@ def inspect_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         if requests:
-            entries = driver.list_requests()
-            return {
+            entries = driver.list_requests() if watch is None else driver.watch_requests(watch)
+            payload: dict[str, Any] = {
                 "action": "inspect",
                 "count": len(entries),
                 "mode": "requests",
@@ -711,11 +717,15 @@ def inspect_task(
                         "status": entry.status,
                         "where": _chain_report([entry.url], hosts, sign_in_hosts)[0],
                     }
+                    | ({"method": entry.method} if entry.method else {})
                     for entry in entries
                 ],
                 "task": task,
                 "untrusted": UNTRUSTED_NOTE,
             }
+            if watch is not None:
+                payload["watched_s"] = watch
+            return payload
         assert label is not None and target is not None
         found = driver.inspect_field(label, target)
         payload = _field_payload("inspect", task, label, target, None, None)

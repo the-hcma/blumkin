@@ -489,6 +489,10 @@ class GuardedDriver:
         """The resources the page loaded since its last navigation (timing only, never bodies)."""
         return self._raw.list_requests()
 
+    def watch_requests(self, seconds: float) -> tuple[RequestEntry, ...]:
+        """The requests the page makes during the next `seconds`: only listened to, never held."""
+        return self._raw.watch_requests(seconds)
+
     def list_options(self, label: str, target: FieldTarget | None = None) -> OptionsListing:
         """List a dropdown's options without choosing any; the field is vetted like a select."""
         action = f"list the options of {label!r}"
