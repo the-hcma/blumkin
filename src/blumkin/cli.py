@@ -138,6 +138,7 @@ from blumkin.browser.ledger_commands import (
     ledger_apply,
     ledger_begin,
     ledger_close,
+    ledger_decide,
     ledger_discard,
     ledger_exclude,
     ledger_expect,
@@ -1006,6 +1007,14 @@ def _emit_ledger(payload: dict[str, Any], *, as_json: bool, items: bool = False)
                 f"  {held['kind']} {held['item']}: stopped in flow "
                 f"{sanitize_terminal(held['resume']['flow'])}, go on with "
                 f"--from-step {held['resume']['step']}"
+            )
+    for note in payload.get("decisions") or ():
+        if note["answer"] is None:
+            lines.append(f"  decision {note['id']} (open): {sanitize_terminal(note['text'])}")
+        elif items:
+            lines.append(
+                f"  decision {note['id']} (answered): {sanitize_terminal(note['text'])} -> "
+                f"{sanitize_terminal(note['answer'])}"
             )
     if payload.get("resume"):
         lines.append(f"  {payload['resume']}")
@@ -3676,6 +3685,34 @@ def browser_ledger_expect(
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     _emit_ledger(payload, as_json=as_json)
+
+
+@browser_ledger.command("decide", epilog=help_text.BROWSER_LEDGER_DECIDE_EPILOG)
+@click.argument("task")
+@click.argument("instance")
+@click.argument("decision")
+@click.option(
+    "--answer",
+    required=True,
+    help="The person's answer: one short line, no amount.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_ledger_decide(
+    ctx: click.Context,
+    task: str,
+    instance: str,
+    decision: str,
+    answer: str,
+    as_json_flag: bool,
+) -> None:
+    """Answer an open decision that a handoff left for the person."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = ledger_decide(load_browser_setup(), task, instance, decision, answer)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    _emit_ledger(payload, as_json=as_json, items=True)
 
 
 @browser_ledger.command("exclude", epilog=help_text.BROWSER_LEDGER_EXCLUDE_EPILOG)

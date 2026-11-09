@@ -1420,3 +1420,48 @@ def test_the_handoff_names_an_excluded_receipt_and_why_without_asking_for_it(
 
     assert any("receipt r1: excluded" in line and "duplicate" in line for line in handoff.summary)
     assert not any("in progress" in d for d in handoff.open_decisions)
+
+
+def test_the_handoff_keeps_its_decisions_and_the_next_one_lists_them_again(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import instance_status
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    first = handoff_from_ledger(
+        tmp_path, "expense-report", "trip-1", steps=("Review.",), decisions=("Keep the taxi?",)
+    )
+    later = handoff_from_ledger(tmp_path, "expense-report", "trip-1", steps=("Review again.",))
+
+    assert "d1: Keep the taxi?" in first.open_decisions
+    assert "d1: Keep the taxi?" in later.open_decisions  # kept in the ledger, no flag needed
+    assert [d.id for d in instance_status(tmp_path, "expense-report", "trip-1").decisions] == ["d1"]
+
+
+def test_a_handoff_with_an_amount_in_a_decision_is_refused_and_nothing_is_kept(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.ledger import instance_status
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    with pytest.raises(LedgerError, match="no amount"):
+        handoff_from_ledger(
+            tmp_path, "expense-report", "trip-1", steps=("Review.",), decisions=("Keep the 12.50?",)
+        )
+    assert instance_status(tmp_path, "expense-report", "trip-1").decisions == ()
+
+
+def test_a_closed_instance_only_prints_the_decisions_it_is_given(tmp_path: Path) -> None:
+    from blumkin.browser.ledger import instance_status, mark_submitted
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+    mark_submitted(tmp_path, "expense-report", "trip-1")
+
+    handoff = handoff_from_ledger(
+        tmp_path, "expense-report", "trip-1", steps=("Done.",), decisions=("Anything left?",)
+    )
+
+    assert "Anything left?" in handoff.open_decisions
+    assert instance_status(tmp_path, "expense-report", "trip-1").decisions == ()

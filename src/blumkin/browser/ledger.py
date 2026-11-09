@@ -24,14 +24,15 @@ import fcntl
 import json
 import os
 import re
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from blumkin.browser.profiles import BrowserProfileError, ensure_private_dir, validate_task_name
+from blumkin.prompt_injection import scan_for_injection
 
 #: Why a person leaves an item out of the report: fixed words, never free text.
 EXCLUDE_REASONS = ("duplicate", "not-an-expense", "other", "personal")
@@ -100,8 +101,13 @@ class LedgerStatus:
     items: tuple[ItemRecord, ...]
     phase: Phase
     task: str
+    decisions: tuple[DecisionRecord, ...] = ()
     report: ReportRecord | None = None
     session: SessionRecord | None = None
+
+    def open_decisions(self) -> tuple[DecisionRecord, ...]:
+        """The questions still waiting for an answer, oldest first."""
+        return tuple(d for d in self.decisions if d.answer is None)
 
     def on_server(self) -> tuple[ItemRecord, ...]:
         """Items filled into the form and read back from the page."""
@@ -165,6 +171,9 @@ class LedgerStatus:
             parts.append(f"{failed} failed")
         if excluded:
             parts.append(f"{excluded} excluded")
+        waiting = len(self.open_decisions())
+        if waiting:
+            parts.append(f"{waiting} open decision{'' if waiting == 1 else 's'}")
         if self.report is not None:
             parts.append(_report_text(self.report))
         if self.session is not None:
@@ -179,6 +188,21 @@ class Phase(StrEnum):
     OPEN = "open"
     SUBMITTED = "submitted"
     DISCARDED = "discarded"
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRecord:
+    """A question left for the person (`d1`, `d2`, ...), open until it is answered.
+
+    The text and the answer are short single lines the writer checked: never an amount and
+    nothing that reads as an instruction. They are the person's and the agent's own notes, and
+    still data to whoever reads them later.
+    """
+
+    at: str
+    id: str
+    text: str
+    answer: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +417,44 @@ def mark_submitted(config_dir: Path, task: str, instance: str) -> LedgerStatus:
     return _close(config_dir, task, instance, "submitted", "mark submitted")
 
 
+def record_decisions(
+    config_dir: Path, task: str, instance: str, texts: Sequence[str]
+) -> LedgerStatus:
+    """Keep questions for the person in the ledger, so the next session knows what is open.
+
+    A text that is already an open decision is not recorded twice. Each text is one short
+    line, with no amount and nothing that reads as an instruction, and an instance holds at
+    most `_MAX_DECISIONS` of them.
+    """
+    _check_task(task)
+    _check_instance(instance)
+    checked = [_check_note(text, "decision") for text in texts]
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "record a decision")
+        waiting = {d.text for d in folded.decisions.values() if d.answer is None}
+        count = len(folded.decisions)
+        for text in checked:
+            if text in waiting:
+                continue
+            if count >= _MAX_DECISIONS:
+                raise LedgerError(
+                    f"Expected at most {_MAX_DECISIONS} decisions in an instance, got more; "
+                    "answer some with `ledger decide` first"
+                )
+            count += 1
+            waiting.add(text)
+            _append(journal, {"event": "decision", "id": f"d{count}", "text": text})
+        return _status(journal, task, instance)
+
+
 def record_item(
     config_dir: Path,
     task: str,
@@ -536,6 +598,35 @@ def record_session(
         return _status(journal, task, instance)
 
 
+def resolve_decision(
+    config_dir: Path, task: str, instance: str, decision_id: str, answer: str
+) -> LedgerStatus:
+    """Answer an open decision, in a short line of the person's words (no amount)."""
+    _check_task(task)
+    _check_instance(instance)
+    if not _DECISION_ID.fullmatch(decision_id):
+        raise LedgerError(f"Expected a decision id such as d1, got {decision_id!r}")
+    checked = _check_note(answer, "answer")
+    directory = _existing_instance_dir(config_dir, task, instance)
+    if directory is None:
+        raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
+    with _writing(directory) as journal:
+        folded = _fold(_read(journal, task, instance), task, instance)
+        if folded is None:
+            raise LedgerNotFoundError(
+                f"Expected an instance {instance!r} of task {task!r}, got none"
+            )
+        _require_open(folded, "answer a decision")
+        held = folded.decisions.get(decision_id)
+        if held is None or held.answer is not None:
+            raise LedgerError(
+                f"Expected an open decision {decision_id!r} to answer, got "
+                f"{'none' if held is None else 'one that is already answered'}"
+            )
+        _append(journal, {"answer": checked, "event": "decided", "id": decision_id})
+        return _status(journal, task, instance)
+
+
 def _append(journal: Path, entry: dict[str, Any]) -> None:
     """Write one entry after cutting off a torn last line; the lock is held."""
     fd = os.open(journal, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
@@ -553,6 +644,30 @@ def _append(journal: Path, entry: dict[str, Any]) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _check_note(text: Any, what: str) -> str:
+    """A decision or an answer: one short printable line, no amount, nothing instruction-like.
+
+    The amount check and the scan are the writer's only: the fold checks the shape alone, so a
+    journal never becomes unreadable because a later blumkin scans differently.
+    """
+    if not isinstance(text, str) or not text.strip():
+        raise LedgerError(f"Expected a {what} of some text, got a blank one")
+    line = text.strip()
+    if len(line) > _MAX_NOTE or not line.isprintable():
+        raise LedgerError(
+            f"Expected a {what} of one printable line of at most {_MAX_NOTE} characters, got "
+            "one that is longer or has a line break or control character"
+        )
+    if _AMOUNT.search(line):
+        raise LedgerError(
+            f"Expected a {what} with no amount (a number with cents or a currency sign), got "
+            "one; name the vendor and the date instead"
+        )
+    if scan_for_injection(line, location=what).matched:
+        raise LedgerError(f"Expected a {what} that reads as a note, got instruction-like wording")
+    return line
 
 
 def _check_resume(flow: Any, step: Any) -> None:
@@ -792,6 +907,7 @@ def _status(journal: Path, task: str, instance: str) -> LedgerStatus:
     if folded is None:
         raise LedgerNotFoundError(f"Expected an instance {instance!r} of task {task!r}, got none")
     return LedgerStatus(
+        decisions=tuple(folded.decisions.values()),
         expected=dict(folded.expected),
         instance=instance,
         items=tuple(sorted(folded.items.values(), key=lambda i: (i.kind.value, i.item))),
@@ -818,6 +934,7 @@ class _Folded:
     expected: dict[ItemKind, int]
     items: dict[tuple[ItemKind, str], ItemRecord]
     phase: Phase
+    decisions: dict[str, DecisionRecord] = field(default_factory=dict)
     report: ReportRecord | None = None
     session: SessionRecord | None = None
 
@@ -884,6 +1001,34 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
         if held is None or held.state is not ItemState.STAGED:
             raise ValueError("resume for an item that is not staged")
         folded.items[key] = replace(held, resume_flow=entry["flow"], resume_step=entry["step"])
+    elif event == "decision":
+        folded.session = None
+        number = len(folded.decisions) + 1
+        text = entry["text"]
+        if (
+            entry["id"] != f"d{number}"
+            or number > _MAX_DECISIONS
+            or not isinstance(text, str)
+            or not text.strip()
+            or len(text) > _MAX_NOTE
+            or not text.isprintable()
+        ):
+            raise ValueError("bad decision")
+        folded.decisions[entry["id"]] = DecisionRecord(at=at, id=entry["id"], text=text)
+    elif event == "decided":
+        folded.session = None
+        answer = entry["answer"]
+        held = folded.decisions.get(entry["id"])
+        if (
+            held is None
+            or held.answer is not None
+            or not isinstance(answer, str)
+            or not answer.strip()
+            or len(answer) > _MAX_NOTE
+            or not answer.isprintable()
+        ):
+            raise ValueError("bad answer")
+        folded.decisions[entry["id"]] = replace(held, answer=answer, at=at)
     elif event == "exclude":
         folded.session = None
         key = (ItemKind(entry["kind"]), entry["item"])
@@ -928,7 +1073,11 @@ _ITEM = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _INSTANCE = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?")
 _JOURNAL_FILENAME = "journal.jsonl"
 _LOCK_FILENAME = ".lock"
+_AMOUNT = re.compile(r"[$€£¥]|\d[\d,]*[.,]\d{2}(?!\d)")
+_DECISION_ID = re.compile(r"d[1-9][0-9]{0,2}")
+_MAX_DECISIONS = 50
 _MAX_EXPECTED = 1000
+_MAX_NOTE = 300
 _MAX_STEP = 201
 _MAX_JOURNAL_BYTES = 8 * 1024 * 1024
 _NEXT: dict[ItemState, tuple[ItemState, ...]] = {
