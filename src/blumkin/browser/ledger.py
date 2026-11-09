@@ -675,7 +675,7 @@ def _check_note(text: Any, what: str) -> str:
     if _AMOUNT.search(line):
         raise LedgerError(
             f"Expected a {what} with no amount (a number with cents or a currency sign), got "
-            "one; name the vendor and the date instead (a date as 2026-11-09, a time as 14:30)"
+            "one; describe it without the figure instead (a date as 2026-11-09, a time as 14:30)"
         )
     if scan_for_injection(line, location=what).matched:
         raise LedgerError(f"Expected a {what} that reads as a note, got instruction-like wording")
