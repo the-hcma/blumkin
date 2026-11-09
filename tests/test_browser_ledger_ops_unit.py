@@ -1465,3 +1465,25 @@ def test_a_closed_instance_only_prints_the_decisions_it_is_given(tmp_path: Path)
 
     assert "Anything left?" in handoff.open_decisions
     assert instance_status(tmp_path, "expense-report", "trip-1").decisions == ()
+
+
+def test_an_instance_submitted_between_the_check_and_the_write_only_prints_the_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import ledger_ops
+    from blumkin.browser.ledger import instance_status, mark_submitted, record_decisions
+
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    def submitted_first(*args: Any, **kwargs: Any) -> Any:
+        mark_submitted(tmp_path, "expense-report", "trip-1")  # the person submitted meanwhile
+        return record_decisions(*args, **kwargs)
+
+    monkeypatch.setattr(ledger_ops, "record_decisions", submitted_first)
+
+    handoff = handoff_from_ledger(
+        tmp_path, "expense-report", "trip-1", steps=("Done.",), decisions=("Anything left?",)
+    )
+
+    assert "Anything left?" in handoff.open_decisions
+    assert instance_status(tmp_path, "expense-report", "trip-1").decisions == ()

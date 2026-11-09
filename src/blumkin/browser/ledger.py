@@ -85,6 +85,10 @@ class LedgerError(ValueError):
     """A name, a state change or a journal is not acceptable."""
 
 
+class LedgerClosedError(LedgerError):
+    """The instance was submitted or discarded, so it takes no more entries."""
+
+
 class LedgerJournalError(LedgerError):
     """The journal is damaged somewhere other than a torn last line."""
 
@@ -668,7 +672,7 @@ def _check_note(text: Any, what: str) -> str:
     if _AMOUNT.search(line):
         raise LedgerError(
             f"Expected a {what} with no amount (a number with cents or a currency sign), got "
-            "one; name the vendor and the date instead"
+            "one; name the vendor and the date instead (a date as 2026-11-09, a time as 14:30)"
         )
     if scan_for_injection(line, location=what).matched:
         raise LedgerError(f"Expected a {what} that reads as a note, got instruction-like wording")
@@ -904,7 +908,9 @@ def _report_text(report: ReportRecord) -> str:
 
 def _require_open(folded: _Folded, action: str) -> None:
     if folded.phase is not Phase.OPEN:
-        raise LedgerError(f"Expected an open instance to {action}, got a {folded.phase.value} one")
+        raise LedgerClosedError(
+            f"Expected an open instance to {action}, got a {folded.phase.value} one"
+        )
 
 
 def _status(journal: Path, task: str, instance: str) -> LedgerStatus:
@@ -1078,7 +1084,10 @@ _ITEM = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _INSTANCE = re.compile(r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?")
 _JOURNAL_FILENAME = "journal.jsonl"
 _LOCK_FILENAME = ".lock"
-_AMOUNT = re.compile(r"[$€£¥]|\d[\d,]*[.,]\d{2}(?!\d)")
+#: A currency sign, or digits with exactly two decimals that are not part of a longer dotted
+#: or slashed run (`2026-11-09`, `09.11.2026` and `2026.11.09` are dates, `12.50` and `12.50.`
+#: at the end of a sentence are amounts). A time such as `14.30` reads as money: write `14:30`.
+_AMOUNT = re.compile(r"[$€£¥]|(?<![\d.,:/-])\d[\d,]*[.,]\d{2}(?!\d|[.,]\d)")
 _DECISION_ID = re.compile(r"d[1-9][0-9]{0,2}")
 _MAX_DECISIONS = 500
 _MAX_OPEN_DECISIONS = 50

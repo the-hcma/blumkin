@@ -23,6 +23,7 @@ from blumkin.browser.ledger import (
     ItemKind,
     ItemRecord,
     ItemState,
+    LedgerClosedError,
     LedgerError,
     LedgerStatus,
     Phase,
@@ -352,8 +353,13 @@ def handoff_from_ledger(
     status = instance_status(config_dir, task, instance)
     unrecorded: list[str] = []
     if decisions and status.phase is Phase.OPEN:
-        # The questions stay in the ledger, so the next session knows what is still open.
-        status = record_decisions(config_dir, task, instance, decisions)
+        # The questions stay in the ledger, so the next session knows what is still open. An
+        # instance closed since the check above only prints them, like one closed before it.
+        try:
+            status = record_decisions(config_dir, task, instance, decisions)
+        except LedgerClosedError:
+            status = instance_status(config_dir, task, instance)
+            unrecorded = list(decisions)
     else:
         unrecorded = list(decisions)  # a closed instance takes no more notes: only printed
     summary = [status.summary()]

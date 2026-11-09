@@ -935,6 +935,9 @@ def test_answering_a_decision_closes_it_and_only_an_open_one(tmp_path: Path) -> 
         "Taxi $12",
         "Taxi €9",
         "1,234.00",
+        "It cost 12.50.",
+        "Paid 12,50 total",
+        "Taxi 7.05, then lunch",
     ],
 )
 def test_a_decision_is_one_short_printable_line_without_an_amount(
@@ -1035,3 +1038,24 @@ def test_a_hand_edited_decision_entry_that_is_malformed_makes_the_journal_unread
     assert instance_status(tmp_path, "expense-report", "trip").decisions == ()  # the edit undone
     with_entry({**base, "id": "d1", "text": "A proper one"})
     assert instance_status(tmp_path, "expense-report", "trip").decisions[0].id == "d1"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Taxi from Uber on 2026-11-09",
+        "Taxi on 09.11.2026",
+        "Taxi on 2026.11.09",
+        "Taxi on 9.11.2026 at 14:30",
+        "Hotel stay 11/09/2026 to 11/12/2026",
+        "Receipt 3 of 5 for the Lisbon trip",
+    ],
+)
+def test_a_decision_may_name_a_vendor_and_a_date_in_any_common_form(
+    tmp_path: Path, text: str
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+
+    status = record_decisions(tmp_path, "expense-report", "trip", [text])
+
+    assert status.decisions[0].text == text
