@@ -1045,7 +1045,9 @@ key=value words (page, bind, expect, expect_heading, starts_on, instruction, row
 role, match, nth; quote a value with spaces in the shell's own way). `nth=N` (1-based, in DOM
 order) says which of several same-named controls a click, press, fill, select, upload or verify
 step means; the step is refused with the real count when the page has fewer (a verify step
-reports it as missing). The actions are
+reports it as missing). An upload step on a control the model records as a button (the trigger
+of a file input, such as Oracle's `File Name`) must say which input with `nth=N`, since its
+name alone can match several. The actions are
 click, press (with value=KEY it sends that key, such as Tab or ArrowDown, and otherwise clicks),
 fill (a bound parameter, or a literal value for a fixed text), select (choose an option in a
 dropdown, from a bind or a literal value),
