@@ -681,7 +681,8 @@ def inspect_task(
     focus state are reported; a label that names several is reported with the counts, narrow
     it with `nth`, `exact`, `role` or `frame`. With `requests`, the resources the page loaded
     since its last navigation are listed from the browser's own timing (initiator, status,
-    time and a masked path, never a query, body or header). Read-only, on an allowed page only.
+    time and a masked path, never a query, body or header). Read-only; once the task declares
+    `allowed_hosts` the page must be on one of them (and another host shows only its name).
     """
     if requests == (label is not None):
         raise ValueError("Expected either a label to inspect or --requests, got neither or both")
