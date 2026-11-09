@@ -171,6 +171,8 @@ class BrowserDriver(Protocol):
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
 
+    def inspect_field(self, label: str, target: FieldTarget | None = None) -> FieldInspection: ...
+
     def list_options(
         self,
         label: str,
@@ -178,6 +180,8 @@ class BrowserDriver(Protocol):
         vet: Callable[[ControlInfo], None] | None = None,
         vet_name: Callable[[str], None] | None = None,
     ) -> OptionsListing: ...
+
+    def list_requests(self) -> tuple[RequestEntry, ...]: ...
 
     def select(
         self,
@@ -230,6 +234,29 @@ class CellEdit:
 
 
 @dataclass(frozen=True, slots=True)
+class FieldInspection:
+    """What `inspect_field` found out about one element: facts about it, never its value.
+
+    `status` is `found`, `missing` (no such element, or fewer than `nth`) or `ambiguous` (the
+    label names several and none was singled out); `count` is how many matched. `classes` are
+    the element's class names kept only when they are plain words (letters, digits, `_`, `-`,
+    `:`) of a bounded length and number.
+    """
+
+    status: str
+    count: int = 0
+    visible_count: int = 0
+    tag: str = ""
+    input_type: str = ""
+    role: str = ""
+    classes: tuple[str, ...] = ()
+    visible: bool = False
+    enabled: bool = False
+    focused: bool = False
+    readonly: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class FieldReading:
     """What `read_field` found: `read` (with the value), `missing`, `ambiguous` or `unreadable`
     (a password or other secret field, or a widget whose value cannot be read)."""
@@ -249,6 +276,21 @@ class OptionsListing:
     options: tuple[str, ...]
     complete: bool = True
     closed: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RequestEntry:
+    """One resource the page loaded since its last navigation, from the browser's own timing.
+
+    `url` is the address as the browser recorded it (the caller masks it before showing it),
+    `kind` the initiator (`fetch`, `xmlhttprequest`, `script`, ...), `status` the HTTP status
+    when the browser exposes it (0 when it does not), `ms` how long it took.
+    """
+
+    kind: str
+    ms: int
+    status: int
+    url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,11 +399,27 @@ FIELD_ROLES = frozenset(
     }
 )
 
+#: The roles `inspect` accepts: a field's, and those of the things an agent looks at without
+#: typing into them (a grid cell, a button, a dialog).
+INSPECT_ROLES = FIELD_ROLES | frozenset(
+    {"button", "cell", "dialog", "gridcell", "link", "menuitem", "row", "tab"}
+)
+
 #: `autocomplete` values that mark a secret field, which is never read back.
 _SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-code"})
 
+#: A class name `inspect` passes on: plain word characters only, so it cannot carry a sentence.
+_INSPECT_CLASS = re.compile(r"[A-Za-z0-9_:-]{1,60}")
+#: The initiator kind of a resource (`fetch`, `script`, ...) as the browser spells it.
+_INSPECT_KIND = re.compile(r"[a-z]{1,20}")
+#: A tag, input type or role `inspect` passes on: one plain lowercase token.
+_INSPECT_WORD = re.compile(r"[a-z][a-z0-9_.:-]{0,39}")
+#: Most class names `inspect` reports for one element.
+_MAX_INSPECT_CLASSES = 30
 #: Most characters of a field's value read back for comparing (the rest is not looked at).
 _MAX_READ_BACK = 100_000
+#: Most resources `list_requests` returns (the newest ones).
+_MAX_REQUESTS = 200
 
 #: Most matches listed when a label is ambiguous.
 MAX_LISTED_MATCHES = 12
@@ -1283,6 +1341,79 @@ class PlaywrightDriver:
             url=url,
         )
 
+    def inspect_field(self, label: str, target: FieldTarget | None = None) -> FieldInspection:
+        """Facts about one element (its tag, role, classes, visibility, state), never its value.
+
+        The element is found as `fill` finds it, but a label that names several is reported with
+        the counts instead of refused, so the caller can see how many there are. A missing or
+        ambiguous element is reported as such; nothing is clicked or typed.
+        """
+        self._require_open()
+        target = target or FieldTarget()
+        try:
+            scope = self._scope(target)
+            base = (
+                scope.get_by_role(target.role, name=label, exact=target.exact)
+                if target.role
+                else scope.get_by_label(label, exact=target.exact)
+            )
+            try:
+                base.first.wait_for(state="attached", timeout=self._timeout_ms)
+            except _playwright_error() as exc:
+                if _is_timeout(exc):
+                    return FieldInspection("missing")
+                raise
+            count = int(base.count())
+            seen = int(base.filter(visible=True).count())
+            if target.nth is not None:
+                if count < target.nth:
+                    return FieldInspection("missing", count=count, visible_count=seen)
+                chosen = base.nth(target.nth - 1)
+            elif count == 1:
+                chosen = base
+            elif seen == 1:
+                chosen = base.filter(visible=True)
+            else:
+                return FieldInspection("ambiguous", count=count, visible_count=seen)
+            self._still_allowed(scope, target)
+            # One element for all three reads: a locator would be found again for each, and a
+            # page that re-renders in between could make the facts describe different elements.
+            handle = chosen.element_handle(timeout=self._timeout_ms)
+            if handle is None:
+                raise BrowserActionError(
+                    f"Expected the element labelled {label!r} to stay on the page while it is "
+                    "inspected, got none (the page re-rendered)"
+                )
+            try:
+                facts = handle.evaluate(_INSPECT_JS)
+                visible = bool(handle.is_visible())
+                enabled = bool(handle.is_enabled())
+            finally:
+                handle.dispose()
+            self._still_allowed(scope, target)
+        except _playwright_error() as exc:
+            # Only the wait for the element to appear means "missing" (answered above). A
+            # timeout later, once it was found and counted, is a real failure of the page.
+            raise self._action_error(f"inspect the element labelled {label!r}", exc) from exc
+        classes = tuple(
+            name
+            for name in (str(item) for item in facts.get("classes", ()))
+            if _INSPECT_CLASS.fullmatch(name)
+        )[:_MAX_INSPECT_CLASSES]
+        return FieldInspection(
+            "found",
+            count=count,
+            visible_count=seen,
+            tag=_inspect_word(str(facts.get("tag", "")), "other"),
+            input_type=_inspect_word(str(facts.get("type", "")), "other"),
+            role=_inspect_word(str(facts.get("role", "")), ""),
+            classes=classes,
+            visible=visible,
+            enabled=enabled,
+            focused=bool(facts.get("focused")),
+            readonly=bool(facts.get("readonly")),
+        )
+
     def list_options(
         self,
         label: str,
@@ -1339,6 +1470,30 @@ class PlaywrightDriver:
             raise self._action_error(
                 f"list the options of the field labelled {label!r}", exc
             ) from exc
+
+    def list_requests(self) -> tuple[RequestEntry, ...]:
+        """The resources the page loaded since its last navigation, from its own timing buffer.
+
+        Reads what the browser already recorded (`performance` resource entries), so nothing is
+        intercepted and no body, header or method is available; the newest ones are kept.
+        """
+        self._require_open()
+        try:
+            found = self._page.evaluate(_REQUESTS_JS, _MAX_REQUESTS) or []
+        except _playwright_error() as exc:
+            raise self._action_error("read the page's resource timing", exc) from exc
+        entries: list[RequestEntry] = []
+        for item in found[-_MAX_REQUESTS:]:
+            kind = str(item.get("kind", ""))
+            entries.append(
+                RequestEntry(
+                    kind=kind if _INSPECT_KIND.fullmatch(kind) else "other",
+                    ms=max(0, int(item.get("ms", 0))),
+                    status=max(0, int(item.get("status", 0))),
+                    url=str(item.get("url", "")),
+                )
+            )
+        return tuple(entries)
 
     def select(
         self,
@@ -2353,6 +2508,8 @@ class RawBrowserDriver(Protocol):
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
     ) -> FrameCapture: ...
 
+    def inspect_field(self, label: str, target: FieldTarget | None = None) -> FieldInspection: ...
+
     def list_options(
         self,
         label: str,
@@ -2360,6 +2517,8 @@ class RawBrowserDriver(Protocol):
         vet: Callable[[ControlInfo], None] | None = None,
         vet_name: Callable[[str], None] | None = None,
     ) -> OptionsListing: ...
+
+    def list_requests(self) -> tuple[RequestEntry, ...]: ...
 
     def select(
         self,
@@ -2560,6 +2719,25 @@ _ARIA_VALUE_JS = (
     "(e) => (e.value !== undefined && e.value !== '') ? String(e.value) : "
     "String(e.getAttribute('aria-valuetext') || e.innerText || e.textContent || '')"
 )
+
+#: Facts about one element (tag, type, role, classes, focus, read-only), never its value.
+_INSPECT_JS = (
+    "(el) => ({tag: el.tagName.toLowerCase(), "
+    "type: el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '', "
+    "role: String(el.getAttribute('role') || '').toLowerCase(), "
+    "classes: Array.from(el.classList), "
+    "focused: el.ownerDocument.activeElement === el, "
+    "readonly: !!el.readOnly})"
+)
+
+
+#: The resources the page loaded since its last navigation, from the browser's timing buffer.
+_REQUESTS_JS = (
+    "(count) => performance.getEntriesByType('resource').slice(-count).map((e) => "
+    "({url: String(e.name), kind: String(e.initiatorType || ''), "
+    "status: Number(e.responseStatus || 0), ms: Math.round(Number(e.duration || 0))}))"
+)
+
 
 #: A field's value, or null when it is a password or a secret code field (checked on the same
 #: element, in the same turn, so a re-render cannot swap one in between the check and the read).
@@ -3419,6 +3597,17 @@ def _clean(text: str, limit: int) -> str:
     """Page-supplied text as one printable line of at most `limit` characters."""
     printable = "".join(char if char.isprintable() else " " for char in text)
     return " ".join(printable.split())[:limit]
+
+
+def _inspect_word(text: str, fallback: str) -> str:
+    """`text` when it is one plain lowercase token, otherwise `fallback` (empty stays empty).
+
+    A tag, an input type or a role comes from the page, so it is kept only when it cannot carry a
+    sentence: a custom element's name or a `role` attribute holding words is never passed on.
+    """
+    if not text:
+        return ""
+    return text if _INSPECT_WORD.fullmatch(text) else fallback
 
 
 def _option_key(text: str) -> str:

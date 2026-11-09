@@ -34,6 +34,7 @@ from blumkin.browser.cdp import (
     DEFAULT_FRAME_WAIT_S,
     DEFAULT_SCROLL_MAX_STEPS,
     FIELD_ROLES,
+    INSPECT_ROLES,
     SETTLE_EXPECT_WAIT_S,
     BrowserActionError,
     FieldTarget,
@@ -659,6 +660,86 @@ def _wait_for_model_page(
                 "waited_for_page_s": round(now() - started, 1),
             }
         pause(1.0)
+
+
+def inspect_task(
+    config: BrowserSetup,
+    task: str,
+    label: str | None = None,
+    *,
+    exact: bool = False,
+    frame: int | None = None,
+    host: str | None = None,
+    nth: int | None = None,
+    requests: bool = False,
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Facts about one element, or the resources the page loaded: never a value or a body.
+
+    With a `label`, the element is found as `fill` finds it (its role may also be a button,
+    link, cell or dialog) and its tag, role, plain-word class names, visibility, enabled and
+    focus state are reported; a label that names several is reported with the counts, narrow
+    it with `nth`, `exact`, `role` or `frame`. With `requests`, the resources the page loaded
+    since its last navigation are listed from the browser's own timing (initiator, status,
+    time and a masked path, never a query, body or header). Read-only; once the task declares
+    `allowed_hosts` the page must be on one of them (and another host shows only its name).
+    """
+    if requests == (label is not None):
+        raise ValueError("Expected either a label to inspect or --requests, got neither or both")
+    if requests and (exact or frame is not None or host is not None or nth is not None or role):
+        raise ValueError("Expected --requests without a label narrowing (--exact, --nth, ...)")
+    target = (
+        None
+        if requests
+        else _field_target(config, task, "inspecting", exact, frame, host, nth, role, INSPECT_ROLES)
+    )
+    hosts = _declared_hosts(config, task)
+    sign_in_hosts = sign_in_hosts_for(config, task)
+
+    def act(driver: GuardedDriver) -> dict[str, Any]:
+        if requests:
+            entries = driver.list_requests()
+            return {
+                "action": "inspect",
+                "count": len(entries),
+                "mode": "requests",
+                "ok": True,
+                "requests": [
+                    {
+                        "kind": entry.kind,
+                        "ms": entry.ms,
+                        "status": entry.status,
+                        "where": _chain_report([entry.url], hosts, sign_in_hosts)[0],
+                    }
+                    for entry in entries
+                ],
+                "task": task,
+                "untrusted": UNTRUSTED_NOTE,
+            }
+        assert label is not None and target is not None
+        found = driver.inspect_field(label, target)
+        payload = _field_payload("inspect", task, label, target, None, None)
+        payload["ok"] = found.status == "found"
+        payload["status"] = found.status
+        payload["count"] = found.count
+        payload["visible_count"] = found.visible_count
+        payload["untrusted"] = UNTRUSTED_NOTE  # the tag, role and classes come from the page
+        if found.status == "found":
+            payload.update(
+                {
+                    "classes": list(found.classes),
+                    "enabled": found.enabled,
+                    "focused": found.focused,
+                    "input_type": found.input_type,
+                    "element_role": found.role,
+                    "readonly": found.readonly,
+                    "tag": found.tag,
+                    "visible": found.visible,
+                }
+            )
+        return payload
+
+    return _with_driver(config, task, act)
 
 
 def mask_email(address: str) -> str:
@@ -1629,7 +1710,7 @@ def _field_payload(
             payload[key] = value
     if target.exact:
         payload["exact"] = True
-    if action not in ("upload", "press", "options"):
+    if action not in ("upload", "press", "options", "inspect"):
         # What was set is never echoed back; the field's value is reported only when it
         # differs (an autocomplete expanded it, or left it as typed), which is what matters.
         # `matches` is null when the field cannot be read (a password, rich text).
@@ -1650,12 +1731,14 @@ def _field_target(
     host: str | None,
     nth: int | None,
     role: str | None,
+    roles: frozenset[str] = FIELD_ROLES,
 ) -> FieldTarget:
     """The narrowing for one field action, with the host check a frame needs."""
     if host is not None and frame is None:
         raise ValueError("Expected a frame number with a frame host, got none")
-    if role is not None and role not in FIELD_ROLES:
-        raise ValueError(f"Expected a field role ({', '.join(sorted(FIELD_ROLES))}), got {role!r}")
+    if role is not None and role not in roles:
+        noun = "field role" if roles is FIELD_ROLES else "role"
+        raise ValueError(f"Expected a {noun} ({', '.join(sorted(roles))}), got {role!r}")
     if frame is None:
         return FieldTarget(exact=exact, nth=nth, role=role)
     hosts = _declared_hosts(config, task)

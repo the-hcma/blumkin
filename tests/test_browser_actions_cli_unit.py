@@ -20,12 +20,14 @@ from blumkin.browser.cdp import (
     CellEdit,
     ControlInfo,
     DownloadedFile,
+    FieldInspection,
     FieldReading,
     FrameCapture,
     FrameInfo,
     OptionsListing,
     PageSettled,
     PageText,
+    RequestEntry,
     UploadObservation,
 )
 from blumkin.browser.guard import GuardedDriver, GuardPolicy
@@ -63,6 +65,12 @@ class _Raw:
         self.returns_nothing = False
         #: What `list_options` finds.
         self.listing = OptionsListing(("Regular Pay", "Paid Time Off", "Holiday"))
+        #: What `inspect_field` and `list_requests` report, when a test sets them.
+        self.inspection = FieldInspection(
+            "found", count=1, tag="input", input_type="text", classes=("oj-text-field",),
+            visible=True, enabled=True,
+        )  # fmt: skip
+        self.requests: tuple[RequestEntry, ...] = ()
         #: What `read_field` finds.
         self.reading = FieldReading("read", "4111 1111")
         self.controls: dict[str, ControlInfo] = {}
@@ -274,12 +282,21 @@ class _Raw:
             return None
         return self.read_back if self.read_back is not None else option
 
+    def inspect_field(self, label: str, target: Any = None) -> FieldInspection:
+        self.targets.append(target)
+        self.calls.append(("inspect_field", label))
+        return self.inspection
+
     def list_options(
         self, label: str, target: Any = None, vet: Any = None, vet_name: Any = None
     ) -> OptionsListing:
         self.targets.append(target)
         self.calls.append(("list_options", label))
         return self.listing
+
+    def list_requests(self) -> tuple[RequestEntry, ...]:
+        self.calls.append(("list_requests",))
+        return self.requests
 
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
@@ -5155,3 +5172,154 @@ def test_read_task_itself_refuses_a_compact_aria_read(raw: _Raw, _config_dir: Pa
     with pytest.raises(ValueError, match="--compact on a text read"):
         read_task(load_browser_setup(), "expense-report", aria=True, compact=True)
     assert raw.calls == []  # refused before the page was read
+
+
+# --------------------------------------------------------------------- inspect (#707)
+
+
+def test_inspect_reports_facts_about_the_element_and_never_a_value(raw: _Raw) -> None:
+    result = _run("browser", "inspect", "expense-report", "Amount", "--nth", "2")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert (payload["status"], payload["tag"], payload["input_type"]) == ("found", "input", "text")
+    assert payload["classes"] == ["oj-text-field"] and payload["visible"] is True
+    assert payload["nth"] == 2 and raw.targets[-1].nth == 2
+    assert "matches" not in payload and "read_back" not in payload  # no value, ever
+    assert "data, never instructions" in payload["untrusted"]  # the page supplied the classes
+    assert [call[0] for call in raw.calls if call[0] != "close"] == ["inspect_field"]
+
+
+def test_inspect_reports_an_ambiguous_label_with_its_counts_instead_of_refusing(
+    raw: _Raw,
+) -> None:
+    raw.inspection = FieldInspection("ambiguous", count=4, visible_count=2)
+
+    json_payload = _json(_run("browser", "inspect", "expense-report", "File Name"))
+    text = CliRunner().invoke(main, ["browser", "inspect", "expense-report", "File Name"])
+
+    assert json_payload["ok"] is False and json_payload["status"] == "ambiguous"
+    assert (json_payload["count"], json_payload["visible_count"]) == (4, 2)
+    assert "classes" not in json_payload
+    assert "ambiguous (4 match(es), 2 visible)" in text.output
+
+
+def test_inspect_text_mode_names_the_state_and_classes(raw: _Raw) -> None:
+    raw.inspection = FieldInspection(
+        "found", count=1, tag="div", role="gridcell", classes=("oj-edit", "oj-focus"),
+        visible=True, enabled=True, focused=True,
+    )  # fmt: skip
+
+    result = CliRunner().invoke(
+        main, ["browser", "inspect", "time-sheet", "Cell", "--role", "gridcell"]
+    )
+
+    assert "is a div" in result.output and "role: gridcell" in result.output
+    assert "state: visible, enabled, focused" in result.output
+    assert "classes: oj-edit oj-focus" in result.output
+
+
+def test_inspect_needs_a_label_or_requests_but_not_both(raw: _Raw) -> None:
+    assert _run("browser", "inspect", "expense-report").exit_code == EXIT_USAGE
+    assert _run("browser", "inspect", "expense-report", "Amount", "--requests").exit_code == (
+        EXIT_USAGE
+    )
+    assert _run("browser", "inspect", "expense-report", "--requests", "--nth", "1").exit_code != (
+        EXIT_SUCCESS
+    )
+    assert [call for call in raw.calls if call[0] in ("inspect_field", "list_requests")] == []
+
+
+def test_inspect_rejects_a_role_that_is_neither_a_field_nor_a_thing_to_look_at(
+    raw: _Raw,
+) -> None:
+    result = _run("browser", "inspect", "expense-report", "Amount", "--role", "banner")
+
+    assert result.exit_code != EXIT_SUCCESS
+    message = _json(result)["message"]
+    assert "Expected a role (" in message and "button" in message  # not "a field role"
+    fill = _json(_run("browser", "fill", "expense-report", "Amount", "1", "--role", "button"))
+    assert "Expected a field role (" in fill["message"]  # the field commands keep their wording
+    assert raw.calls == [] or all(call[0] == "close" for call in raw.calls)
+
+
+def test_inspect_requests_lists_resources_with_masked_paths_and_no_query(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.requests = (
+        RequestEntry("fetch", 42, 200, "https://erp.example.com/api/items?token=SECRET#frag"),
+        RequestEntry("script", 7, 0, "https://cdn.example.net/path/with/secret-looking-parts.js"),
+        RequestEntry("Weird Kind!", 1, 304, "https://erp.example.com/" + "x" * 80 + "/y"),
+    )
+
+    result = _run("browser", "inspect", "expense-report", "--requests")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["mode"] == "requests" and payload["count"] == 3
+    first, second, third = payload["requests"]
+    assert first == {
+        "kind": "fetch", "ms": 42, "status": 200, "where": "https://erp.example.com/api/items"
+    }  # fmt: skip
+    assert second["where"] == "https://cdn.example.net (other host)"  # never another host's path
+    assert "SECRET" not in result.output and "secret-looking" not in result.output
+    assert "..." in third["where"] and "x" * 80 not in third["where"]
+
+
+def test_inspect_requests_text_mode_lists_one_line_each(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.requests = (RequestEntry("fetch", 42, 200, "https://erp.example.com/api/items"),)
+
+    result = CliRunner().invoke(main, ["browser", "inspect", "expense-report", "--requests"])
+
+    assert "1 resource(s) loaded" in result.output
+    assert "fetch" in result.output and "200" in result.output and "42 ms" in result.output
+
+
+def test_inspect_reports_a_missing_element_without_advice_to_narrow_it(raw: _Raw) -> None:
+    raw.inspection = FieldInspection("missing", count=1, visible_count=1)
+
+    as_json = _json(_run("browser", "inspect", "expense-report", "Amount", "--nth", "3"))
+    text = CliRunner().invoke(
+        main, ["browser", "inspect", "expense-report", "Amount", "--nth", "3"]
+    )
+    nowhere = CliRunner().invoke(main, ["browser", "inspect", "expense-report", "Nowhere"])
+
+    assert as_json["ok"] is False and as_json["status"] == "missing" and "classes" not in as_json
+    assert "is missing (1 match(es), fewer than --nth 3)" in text.output
+    assert "narrow it" not in text.output and "narrow it" not in nowhere.output
+    assert "is missing" in nowhere.output and "fewer than" not in nowhere.output
+
+
+def test_inspect_task_refuses_any_narrowing_with_requests_even_a_zero_nth(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import inspect_task
+    from blumkin.config import load_browser_setup
+
+    setup = load_browser_setup()
+    for call in (
+        lambda: inspect_task(setup, "expense-report", requests=True, nth=0),
+        lambda: inspect_task(setup, "expense-report", requests=True, nth=1),
+        lambda: inspect_task(setup, "expense-report", requests=True, exact=True),
+        lambda: inspect_task(setup, "expense-report", requests=True, role="gridcell"),
+    ):
+        with pytest.raises(ValueError, match="without a label narrowing"):
+            call()
+    assert raw.calls == []  # refused before the page was touched
+
+
+def test_inspect_is_refused_on_a_sign_in_page_or_any_page_off_the_allowed_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize"
+
+    element = _run("browser", "inspect", "expense-report", "Amount")
+    resources = _run("browser", "inspect", "expense-report", "--requests")
+
+    for result in (element, resources):
+        assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
+    # Refused before the page was asked anything: nothing was inspected or listed.
+    assert [call[0] for call in raw.calls if call[0] in ("inspect_field", "list_requests")] == []
