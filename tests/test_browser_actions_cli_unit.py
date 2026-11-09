@@ -5358,6 +5358,9 @@ def test_inspect_watch_lists_the_requests_seen_with_their_method_and_masked_path
     assert second["method"] == "GET" and third["where"] == "https://cdn.example.net (other host)"
     assert "SECRET" not in result.output and "secret/path" not in result.output
     assert ("watch_requests", 2.5) in raw.calls and ("list_requests",) not in raw.calls
+    # A watch can last two minutes: it must not hold the form-submission safety net, which
+    # would swallow a form post the person makes by hand meanwhile. It also detaches.
+    assert raw.net_installed == 0 and raw.closed == 1
 
 
 def test_inspect_watch_text_mode_shows_the_method_column(raw: _Raw, _config_dir: Path) -> None:
@@ -5399,3 +5402,16 @@ def test_inspect_watch_is_refused_on_a_sign_in_page_like_the_other_modes(
 
     assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
     assert [call for call in raw.calls if call[0] == "watch_requests"] == []
+
+
+def test_inspect_watch_without_a_page_on_an_allowed_host_listens_to_nothing(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://elsewhere.example.net/page"
+
+    result = _run("browser", "inspect", "expense-report", "--requests", "--watch", "2")
+
+    assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
+    assert [call for call in raw.calls if call[0] == "watch_requests"] == []
+    assert raw.net_installed == 0 and raw.closed == 1  # still detached

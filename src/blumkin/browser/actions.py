@@ -39,6 +39,7 @@ from blumkin.browser.cdp import (
     BrowserActionError,
     FieldTarget,
     PageText,
+    RequestEntry,
     UploadObservation,
     attach,
     checked_http_url,
@@ -694,6 +695,8 @@ def inspect_task(
         raise ValueError("Expected --requests without a label narrowing (--exact, --nth, ...)")
     if watch is not None and not requests:
         raise ValueError("Expected --watch together with --requests, got a label")
+    if watch is not None:
+        return _watched_requests(config, task, watch)
     target = (
         None
         if requests
@@ -704,29 +707,7 @@ def inspect_task(
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         if requests:
-            entries = driver.list_requests() if watch is None else driver.watch_requests(watch)
-            payload: dict[str, Any] = {
-                "action": "inspect",
-                "count": len(entries),
-                "mode": "requests",
-                "ok": True,
-                "requests": [
-                    {
-                        "kind": entry.kind,
-                        "ms": entry.ms,
-                        "status": entry.status,
-                        "where": _chain_report([entry.url], hosts, sign_in_hosts)[0],
-                    }
-                    | ({"method": entry.method} if entry.method else {})
-                    | ({"outcome": entry.outcome} if entry.outcome else {})
-                    for entry in entries
-                ],
-                "task": task,
-                "untrusted": UNTRUSTED_NOTE,
-            }
-            if watch is not None:
-                payload["watched_s"] = watch
-            return payload
+            return _requests_payload(task, driver.list_requests(), hosts, sign_in_hosts)
         assert label is not None and target is not None
         found = driver.inspect_field(label, target)
         payload = _field_payload("inspect", task, label, target, None, None)
@@ -2157,6 +2138,39 @@ def _wait_through_sign_in(
     )
 
 
+def _requests_payload(
+    task: str,
+    entries: Sequence[RequestEntry],
+    hosts: Sequence[str],
+    sign_in_hosts: Sequence[str],
+    *,
+    watched: float | None = None,
+) -> dict[str, Any]:
+    """The `inspect --requests` result: each request as kind, time, status and a masked path."""
+    payload: dict[str, Any] = {
+        "action": "inspect",
+        "count": len(entries),
+        "mode": "requests",
+        "ok": True,
+        "requests": [
+            {
+                "kind": entry.kind,
+                "ms": entry.ms,
+                "status": entry.status,
+                "where": _chain_report([entry.url], hosts, sign_in_hosts)[0],
+            }
+            | ({"method": entry.method} if entry.method else {})
+            | ({"outcome": entry.outcome} if entry.outcome else {})
+            for entry in entries
+        ],
+        "task": task,
+        "untrusted": UNTRUSTED_NOTE,
+    }
+    if watched is not None:
+        payload["watched_s"] = watched
+    return payload
+
+
 def _require_allowed_page(
     driver: GuardedDriver, task: str, hosts: Sequence[str], when: str
 ) -> None:
@@ -2343,6 +2357,29 @@ def _where_path(path: str) -> str:
         for segment in path.split(";", 1)[0].split("/")
     ]
     return _one_line("/".join(segments))[:WHERE_PATH_CHARS]
+
+
+def _watched_requests(config: BrowserSetup, task: str, seconds: float) -> dict[str, Any]:
+    """Listen to the task page's requests for `seconds`, on a driver with no safety net.
+
+    A watch can last two minutes. A guarded attach installs the form-submission safety net for
+    its whole life, which would swallow a form post the person makes by hand meanwhile (their
+    own final click), so this attaches the way `where_task` does, without it: it only listens.
+    The page must already be on an allowed host (once the task declares any), and every other
+    host is shown by name only.
+    """
+    hosts = _declared_hosts(config, task)
+    sign_in_hosts = sign_in_hosts_for(config, task)
+    profile = load_profile(config.config_dir, task)
+    if profile is None:
+        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    page = attach(profile, open_page=False, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
+    try:
+        _require_allowed_url(page.url, task, hosts, "acting")
+        entries = page.watch_requests(seconds)
+    finally:
+        page.close()
+    return _requests_payload(task, entries, hosts, sign_in_hosts, watched=seconds)
 
 
 def _with_driver(

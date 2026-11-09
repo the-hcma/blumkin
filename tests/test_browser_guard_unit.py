@@ -239,10 +239,6 @@ class _Raw:
         self.calls.append(("list_requests",))
         return ()
 
-    def watch_requests(self, seconds: float) -> tuple[RequestEntry, ...]:
-        self.calls.append(("watch_requests", seconds))
-        return ()
-
     def list_options(
         self, label: str, target: object = None, vet: Any = None, vet_name: Any = None
     ) -> OptionsListing:
@@ -918,7 +914,6 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "upload",
         "url",
         "wait_ms",
-        "watch_requests",
     }
 
 

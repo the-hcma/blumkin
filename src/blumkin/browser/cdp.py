@@ -184,8 +184,6 @@ class BrowserDriver(Protocol):
 
     def list_requests(self) -> tuple[RequestEntry, ...]: ...
 
-    def watch_requests(self, seconds: float) -> tuple[RequestEntry, ...]: ...
-
     def select(
         self,
         label: str,
@@ -1512,10 +1510,13 @@ class PlaywrightDriver:
         """The requests the page makes during the next `seconds`: method, address, status, kind.
 
         Listens to the page's own network events (nothing is intercepted, changed or held back,
-        and no body or header is read), so it sees what a click or a save really sends. Only
-        requests that began during the watch count; one still unanswered when it ends is
-        listed as `pending`. The newest `_MAX_REQUESTS` are kept. Run it while something else
-        acts on the page.
+        and no body or header is read), so it sees what a click or a save tries to send. A write
+        that another command's safety net swallowed is answered with an empty `204` and is
+        listed as such, though it never reached the server. Only requests that began during
+        the watch count; one still unanswered when it ends is listed as `pending`. The newest
+        `_MAX_REQUESTS` are kept. Run it while something else acts on the page, and on a raw
+        driver attached without the form-submission safety net: a watch can last two minutes,
+        and that net would swallow a form post the person makes by hand meanwhile.
         """
         self._require_open()
         if not MIN_WATCH_S <= seconds <= MAX_WATCH_S:
@@ -2551,8 +2552,6 @@ class RawBrowserDriver(Protocol):
     ) -> OptionsListing: ...
 
     def list_requests(self) -> tuple[RequestEntry, ...]: ...
-
-    def watch_requests(self, seconds: float) -> tuple[RequestEntry, ...]: ...
 
     def select(
         self,
