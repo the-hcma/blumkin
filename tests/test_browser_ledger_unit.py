@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from blumkin.browser.ledger import (
+    EXCLUDE_REASONS,
     ItemKind,
     ItemState,
     LedgerError,
@@ -20,6 +21,8 @@ from blumkin.browser.ledger import (
     SessionOutcome,
     begin_instance,
     discard_instance,
+    exclude_item,
+    include_item,
     instance_status,
     list_instances,
     mark_submitted,
@@ -787,3 +790,76 @@ def test_a_hand_edited_resume_entry_makes_the_journal_invalid_not_a_crash(
 
     with pytest.raises(LedgerJournalError):
         instance_status(tmp_path, "timesheet", "2026-p21")
+
+
+# --------------------------------------------------------------------- exclude / include (#697)
+
+
+def _staged_receipt(config: Path, item: str, sha: str = _SHA) -> None:
+    record_item(
+        config, "expense-report", "trip", ItemKind.RECEIPT, item, ItemState.STAGED, sha256=sha
+    )
+
+
+def test_an_excluded_receipt_is_shown_with_its_reason_and_not_counted_as_filed(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "expense-report", "trip", expected={ItemKind.RECEIPT: 2})
+    _staged_receipt(tmp_path, "r1")
+
+    status = exclude_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", "duplicate")
+
+    (held,) = status.items
+    assert (held.state, held.excluded_reason) == (ItemState.EXCLUDED, "duplicate")
+    assert "1 excluded" in status.summary() and "in progress" not in status.summary()
+    assert status.local_only() == ()
+    again = instance_status(tmp_path, "expense-report", "trip")  # folded back from the journal
+    assert again.items == status.items
+
+
+def test_nothing_stages_applies_or_records_an_excluded_receipt_again(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+    _staged_receipt(tmp_path, "r1")
+    exclude_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", "duplicate")
+
+    with pytest.raises(LedgerError, match="stay out of the report .excluded: duplicate"):
+        record_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", ItemState.FILLED)
+    with pytest.raises(LedgerError, match="file of 'r1' .excluded: duplicate"):
+        _staged_receipt(tmp_path, "r9")  # the same file under a new item id
+
+
+def test_an_included_receipt_is_staged_again_and_can_be_filed(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+    _staged_receipt(tmp_path, "r1")
+    exclude_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", "personal")
+
+    status = include_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1")
+
+    assert status.items[0].state is ItemState.STAGED and status.items[0].excluded_reason is None
+    record_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", ItemState.FILLED)
+
+
+def test_exclude_and_include_refuse_what_cannot_be_excluded_or_included(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+    _staged_receipt(tmp_path, "r1")
+    record_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", ItemState.FILLED)
+    record_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", ItemState.VERIFIED)
+
+    with pytest.raises(LedgerError, match="to exclude, got verified"):
+        exclude_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", "duplicate")
+    with pytest.raises(LedgerError, match="to exclude, got none"):
+        exclude_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "nope", "duplicate")
+    with pytest.raises(LedgerError, match="to include, got verified"):
+        include_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1")
+    with pytest.raises(LedgerError, match="a reason of"):
+        exclude_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", "free text")
+    assert set(EXCLUDE_REASONS) == {"duplicate", "not-an-expense", "other", "personal"}
+
+
+def test_a_closed_instance_refuses_exclude_and_include(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+    _staged_receipt(tmp_path, "r1")
+    mark_submitted(tmp_path, "expense-report", "trip")
+
+    with pytest.raises(LedgerError, match="exclude an item"):
+        exclude_item(tmp_path, "expense-report", "trip", ItemKind.RECEIPT, "r1", "duplicate")

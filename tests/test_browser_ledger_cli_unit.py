@@ -70,7 +70,13 @@ def test_the_status_payload_lists_counts_and_items() -> None:
     assert payload["ok"] is True
     assert payload["phase"] == "open"
     assert payload["expected"] == {"day": 10}
-    assert payload["counts"]["day"] == {"failed": 0, "filled": 0, "staged": 1, "verified": 1}
+    assert payload["counts"]["day"] == {
+        "excluded": 0,
+        "failed": 0,
+        "filled": 0,
+        "staged": 1,
+        "verified": 1,
+    }
     assert [i["item"] for i in payload["items"]] == ["2026-10-19", "2026-10-20"]
     assert payload["items"][0]["model_version"] == 1
     assert payload["summary"] == "1 of 10 days filed, 1 in progress, not submitted"
@@ -479,3 +485,63 @@ def test_the_plain_status_text_shows_where_a_flow_stopped(tmp_path: Path) -> Non
     result = _text("browser", "ledger", "status", "timesheet", "2026-p21")
 
     assert "day d1: stopped in flow fill-day, go on with --from-step 4" in result.output
+
+
+# --------------------------------------------------------------------- exclude / include (#697)
+
+
+def _stage_receipt(item: str = "r1", sha: str = "a" * 64) -> Any:
+    return _run(
+        "browser", "ledger", "stage", "timesheet", "2026-p21", "receipt", item, "--sha256", sha
+    )
+
+
+def test_exclude_needs_yes_and_then_status_says_why_the_receipt_is_out() -> None:
+    _begin()
+    assert _stage_receipt().exit_code == EXIT_SUCCESS
+    base = ("browser", "ledger", "exclude", "timesheet", "2026-p21", "receipt", "r1")
+
+    assert _run(*base, "--reason", "duplicate").exit_code == EXIT_USAGE  # no --yes
+    done = _run(*base, "--reason", "duplicate", "--yes")
+    status = _text("browser", "ledger", "status", "timesheet", "2026-p21")
+
+    assert done.exit_code == EXIT_SUCCESS, done.output
+    assert "1 excluded" in _json(done)["summary"]
+    assert _json(done)["items"][0]["excluded_reason"] == "duplicate"
+    assert "1 excluded" in status.output
+
+
+def test_an_excluded_receipt_is_refused_by_stage_and_taken_back_by_include() -> None:
+    _begin()
+    _stage_receipt()
+    _run(
+        "browser", "ledger", "exclude", "timesheet", "2026-p21", "receipt", "r1",
+        "--reason", "duplicate", "--yes",
+    )  # fmt: skip
+
+    again = _stage_receipt("r2")  # the same file under a new id
+    included = _run(
+        "browser", "ledger", "include", "timesheet", "2026-p21", "receipt", "r1", "--yes"
+    )
+
+    assert again.exit_code == EXIT_USAGE and "excluded" in _json(again)["message"]
+    assert included.exit_code == EXIT_SUCCESS, included.output
+    assert _json(included)["items"][0]["state"] == "staged"
+    assert (
+        _run(
+            "browser", "ledger", "include", "timesheet", "2026-p21", "receipt", "r1", "--yes"
+        ).exit_code
+        == EXIT_USAGE
+    )  # not excluded any more
+
+
+def test_a_reason_outside_the_fixed_words_is_a_usage_error() -> None:
+    _begin()
+    _stage_receipt()
+
+    result = _run(
+        "browser", "ledger", "exclude", "timesheet", "2026-p21", "receipt", "r1",
+        "--reason", "my own words", "--yes",
+    )  # fmt: skip
+
+    assert result.exit_code == EXIT_USAGE

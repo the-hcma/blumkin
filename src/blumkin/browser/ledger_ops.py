@@ -166,6 +166,13 @@ def apply_item(
     existing = _find(status, kind, item)
     if existing is not None and existing.state is ItemState.VERIFIED:
         return ApplyResult(item=existing, noop=True, status=status)
+    if existing is not None and existing.state is ItemState.EXCLUDED:
+        # The person left it out: refused before the browser is touched, with the reason.
+        raise LedgerError(
+            f"Expected {item!r} to be in the report to apply a flow, got one the person "
+            f"excluded ({existing.excluded_reason}); run `ledger include` first if they "
+            "changed their mind"
+        )
     if existing is not None and existing.state is ItemState.FILLED:
         # Running the flow again would repeat what already filled the item, and the ledger has
         # no step from filled back to staged: refused before the browser is touched.
@@ -355,6 +362,11 @@ def handoff_from_ledger(
             summary.append(f"{record.kind.value} {record.item}: failed")
         elif record.state is ItemState.STAGED:
             summary.append(f"{record.kind.value} {record.item}: staged")
+        elif record.state is ItemState.EXCLUDED:
+            summary.append(
+                f"{record.kind.value} {record.item}: excluded by the person "
+                f"({record.excluded_reason}), not part of the report"
+            )
     open_decisions = list(decisions)
     pending = [r for r in status.items if r.state in (ItemState.STAGED, ItemState.FILLED)]
     failed = [r for r in status.items if r.state is ItemState.FAILED]

@@ -23,7 +23,9 @@ from blumkin.browser.ledger import (
     SessionOutcome,
     begin_instance,
     discard_instance,
+    exclude_item,
     expect_items,
+    include_item,
     instance_status,
     list_instances,
     mark_submitted,
@@ -82,6 +84,23 @@ def ledger_begin(
 ) -> dict[str, Any]:
     """Start an instance; `expect` is `KIND=COUNT` strings such as `day=10`."""
     return _payload(begin_instance(config.config_dir, task, instance, expected=_expected(expect)))
+
+
+def ledger_exclude(
+    config: BrowserSetup,
+    task: str,
+    instance: str,
+    kind: str,
+    item: str,
+    reason: str,
+    *,
+    yes: bool,
+) -> dict[str, Any]:
+    """Record that the person left an item out of the report, so no session files it again."""
+    _require_yes(
+        yes, task, instance, "exclude an item", "say yes only if the person chose to leave it out"
+    )
+    return _payload(exclude_item(config.config_dir, task, instance, ItemKind(kind), item, reason))
 
 
 def ledger_expect(
@@ -165,6 +184,14 @@ def ledger_handoff(
         config.config_dir, task, instance, steps=step, decisions=decision
     )
     return result.to_payload() | {"instance": instance, "ok": True}
+
+
+def ledger_include(
+    config: BrowserSetup, task: str, instance: str, kind: str, item: str, *, yes: bool
+) -> dict[str, Any]:
+    """Take an excluded item back: it is staged again."""
+    _require_yes(yes, task, instance, "include an item", "say yes only if the person asks for it")
+    return _payload(include_item(config.config_dir, task, instance, ItemKind(kind), item))
 
 
 def ledger_list(config: BrowserSetup, task: str) -> dict[str, Any]:
@@ -354,6 +381,7 @@ def _payload(status: LedgerStatus) -> dict[str, Any]:
                 "sha256": item.sha256,
                 "state": item.state.value,
             }
+            | ({"excluded_reason": item.excluded_reason} if item.excluded_reason else {})
             | (
                 {"resume": {"flow": item.resume_flow, "step": item.resume_step}}
                 if item.resume_step is not None
