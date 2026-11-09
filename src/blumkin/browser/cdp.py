@@ -3595,11 +3595,13 @@ def _clean(text: str, limit: int) -> str:
 
 
 def _inspect_word(text: str, fallback: str) -> str:
-    """`text` when it is one plain lowercase token, otherwise `fallback`.
+    """`text` when it is one plain lowercase token, otherwise `fallback` (empty stays empty).
 
     A tag, an input type or a role comes from the page, so it is kept only when it cannot carry a
     sentence: a custom element's name or a `role` attribute holding words is never passed on.
     """
+    if not text:
+        return ""
     return text if _INSPECT_WORD.fullmatch(text) else fallback
 
 

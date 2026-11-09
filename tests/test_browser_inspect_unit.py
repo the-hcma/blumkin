@@ -69,6 +69,7 @@ def test_inspect_reports_facts_and_no_value_for_a_field_a_password_and_a_cell() 
             page.focus("#cell")
             cell = driver.inspect_field("Day cell", FieldTarget(role="gridcell"))
             assert (cell.status, cell.role, cell.focused) == ("found", "gridcell", True)
+            assert (cell.tag, cell.input_type) == ("div", "")  # not an input: no type, not "other"
             # Only plain-word class names survive: not a brace, a slash, or one too long.
             assert cell.classes == ("oj-edit", "ok", "x:y")
         finally:
