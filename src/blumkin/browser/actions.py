@@ -722,6 +722,7 @@ def inspect_task(
         payload["status"] = found.status
         payload["count"] = found.count
         payload["visible_count"] = found.visible_count
+        payload["untrusted"] = UNTRUSTED_NOTE  # the tag, role and classes come from the page
         if found.status == "found":
             payload.update(
                 {

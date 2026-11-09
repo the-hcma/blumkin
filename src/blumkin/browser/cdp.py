@@ -411,6 +411,7 @@ _SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-
 #: Most characters of a field's value read back for comparing (the rest is not looked at).
 _INSPECT_CLASS = re.compile(r"[A-Za-z0-9_:-]{1,60}")
 _INSPECT_KIND = re.compile(r"[a-z]{1,20}")
+_INSPECT_WORD = re.compile(r"[a-z][a-z0-9_.:-]{0,39}")
 _MAX_INSPECT_CLASSES = 30
 _MAX_READ_BACK = 100_000
 _MAX_REQUESTS = 200
@@ -1387,9 +1388,9 @@ class PlaywrightDriver:
             "found",
             count=count,
             visible_count=seen,
-            tag=str(facts.get("tag", ""))[:20],
-            input_type=str(facts.get("type", ""))[:20],
-            role=str(facts.get("role", ""))[:40],
+            tag=_inspect_word(str(facts.get("tag", "")), "other"),
+            input_type=_inspect_word(str(facts.get("type", "")), "other"),
+            role=_inspect_word(str(facts.get("role", "")), ""),
             classes=classes,
             visible=visible,
             enabled=enabled,
@@ -3578,6 +3579,15 @@ def _clean(text: str, limit: int) -> str:
     """Page-supplied text as one printable line of at most `limit` characters."""
     printable = "".join(char if char.isprintable() else " " for char in text)
     return " ".join(printable.split())[:limit]
+
+
+def _inspect_word(text: str, fallback: str) -> str:
+    """`text` when it is one plain lowercase token, otherwise `fallback`.
+
+    A tag, an input type or a role comes from the page, so it is kept only when it cannot carry a
+    sentence: a custom element's name or a `role` attribute holding words is never passed on.
+    """
+    return text if _INSPECT_WORD.fullmatch(text) else fallback
 
 
 def _option_key(text: str) -> str:
