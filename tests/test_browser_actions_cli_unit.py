@@ -5286,3 +5286,15 @@ def test_inspect_reports_a_missing_element_without_advice_to_narrow_it(raw: _Raw
     assert "is missing (1 match(es), fewer than --nth 3)" in text.output
     assert "narrow it" not in text.output and "narrow it" not in nowhere.output
     assert "is missing" in nowhere.output and "fewer than" not in nowhere.output
+
+
+def test_inspect_task_refuses_any_narrowing_with_requests_even_a_zero_nth(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import inspect_task
+    from blumkin.config import load_browser_setup
+
+    for narrowing in ({"nth": 0}, {"nth": 1}, {"exact": True}, {"role": "gridcell"}):
+        with pytest.raises(ValueError, match="without a label narrowing"):
+            inspect_task(load_browser_setup(), "expense-report", requests=True, **narrowing)
+    assert raw.calls == []  # refused before the page was touched

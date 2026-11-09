@@ -685,7 +685,7 @@ def inspect_task(
     """
     if requests == (label is not None):
         raise ValueError("Expected either a label to inspect or --requests, got neither or both")
-    if requests and (exact or frame is not None or host is not None or nth or role):
+    if requests and (exact or frame is not None or host is not None or nth is not None or role):
         raise ValueError("Expected --requests without a label narrowing (--exact, --nth, ...)")
     target = (
         None
