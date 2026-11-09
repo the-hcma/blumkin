@@ -1371,9 +1371,15 @@ class PlaywrightDriver:
             else:
                 return FieldInspection("ambiguous", count=count, visible_count=seen)
             self._still_allowed(scope, target)
-            facts = chosen.evaluate(_INSPECT_JS)
-            visible = bool(chosen.is_visible())
-            enabled = bool(chosen.is_enabled())
+            # One element for all three reads: a locator would be found again for each, and a
+            # page that re-renders in between could make the facts describe different elements.
+            handle = chosen.element_handle()
+            try:
+                facts = handle.evaluate(_INSPECT_JS)
+                visible = bool(handle.is_visible())
+                enabled = bool(handle.is_enabled())
+            finally:
+                handle.dispose()
             self._still_allowed(scope, target)
         except _playwright_error() as exc:
             if _is_timeout(exc):
