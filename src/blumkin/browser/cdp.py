@@ -1387,8 +1387,8 @@ class PlaywrightDriver:
                 handle.dispose()
             self._still_allowed(scope, target)
         except _playwright_error() as exc:
-            if _is_timeout(exc):
-                return FieldInspection("missing")
+            # Only the wait for the element to appear means "missing" (answered above). A
+            # timeout later, once it was found and counted, is a real failure of the page.
             raise self._action_error(f"inspect the element labelled {label!r}", exc) from exc
         classes = tuple(
             name

@@ -164,3 +164,25 @@ def test_inspect_passes_on_a_role_or_tag_only_when_it_is_one_plain_token() -> No
             assert custom.status == "found" and custom.tag == "other"
         finally:
             browser.close()
+
+
+def test_a_timeout_after_the_element_was_found_is_an_error_not_a_missing_element(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+
+    def slow(self: object, scope: object, target: object) -> None:
+        raise PlaywrightTimeout("the page stopped answering")
+
+    with sync_playwright() as playwright:
+        browser, _page_, driver = _page(playwright)
+        try:
+            monkeypatch.setattr(PlaywrightDriver, "_still_allowed", slow)
+
+            with pytest.raises(BrowserActionError, match="inspect the element labelled"):
+                driver.inspect_field("Amount")
+        finally:
+            browser.close()

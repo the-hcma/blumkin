@@ -4821,6 +4821,10 @@ def browser_inspect(
         emit_lines(lines)
         return
     shown = sanitize_terminal(label or "")
+    if payload["status"] == "missing":
+        asked = f", fewer than --nth {nth}" if nth is not None else ""
+        emit_lines([f"{task}: {shown!r} is missing ({payload['count']} match(es){asked})"])
+        return
     if payload["status"] != "found":
         emit_lines(
             [

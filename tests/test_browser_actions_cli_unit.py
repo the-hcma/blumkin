@@ -5271,3 +5271,18 @@ def test_inspect_requests_text_mode_lists_one_line_each(raw: _Raw, _config_dir: 
 
     assert "1 resource(s) loaded" in result.output
     assert "fetch" in result.output and "200" in result.output and "42 ms" in result.output
+
+
+def test_inspect_reports_a_missing_element_without_advice_to_narrow_it(raw: _Raw) -> None:
+    raw.inspection = FieldInspection("missing", count=1, visible_count=1)
+
+    as_json = _json(_run("browser", "inspect", "expense-report", "Amount", "--nth", "3"))
+    text = CliRunner().invoke(
+        main, ["browser", "inspect", "expense-report", "Amount", "--nth", "3"]
+    )
+    nowhere = CliRunner().invoke(main, ["browser", "inspect", "expense-report", "Nowhere"])
+
+    assert as_json["ok"] is False and as_json["status"] == "missing" and "classes" not in as_json
+    assert "is missing (1 match(es), fewer than --nth 3)" in text.output
+    assert "narrow it" not in text.output and "narrow it" not in nowhere.output
+    assert "is missing" in nowhere.output and "fewer than" not in nowhere.output
