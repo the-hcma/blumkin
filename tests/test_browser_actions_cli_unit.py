@@ -5294,7 +5294,13 @@ def test_inspect_task_refuses_any_narrowing_with_requests_even_a_zero_nth(
     from blumkin.browser.actions import inspect_task
     from blumkin.config import load_browser_setup
 
-    for narrowing in ({"nth": 0}, {"nth": 1}, {"exact": True}, {"role": "gridcell"}):
+    setup = load_browser_setup()
+    for call in (
+        lambda: inspect_task(setup, "expense-report", requests=True, nth=0),
+        lambda: inspect_task(setup, "expense-report", requests=True, nth=1),
+        lambda: inspect_task(setup, "expense-report", requests=True, exact=True),
+        lambda: inspect_task(setup, "expense-report", requests=True, role="gridcell"),
+    ):
         with pytest.raises(ValueError, match="without a label narrowing"):
-            inspect_task(load_browser_setup(), "expense-report", requests=True, **narrowing)
+            call()
     assert raw.calls == []  # refused before the page was touched
