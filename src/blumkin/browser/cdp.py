@@ -408,12 +408,17 @@ INSPECT_ROLES = FIELD_ROLES | frozenset(
 #: `autocomplete` values that mark a secret field, which is never read back.
 _SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-code"})
 
-#: Most characters of a field's value read back for comparing (the rest is not looked at).
+#: A class name `inspect` passes on: plain word characters only, so it cannot carry a sentence.
 _INSPECT_CLASS = re.compile(r"[A-Za-z0-9_:-]{1,60}")
+#: The initiator kind of a resource (`fetch`, `script`, ...) as the browser spells it.
 _INSPECT_KIND = re.compile(r"[a-z]{1,20}")
+#: A tag, input type or role `inspect` passes on: one plain lowercase token.
 _INSPECT_WORD = re.compile(r"[a-z][a-z0-9_.:-]{0,39}")
+#: Most class names `inspect` reports for one element.
 _MAX_INSPECT_CLASSES = 30
+#: Most characters of a field's value read back for comparing (the rest is not looked at).
 _MAX_READ_BACK = 100_000
+#: Most resources `list_requests` returns (the newest ones).
 _MAX_REQUESTS = 200
 
 #: Most matches listed when a label is ambiguous.
@@ -2710,8 +2715,7 @@ _ARIA_VALUE_JS = (
     "String(e.getAttribute('aria-valuetext') || e.innerText || e.textContent || '')"
 )
 
-#: A field's value, or null when it is a password or a secret code field (checked on the same
-#: element, in the same turn, so a re-render cannot swap one in between the check and the read).
+#: Facts about one element (tag, type, role, classes, focus, read-only), never its value.
 _INSPECT_JS = (
     "(el) => ({tag: el.tagName.toLowerCase(), "
     "type: el.tagName === 'INPUT' ? String(el.type || '').toLowerCase() : '', "
@@ -2722,6 +2726,7 @@ _INSPECT_JS = (
 )
 
 
+#: The resources the page loaded since its last navigation, from the browser's timing buffer.
 _REQUESTS_JS = (
     "() => performance.getEntriesByType('resource').slice(-1000).map((e) => "
     "({url: String(e.name), kind: String(e.initiatorType || ''), "
@@ -2729,6 +2734,8 @@ _REQUESTS_JS = (
 )
 
 
+#: A field's value, or null when it is a password or a secret code field (checked on the same
+#: element, in the same turn, so a re-render cannot swap one in between the check and the read).
 _SAFE_VALUE_JS = (
     "(e, secrets) => { "
     "if (String(e.type || '').toLowerCase() === 'password') return null; "
