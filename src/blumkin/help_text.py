@@ -1348,6 +1348,29 @@ row's label (a date, say). Read-only; names are page text, marked untrusted. `--
 `--host`) reads a child frame on an allowed host.
 """
 
+BROWSER_INSPECT_EPILOG = """
+Examples:
+
+\b
+  blumkin browser inspect time-sheet "Quantity" --role gridcell --nth 3
+  blumkin browser inspect expense-report "File Name" --json
+  blumkin browser inspect expense-report --requests
+
+With a label, reports facts about one element and never its value or text: its tag (and input
+type), its own role, its class names (kept only when they are plain words, at most 30), whether
+it is visible, enabled, focused or read-only, and how many elements matched the label. The
+element is found as `browser fill` finds it (`--exact`, `--role`, `--nth`, `--frame` with
+`--host`); the role may also be button, link, cell, gridcell, row, tab, menuitem or dialog. A
+label that names several elements is reported as ambiguous with the counts, not refused, and a
+missing one as missing. With `--requests` (and no label), lists the resources the page loaded
+since its last navigation from the browser's own timing buffer: the initiator (fetch,
+xmlhttprequest, script, ...), the HTTP status when the browser exposes it, the time and a
+masked path on an allowed or sign-in host (a query, a fragment and long ids are never shown,
+and another host shows only its name). The timing buffer has no request method, body or
+header, so writes stay with BLUMKIN_BROWSER_NET_LOG. Read-only: nothing is clicked, typed or
+intercepted, and the page must be on an allowed host.
+"""
+
 BROWSER_OPTIONS_EPILOG = """
 Examples:
 

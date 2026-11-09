@@ -17,11 +17,13 @@ from blumkin.browser.cdp import (
     CellEdit,
     ControlInfo,
     DownloadedFile,
+    FieldInspection,
     FieldReading,
     FrameCapture,
     FrameInfo,
     OptionsListing,
     PageText,
+    RequestEntry,
     UploadObservation,
 )
 from blumkin.browser.guard import (
@@ -228,6 +230,14 @@ class _Raw:
         if self.select_probe is not None and vet is not None:
             vet(self.select_probe)
         return option
+
+    def inspect_field(self, label: str, target: object = None) -> FieldInspection:
+        self.calls.append(("inspect_field", label, target))
+        return FieldInspection("found", count=1, tag="input", visible=True, enabled=True)
+
+    def list_requests(self) -> tuple[RequestEntry, ...]:
+        self.calls.append(("list_requests",))
+        return ()
 
     def list_options(
         self, label: str, target: object = None, vet: Any = None, vet_name: Any = None
@@ -884,7 +894,9 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "frame_aria_snapshot",
         "frame_list",
         "goto",
+        "inspect_field",
         "list_options",
+        "list_requests",
         "mark_window",
         "navigations",
         "pick",
@@ -2157,3 +2169,36 @@ def test_settle_page_only_reads_and_is_none_for_a_driver_that_cannot_settle() ->
     _, driver = _guard()
 
     assert driver.settle_page() is None
+
+
+def test_inspect_accepts_a_role_a_field_does_not_have_and_passes_the_target_on() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    raw, driver = _guard()
+
+    found = driver.inspect_field("Save", FieldTarget(role="button", nth=2))
+
+    assert found.status == "found"
+    name, _label, passed = raw.calls[-1]
+    assert name == "inspect_field" and isinstance(passed, FieldTarget) and passed.role == "button"
+
+
+def test_inspect_rejects_an_unknown_role_and_a_bad_nth_before_the_page_is_touched() -> None:
+    from blumkin.browser.cdp import FieldTarget
+
+    raw, driver = _guard()
+
+    with pytest.raises(ValueError, match="Expected a role of"):
+        driver.inspect_field("Save", FieldTarget(role="banner"))
+    with pytest.raises(ValueError, match="positive whole number"):
+        driver.inspect_field("Save", FieldTarget(nth=0))
+    assert raw.calls == []
+
+
+def test_inspect_of_a_field_named_like_a_finalizing_action_is_allowed_because_it_only_reads() -> (
+    None
+):
+    raw, driver = _guard()
+
+    assert driver.inspect_field("Submit").status == "found"
+    assert [call[0] for call in raw.calls] == ["inspect_field"]

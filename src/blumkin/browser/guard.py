@@ -29,7 +29,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +37,13 @@ from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     DEFAULT_CLICK_WAIT_S,
     FIELD_ROLES,
+    INSPECT_ROLES,
     AccountPick,
     BrowserActionError,
     CellEdit,
     ControlInfo,
     DownloadedFile,
+    FieldInspection,
     FieldReading,
     FieldTarget,
     FrameCapture,
@@ -50,6 +52,7 @@ from blumkin.browser.cdp import (
     PageSettled,
     PageText,
     RawBrowserDriver,
+    RequestEntry,
     UploadObservation,
     attach,
 )
@@ -468,6 +471,23 @@ class GuardedDriver:
             lambda info: self._vet_control(action, info),
             lambda name: self._vet_field_name(action, name),
         )
+
+    def inspect_field(self, label: str, target: FieldTarget | None = None) -> FieldInspection:
+        """Facts about one element, never its value; read-only, so no control is vetted.
+
+        The narrowing is checked like any other, except that the role may also be one of a
+        button, link, cell or dialog (`INSPECT_ROLES`): nothing here clicks or types.
+        """
+        if target is not None and target.role is not None and target.role not in INSPECT_ROLES:
+            raise ValueError(
+                f"Expected a role of {', '.join(sorted(INSPECT_ROLES))}, got {target.role!r}"
+            )
+        self._check_target(None if target is None else replace(target, role=None))
+        return self._raw.inspect_field(label, target)
+
+    def list_requests(self) -> tuple[RequestEntry, ...]:
+        """The resources the page loaded since its last navigation (timing only, never bodies)."""
+        return self._raw.list_requests()
 
     def list_options(self, label: str, target: FieldTarget | None = None) -> OptionsListing:
         """List a dropdown's options without choosing any; the field is vetted like a select."""

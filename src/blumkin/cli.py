@@ -70,6 +70,7 @@ from blumkin.browser.actions import (
     goto_task,
     grid_task,
     handoff_task,
+    inspect_task,
     options_task,
     pick_task,
     press_task,
@@ -4761,6 +4762,92 @@ def browser_options(
         lines.append("  (the list may hold more: the scroll or option cap was reached)")
     if not payload["closed"]:
         lines.append("  warning: the list could not be closed; look at the page before going on")
+    emit_lines(lines)
+
+
+@browser.command("inspect", epilog=help_text.BROWSER_INSPECT_EPILOG)
+@click.argument("task")
+@click.argument("label", required=False)
+@_field_options
+@click.option(
+    "--requests",
+    "requests",
+    is_flag=True,
+    help="List the resources the page loaded since its last navigation (no label).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_inspect(
+    ctx: click.Context,
+    task: str,
+    label: str | None,
+    as_json_flag: bool,
+    exact: bool,
+    frame: int | None,
+    host: str | None,
+    nth: int | None,
+    role: str | None,
+    requests: bool,
+) -> None:
+    """Facts about one element (class names, visibility, state) or the page's resources."""
+    _require_frame_for_host(frame, host)
+    if requests == (label is not None):
+        raise click.UsageError("give a LABEL to inspect, or --requests (not both, not neither)")
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = inspect_task(
+            load_browser_setup(),
+            task,
+            label,
+            exact=exact,
+            frame=frame,
+            host=host,
+            nth=nth,
+            requests=requests,
+            role=role,
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    if payload.get("mode") == "requests":
+        lines = [f"{task}: {payload['count']} resource(s) loaded since the last navigation"]
+        lines.extend(
+            f"  {entry['kind']:<14} {entry['status'] or '-':>4} {entry['ms']:>5} ms  "
+            f"{sanitize_terminal(entry['where'])}"
+            for entry in payload["requests"]
+        )
+        emit_lines(lines)
+        return
+    shown = sanitize_terminal(label or "")
+    if payload["status"] != "found":
+        emit_lines(
+            [
+                f"{task}: {shown!r} is {payload['status']} ({payload['count']} match(es), "
+                f"{payload['visible_count']} visible); narrow it with --nth, --exact or --role"
+            ]
+        )
+        return
+    state = ", ".join(
+        word
+        for word, on in (
+            ("visible" if payload["visible"] else "hidden", True),
+            ("enabled" if payload["enabled"] else "disabled", True),
+            ("focused", payload["focused"]),
+            ("read-only", payload["readonly"]),
+        )
+        if on
+    )
+    kind = payload["tag"] + (f" type={payload['input_type']}" if payload["input_type"] else "")
+    lines = [f"{task}: {shown!r} is a {kind}"]
+    if payload["element_role"]:
+        lines.append(f"  role: {sanitize_terminal(payload['element_role'])}")
+    lines.append(f"  state: {state}")
+    lines.append(
+        "  classes: " + (" ".join(sanitize_terminal(c) for c in payload["classes"]) or "(none)")
+    )
+    lines.append(f"  matches: {payload['count']} ({payload['visible_count']} visible)")
     emit_lines(lines)
 
 
