@@ -1065,3 +1065,18 @@ def test_a_decision_may_name_a_vendor_and_a_date_in_any_common_form(
     status = record_decisions(tmp_path, "expense-report", "trip", [text])
 
     assert status.decisions[0].text == text
+
+
+def test_recording_or_answering_a_decision_keeps_the_pending_session_hint(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip")
+    record_session(tmp_path, "expense-report", "trip", SessionOutcome.PENDING)
+
+    after_note = record_decisions(tmp_path, "expense-report", "trip", ["Keep the taxi receipt"])
+    after_answer = resolve_decision(tmp_path, "expense-report", "trip", "d1", "keep it")
+
+    for status in (after_note, after_answer):
+        assert status.session is not None and status.session.outcome is SessionOutcome.PENDING
+        assert status.resume_hint() is not None and "session pending" in status.summary()
+    # Work still clears it: a real change of state means the session has resumed.
+    _staged_receipt(tmp_path, "r1")
+    assert instance_status(tmp_path, "expense-report", "trip").session is None

@@ -1016,7 +1016,7 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
             raise ValueError("resume for an item that is not staged")
         folded.items[key] = replace(held, resume_flow=entry["flow"], resume_step=entry["step"])
     elif event == "decision":
-        folded.session = None
+        # A note is not work: it keeps the pending-session hint (the handoff writes it).
         number = len(folded.decisions) + 1
         text = entry["text"]
         if (
@@ -1030,7 +1030,6 @@ def _apply(folded: _Folded | None, entry: dict[str, Any]) -> _Folded:
             raise ValueError("bad decision")
         folded.decisions[entry["id"]] = DecisionRecord(at=at, id=entry["id"], text=text)
     elif event == "decided":
-        folded.session = None
         answer = entry["answer"]
         held = folded.decisions.get(entry["id"])
         if (

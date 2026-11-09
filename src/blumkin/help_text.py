@@ -845,8 +845,10 @@ Examples:
 
 The ledger remembers what has been filed for one instance of a task, so a restarted session
 knows what is already in the form. Each item goes staged, filled, then verified (read back
-from the page) or failed. It holds identifiers, states, model versions and file hashes only,
-never a value from the form. blumkin has no submit command: `submitted` records that you did.
+from the page) or failed. It holds identifiers, states, model versions and file hashes, plus the
+short free-text note of a decision or its answer (keep those to a vendor and a date: the check
+that refuses amounts is best-effort), never a value from the form. blumkin has no submit
+command: `submitted` records that you did.
 """
 
 BROWSER_LEDGER_HANDOFF_EPILOG = """
