@@ -1366,10 +1366,10 @@ missing one as missing. With `--requests` (and no label), lists the resources th
 since its last navigation from the browser's own timing buffer: the initiator (fetch,
 xmlhttprequest, script, ...), the HTTP status when the browser exposes it, the time and a
 masked path on an allowed or sign-in host (a query, a fragment and long ids are never shown,
-and, once the task declares `allowed_hosts`, another host shows only its name). The timing buffer has no request method, body or
-header, so writes stay with BLUMKIN_BROWSER_NET_LOG. Read-only: nothing is clicked, typed or
-intercepted. Once the task declares `allowed_hosts` the page must be on one of them (a task
-that declares none is not held to a host, so declare them).
+and, once the task declares `allowed_hosts`, another host shows only its name). The timing
+buffer has no request method, body or header, so writes stay with BLUMKIN_BROWSER_NET_LOG.
+Read-only: nothing is clicked, typed or intercepted. Once the task declares `allowed_hosts` the
+page must be on one of them (a task that declares none is not held to a host, so declare them).
 """
 
 BROWSER_OPTIONS_EPILOG = """
