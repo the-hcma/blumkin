@@ -735,3 +735,40 @@ def test_model_flows_keeps_the_empty_value_of_a_step_that_clears_a_cell(_config_
 
     assert flow["steps"][0]["value"] == ""  # a clearing step is not shown as a read-only one
     assert "value=''" in text.output
+
+
+def test_an_upload_step_on_a_button_recorded_control_must_pin_the_input_with_nth(
+    _config_dir: Path,
+) -> None:
+    names = _store(_config_dir)
+    trigger = next(n for n in names if "add" in n)
+    field = next(n for n in names if "amount" in n)
+
+    unpinned = _run(
+        "expense-report", "up", "--param", "f:file", "--step",
+        f"upload {trigger} page=expense-list bind=f",
+    )  # fmt: skip
+    pinned = _run(
+        "expense-report", "up", "--param", "f:file", "--step",
+        f"upload {trigger} page=expense-list bind=f nth=2",
+    )  # fmt: skip
+    on_a_field = _run(
+        "expense-report", "up", "--param", "f:file", "--step",
+        f"upload {field} page=expense-list bind=f",
+    )  # fmt: skip
+
+    assert unpinned.exit_code == EXIT_USAGE
+    assert "nth=N" in _json(unpinned)["message"] and trigger in _json(unpinned)["message"]
+    assert pinned.exit_code == EXIT_SUCCESS, pinned.output
+    assert on_a_field.exit_code == EXIT_SUCCESS, on_a_field.output  # a field needs no position
+
+
+def test_an_unpinned_button_upload_is_refused_even_when_the_step_names_no_page(
+    _config_dir: Path,
+) -> None:
+    names = _store(_config_dir)
+    trigger = next(n for n in names if "add" in n)
+
+    result = _run("expense-report", "up", "--param", "f:file", "--step", f"upload {trigger} bind=f")
+
+    assert result.exit_code == EXIT_USAGE and "nth=N" in _json(result)["message"]
