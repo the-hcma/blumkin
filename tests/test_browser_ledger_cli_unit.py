@@ -545,3 +545,45 @@ def test_a_reason_outside_the_fixed_words_is_a_usage_error() -> None:
     )  # fmt: skip
 
     assert result.exit_code == EXIT_USAGE
+
+
+# --------------------------------------------------------------------- decisions (#710)
+
+
+def _handoff(*extra: str) -> Any:
+    return _run("browser", "ledger", "handoff", "timesheet", "2026-p21", "--step", "Review", *extra)
+
+
+def test_a_handoff_decision_shows_in_status_and_decide_closes_it() -> None:
+    _begin()
+    assert _handoff("--decision", "Was Friday a holiday?").exit_code == EXIT_SUCCESS
+
+    status = _text("browser", "ledger", "status", "timesheet", "2026-p21")
+    as_json = _json(_run("browser", "ledger", "status", "timesheet", "2026-p21"))
+    decided = _run(
+        "browser", "ledger", "decide", "timesheet", "2026-p21", "d1", "--answer", "yes, a holiday"
+    )
+    after = _text("browser", "ledger", "status", "timesheet", "2026-p21")
+
+    assert (
+        "1 open decision" in status.output
+        and "decision d1 (open): Was Friday a holiday?" in status.output
+    )
+    assert as_json["open_decisions"] == 1 and as_json["decisions"][0]["answer"] is None
+    assert decided.exit_code == EXIT_SUCCESS, decided.output
+    assert _json(decided)["open_decisions"] == 0
+    assert "open decision" not in _json(decided)["summary"]
+    assert "decision d1 (answered): Was Friday a holiday? -> yes, a holiday" in after.output
+
+
+def test_decide_refuses_an_unknown_decision_an_amount_and_a_missing_answer() -> None:
+    _begin()
+    _handoff("--decision", "Was Friday a holiday?")
+    base = ("browser", "ledger", "decide", "timesheet", "2026-p21")
+
+    assert _run(*base, "d9", "--answer", "x").exit_code == EXIT_USAGE
+    assert _run(*base, "d1", "--answer", "it cost 12.50").exit_code == EXIT_USAGE
+    assert _run(*base, "d1").exit_code == EXIT_USAGE  # --answer is required
+    assert (
+        _json(_run("browser", "ledger", "status", "timesheet", "2026-p21"))["open_decisions"] == 1
+    )

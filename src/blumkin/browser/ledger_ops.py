@@ -23,9 +23,12 @@ from blumkin.browser.ledger import (
     ItemKind,
     ItemRecord,
     ItemState,
+    LedgerClosedError,
     LedgerError,
     LedgerStatus,
+    Phase,
     instance_status,
+    record_decisions,
     record_item,
     record_resume,
 )
@@ -348,6 +351,17 @@ def handoff_from_ledger(
     if not steps:
         raise LedgerError("Expected at least one final-step instruction for the handoff, got none")
     status = instance_status(config_dir, task, instance)
+    unrecorded: list[str] = []
+    if decisions and status.phase is Phase.OPEN:
+        # The questions stay in the ledger, so the next session knows what is still open. An
+        # instance closed since the check above only prints them, like one closed before it.
+        try:
+            status = record_decisions(config_dir, task, instance, decisions)
+        except LedgerClosedError:
+            status = instance_status(config_dir, task, instance)
+            unrecorded = list(decisions)
+    else:
+        unrecorded = list(decisions)  # a closed instance takes no more notes: only printed
     summary = [status.summary()]
     summary.append(
         f"on the server (read back from the page): {len(status.on_server())} item(s); "
@@ -367,7 +381,7 @@ def handoff_from_ledger(
                 f"{record.kind.value} {record.item}: excluded by the person "
                 f"({record.excluded_reason}), not part of the report"
             )
-    open_decisions = list(decisions)
+    open_decisions = [f"{d.id}: {d.text}" for d in status.open_decisions()] + unrecorded
     pending = [r for r in status.items if r.state in (ItemState.STAGED, ItemState.FILLED)]
     failed = [r for r in status.items if r.state is ItemState.FAILED]
     if pending:

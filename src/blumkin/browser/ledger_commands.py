@@ -32,6 +32,7 @@ from blumkin.browser.ledger import (
     record_item,
     record_report,
     record_session,
+    resolve_decision,
 )
 from blumkin.browser.ledger_ops import (
     apply_item,
@@ -154,6 +155,13 @@ def ledger_close(
             ) from exc
         payload["browser_closed"] = closed["was_running"]
     return payload
+
+
+def ledger_decide(
+    config: BrowserSetup, task: str, instance: str, decision_id: str, answer: str
+) -> dict[str, Any]:
+    """Answer an open decision the handoff left for the person."""
+    return _payload(resolve_decision(config.config_dir, task, instance, decision_id, answer))
 
 
 def ledger_discard(config: BrowserSetup, task: str, instance: str, *, yes: bool) -> dict[str, Any]:
@@ -369,6 +377,9 @@ def _payload(status: LedgerStatus) -> dict[str, Any]:
             kind.value: {state.value: status.count(kind, state) for state in ItemState}
             for kind in ItemKind
         },
+        "decisions": [
+            {"answer": d.answer, "at": d.at, "id": d.id, "text": d.text} for d in status.decisions
+        ],
         "expected": {kind.value: total for kind, total in status.expected.items()},
         "instance": status.instance,
         "items": [
@@ -392,6 +403,7 @@ def _payload(status: LedgerStatus) -> dict[str, Any]:
         "local_only": [i.item for i in status.local_only()],
         "ok": True,
         "on_server": [i.item for i in status.on_server()],
+        "open_decisions": len(status.open_decisions()),
         "phase": status.phase.value,
         "report": None
         if report is None

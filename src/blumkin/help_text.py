@@ -805,6 +805,23 @@ The change is a journal entry of its own, so the history shows what was expected
 changed. A journal that holds such an entry is not read by a blumkin from before this command.
 """
 
+BROWSER_LEDGER_DECIDE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser ledger decide expense-report trip-lisbon d1 --answer "keep the taxi receipt"
+  blumkin browser ledger decide timesheet 2026-p21 d2 --answer "Friday was a holiday" --json
+
+Answers an open decision: a question that `ledger handoff --decision` left for the person and
+the ledger kept (`ledger status` and the next handoff list the open ones as `d1`, `d2`, ...).
+`--answer` is one short line of at most 300 characters that is not an amount (a best-effort
+check refuses a currency sign, a currency code or word next to a number, and digits with cents;
+the rule stays yours: never an amount) and does not read as an instruction. An unknown or
+already answered decision is refused, and an instance that was submitted or discarded takes no
+more answers. A journal that holds a decision entry is not read by a blumkin from before this
+command.
+"""
+
 BROWSER_LEDGER_DISCARD_EPILOG = """
 Examples:
 
@@ -828,8 +845,10 @@ Examples:
 
 The ledger remembers what has been filed for one instance of a task, so a restarted session
 knows what is already in the form. Each item goes staged, filled, then verified (read back
-from the page) or failed. It holds identifiers, states, model versions and file hashes only,
-never a value from the form. blumkin has no submit command: `submitted` records that you did.
+from the page) or failed. It holds identifiers, states, model versions and file hashes, plus the
+short free-text note of a decision or its answer (keep those to a short nonsensitive
+description: the check that refuses amounts is best-effort), never a value from the form.
+blumkin has no submit command: `submitted` records that you did.
 """
 
 BROWSER_LEDGER_HANDOFF_EPILOG = """
@@ -841,7 +860,13 @@ Examples:
     --decision "Confirm the taxi receipt category"
 
 Records the last clicks left for the user (--step, repeatable, at least one) and any open
-decisions (--decision, repeatable). The user makes the final submit; blumkin never does.
+decisions (--decision, repeatable). The user makes the final submit; blumkin never does. Each
+decision is also kept in the ledger (one short line, never an amount: a best-effort check
+refuses the common forms, and one that reads as an instruction; the same text is never kept
+twice while it is open), so the next session sees
+what is still waiting: `ledger status` and the next handoff list the open ones as `d1`, `d2`,
+..., and `ledger decide` closes one with the person's answer. An instance that was submitted
+or discarded only prints them.
 """
 
 BROWSER_LEDGER_INCLUDE_EPILOG = """
