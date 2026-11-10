@@ -812,8 +812,12 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                 # and the upload finds the input by its label, as `browser upload` does by hand.
                 # The recorded name is the input's whole label (Oracle's `File Name`), so it is
                 # matched whole: the hidden text boxes beside the input only contain it, and
-                # `Receipt` never reaches an input named `Receipt for payroll`.
+                # `Receipt` never reaches an input named `Receipt for payroll`. A step that
+                # pins a position with `nth` keeps counting every substring match, as the flows
+                # saved before this always did (`nth=2` was the input among four matches).
                 field_role = None
+                if step.nth is not None:
+                    recorded = False
             actions.upload_task(
                 config,
                 task,

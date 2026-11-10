@@ -751,3 +751,29 @@ def test_flow_add_accepts_an_upload_step_on_a_button_recorded_control_without_nt
     )  # fmt: skip
 
     assert result.exit_code == EXIT_SUCCESS, result.output  # the whole-name match is the tie
+
+
+def test_a_button_recorded_upload_that_pins_nth_keeps_counting_every_substring_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
+
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        actions, "upload_task", lambda c, t, label, path, **k: seen.append({"label": label, **k})
+    )
+    run = ledger_ops._default_run_step("expense-report", _two_page_model())
+
+    # A flow saved before the whole-name match pinned the input with nth=2 (of four substring
+    # matches): it must not also be told to match the whole name, which has only one match.
+    run(
+        FlowStep(action="upload", control="save", expect=None, page="draft", bind="f", nth=2),
+        {"f": "r"},
+    )
+    run(FlowStep(action="upload", control="save", expect=None, page="draft", bind="f"), {"f": "r"})
+
+    assert seen == [
+        {"label": "Save Draft", "settle": False, "nth": 2},
+        {"label": "Save Draft", "exact": True, "settle": False, "nth": None},
+    ]

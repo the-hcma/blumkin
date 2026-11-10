@@ -1073,8 +1073,8 @@ step means; the step is refused with the real count when the page has fewer (a v
 reports it as missing). An upload step on a control the model records as a button (the trigger
 of a file input, such as Oracle's `File Name`) matches the input by that whole name, since the
 hidden text boxes beside the input only contain it; several elements with that whole name are
-refused with their count, and `nth=N` (which counts every substring match) pins one. The
-actions are
+refused with their count. A step that says `nth=N` counts every substring match instead, as it
+always did, so a saved flow with `nth=2` keeps working. The actions are
 click, press (with value=KEY it sends that key, such as Tab or ArrowDown, and otherwise clicks),
 fill (a bound parameter, or a literal value for a fixed text), select (choose an option in a
 dropdown, from a bind or a literal value),

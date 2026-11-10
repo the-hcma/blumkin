@@ -63,7 +63,7 @@ def test_the_whole_label_reaches_the_one_file_input_among_its_substring_matches(
             browser.close()
 
 
-def test_nth_still_counts_every_substring_match_so_a_saved_flow_keeps_working(
+def test_nth_without_exact_still_counts_every_substring_match(
     tmp_path: Path,
 ) -> None:
     from playwright.sync_api import sync_playwright
