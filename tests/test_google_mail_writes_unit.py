@@ -1368,3 +1368,70 @@ def _service(
     }
     users.getProfile.return_value.execute.return_value = {"emailAddress": profile_email}
     return service
+
+
+def _message_id_service(*, pages: list[dict[str, Any]]) -> MagicMock:
+    """A mailbox where `drafts.get` knows only the draft id `r-9`, not the message id `m-5`."""
+    service = _service(get_result=_raw_draft(subject="Re: hi", to="ada@example.com"))
+    drafts = service.users.return_value.drafts.return_value
+
+    def get(*, userId: str, id: str, format: str) -> MagicMock:  # noqa: A002, N803
+        call = MagicMock()
+        if id == "r-9":
+            call.execute.return_value = _raw_draft(subject="Re: hi", to="ada@example.com")
+        else:
+            call.execute.side_effect = HttpError(httplib2.Response({"status": 404}), b"{}", uri="x")
+        return call
+
+    drafts.get.side_effect = get
+    drafts.list.return_value.execute.side_effect = pages
+    return service
+
+
+_DRAFT_PAGES = [
+    {"drafts": [{"id": "other", "message": {"id": "m-1"}}], "nextPageToken": "p2"},
+    {"drafts": [{"id": "r-9", "message": {"id": "m-5"}}]},
+]
+
+
+def test_delete_draft_given_a_message_id_deletes_the_draft_behind_it(tmp_path: Path) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="m-5")
+        )
+
+    assert payload == {"deleted": "m-5"}
+    service.users.return_value.drafts.return_value.delete.assert_called_once_with(
+        userId="me", id="r-9"
+    )
+
+
+def test_update_draft_given_a_message_id_patches_the_draft_behind_it(tmp_path: Path) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="m-5", subject="New subject"
+            )
+        )
+
+    assert service.users.return_value.drafts.return_value.update.call_args.kwargs["id"] == "r-9"
+
+
+def test_send_draft_given_a_message_id_sends_the_draft_behind_it(tmp_path: Path) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    with _patched(service):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_send_draft(draft_id="m-5"))
+
+    service.users.return_value.drafts.return_value.send.assert_called_once_with(
+        userId="me", body={"id": "r-9"}
+    )
+
+
+def test_an_id_that_is_neither_a_draft_nor_a_draft_message_is_not_found(tmp_path: Path) -> None:
+    service = _message_id_service(pages=[{"drafts": [{"id": "r-9", "message": {"id": "m-5"}}]}])
+    with _patched(service), pytest.raises(MailDraftNotFoundError, match="m-404"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="m-404"))
+
+    service.users.return_value.drafts.return_value.delete.assert_not_called()

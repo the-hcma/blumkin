@@ -354,8 +354,8 @@ async def mail_delete_draft(
         raise ValueError("--id is required")
     cfg = config or load_config()
     service = _gmail_service(cfg)
-    _get_draft(service, mid)
-    execute(service.users().drafts().delete(userId="me", id=mid), num_retries=0)
+    draft, _ = _resolve_draft(service, mid)
+    execute(service.users().drafts().delete(userId="me", id=draft), num_retries=0)
     return {"deleted": mid}
 
 
@@ -612,9 +612,10 @@ async def mail_send_draft(
         raise ValueError("--id is required")
     cfg = config or load_config()
     service = _gmail_service(cfg)
+    draft, _ = _resolve_draft(service, mid)
     # Let an HttpError propagate: the CLI maps 404 -> not_found, 403 -> missing_scope.
     sent = execute(
-        service.users().drafts().send(userId="me", body={"id": mid}),
+        service.users().drafts().send(userId="me", body={"id": draft}),
         # send is non-idempotent — a retry could deliver the mail twice.
         num_retries=0,
     )
@@ -693,7 +694,7 @@ async def mail_update_draft(
             no_signature=no_signature,
         )
     service = _gmail_service(cfg)
-    stored = _get_draft(service, mid)
+    draft, stored = _resolve_draft(service, mid)
     thread_id = (stored.get("message") or {}).get("threadId")
     # Mutate the stored message in place rather than rebuilding it from a parsed
     # model: this keeps Message-ID / In-Reply-To / References headers, inline
@@ -756,7 +757,7 @@ async def mail_update_draft(
         # so updating a reply draft keeps it in its conversation.
         update_message["threadId"] = thread_id
     execute(
-        service.users().drafts().update(userId="me", id=mid, body={"message": update_message}),
+        service.users().drafts().update(userId="me", id=draft, body={"message": update_message}),
         num_retries=0,
     )
     body_part = message.get_body(preferencelist=("html", "plain"))
@@ -928,6 +929,31 @@ def _get_draft(service: Any, draft_id: str) -> dict[str, Any]:
         if _http_status(exc) == 404:
             raise MailDraftNotFoundError(f"message not found: {draft_id}") from exc
         raise
+
+
+def _resolve_draft(service: Any, given: str) -> tuple[str, dict[str, Any]]:
+    """The Gmail draft id and stored draft for an id the caller passed (issue #718).
+
+    `mail list` and `mail get` show a draft by its message id, but `drafts.get`, `update`,
+    `delete` and `send` take the draft id, which differs. Try the id as a draft id first, then
+    find the draft whose message it is.
+    """
+    try:
+        return given, _get_draft(service, given)
+    except MailDraftNotFoundError:
+        pass
+    page: str | None = None
+    while True:
+        listing = execute(
+            service.users().drafts().list(userId="me", maxResults=100, pageToken=page)
+        )
+        for entry in listing.get("drafts") or []:
+            if (entry.get("message") or {}).get("id") == given and entry.get("id"):
+                draft = str(entry["id"])
+                return draft, _get_draft(service, draft)
+        page = listing.get("nextPageToken")
+        if not page:
+            raise MailDraftNotFoundError(f"message not found: {given}")
 
 
 def _get_message(service: Any, message_id: str) -> dict[str, Any]:
