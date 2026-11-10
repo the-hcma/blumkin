@@ -1071,8 +1071,10 @@ role, match, nth; quote a value with spaces in the shell's own way). `nth=N` (1-
 order) says which of several same-named controls a click, press, fill, select, upload or verify
 step means; the step is refused with the real count when the page has fewer (a verify step
 reports it as missing). An upload step on a control the model records as a button (the trigger
-of a file input, such as Oracle's `File Name`) must say which input with `nth=N`, since its
-name alone can match several. The actions are
+of a file input, such as Oracle's `File Name`) matches the input by that whole name, since the
+hidden text boxes beside the input only contain it; several elements with that whole name are
+refused with their count. A step that says `nth=N` counts every substring match instead, as it
+always did, so a saved flow with `nth=2` keeps working. The actions are
 click, press (with value=KEY it sends that key, such as Tab or ArrowDown, and otherwise clicks),
 fill (a bound parameter, or a literal value for a fixed text), select (choose an option in a
 dropdown, from a bind or a literal value),
@@ -1290,7 +1292,9 @@ Examples:
   blumkin browser upload expense-report "Receipt" ./hotel.pdf --json
   blumkin browser upload expense-report "File" ./taxi.pdf --frame 1 --nth 2
 
-Attaches an existing file to the file field with that label. `--exact`, `--role`, `--nth` and
+Attaches an existing file to the file field with that label. A label also matches by substring,
+so one that other elements contain (Oracle's `File Name` also names hidden text boxes) is refused
+as ambiguous: add `--exact` to match the whole name. `--exact`, `--role`, `--nth` and
 `--frame` (with `--host`) single out one field exactly as for `browser fill`, so an upload can
 reach a file input inside a child frame such as an attachments dialog; the frame must be on an
 allowed host and the folder rules below apply unchanged. The file must be a regular

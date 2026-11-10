@@ -636,7 +636,9 @@ def test_an_upload_step_whose_control_is_recorded_as_a_button_finds_the_input_by
 
     run(FlowStep(action="upload", control="save", expect=None, page="draft", bind="f"), {"f": "r"})
 
-    assert seen == [{"label": "Save Draft", "settle": False, "nth": None}]  # no role, no exact
+    # No role (a file input is not a button), but the recorded name is matched whole: it is the
+    # input's whole label, and the hidden text boxes beside it only contain it.
+    assert seen == [{"label": "Save Draft", "exact": True, "settle": False, "nth": None}]
 
 
 def test_an_upload_step_recorded_by_its_label_keeps_the_whole_name_match(
@@ -737,38 +739,41 @@ def test_model_flows_keeps_the_empty_value_of_a_step_that_clears_a_cell(_config_
     assert "value=''" in text.output
 
 
-def test_an_upload_step_on_a_button_recorded_control_must_pin_the_input_with_nth(
+def test_flow_add_accepts_an_upload_step_on_a_button_recorded_control_without_nth(
     _config_dir: Path,
 ) -> None:
     names = _store(_config_dir)
     trigger = next(n for n in names if "add" in n)
-    field = next(n for n in names if "amount" in n)
 
-    unpinned = _run(
+    result = _run(
         "expense-report", "up", "--param", "f:file", "--step",
         f"upload {trigger} page=expense-list bind=f",
     )  # fmt: skip
-    pinned = _run(
-        "expense-report", "up", "--param", "f:file", "--step",
-        f"upload {trigger} page=expense-list bind=f nth=2",
-    )  # fmt: skip
-    on_a_field = _run(
-        "expense-report", "up", "--param", "f:file", "--step",
-        f"upload {field} page=expense-list bind=f",
-    )  # fmt: skip
 
-    assert unpinned.exit_code == EXIT_USAGE
-    assert "nth=N" in _json(unpinned)["message"] and trigger in _json(unpinned)["message"]
-    assert pinned.exit_code == EXIT_SUCCESS, pinned.output
-    assert on_a_field.exit_code == EXIT_SUCCESS, on_a_field.output  # a field needs no position
+    assert result.exit_code == EXIT_SUCCESS, result.output  # the whole-name match is the tie
 
 
-def test_an_unpinned_button_upload_is_refused_even_when_the_step_names_no_page(
-    _config_dir: Path,
+def test_a_button_recorded_upload_that_pins_nth_keeps_counting_every_substring_match(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    names = _store(_config_dir)
-    trigger = next(n for n in names if "add" in n)
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.model import FlowStep
 
-    result = _run("expense-report", "up", "--param", "f:file", "--step", f"upload {trigger} bind=f")
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        actions, "upload_task", lambda c, t, label, path, **k: seen.append({"label": label, **k})
+    )
+    run = ledger_ops._default_run_step("expense-report", _two_page_model())
 
-    assert result.exit_code == EXIT_USAGE and "nth=N" in _json(result)["message"]
+    # A flow saved before the whole-name match pinned the input with nth=2 (of four substring
+    # matches): it must not also be told to match the whole name, which has only one match.
+    run(
+        FlowStep(action="upload", control="save", expect=None, page="draft", bind="f", nth=2),
+        {"f": "r"},
+    )
+    run(FlowStep(action="upload", control="save", expect=None, page="draft", bind="f"), {"f": "r"})
+
+    assert seen == [
+        {"label": "Save Draft", "settle": False, "nth": 2},
+        {"label": "Save Draft", "exact": True, "settle": False, "nth": None},
+    ]
