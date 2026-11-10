@@ -114,7 +114,10 @@ class BookingGuardError(ValueError):
     """
 
     def __init__(self, findings: Sequence[Any], *, warnings: Sequence[str] = ()) -> None:
-        super().__init__("not booked: " + "; ".join(finding.text() for finding in findings))
+        text = "not booked: " + "; ".join(finding.text() for finding in findings)
+        if warnings:
+            text += " (not checked: " + "; ".join(warnings) + ")"
+        super().__init__(text)
         self.findings = list(findings)
         self.warnings = list(warnings)
         flags = " ".join(f"--allow {name}" for name in sorted({f.check for f in findings}))

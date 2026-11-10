@@ -13,6 +13,7 @@ import pytest
 
 from blumkin.booking_guard import (
     CHECKS,
+    Finding,
     allowed_checks,
     check_booking,
     schedule_findings,
@@ -671,3 +672,46 @@ def test_an_update_that_leaves_an_all_day_event_all_day_is_not_checked() -> None
     provider = _provider([_item()], calendar_get=AsyncMock(return_value=event))
 
     assert _update(provider, start_raw="2026-11-14T10:00") is None
+
+
+def test_two_meetings_in_the_old_slot_only_one_is_the_event_itself() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    twice = [
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ] * 2
+    provider = _provider([_item(busy=twice)], calendar_get=AsyncMock(return_value=event))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, start_raw="2026-11-10T10:15", duration="30m")
+
+    assert [f.check for f in caught.value.findings] == ["busy"]
+
+
+def test_a_preserved_duration_is_added_in_utc_across_a_dst_change() -> None:
+    event = _event("2027-03-13T10:00:00-05:00", "2027-03-13T12:00:00-05:00")  # two hours
+    late = [  # 03:30-04:30 EDT is the last hour of a two-hour event starting 01:30 EST
+        {"end": "2027-03-14T04:30:00-04:00", "start": "2027-03-14T04:00:00-04:00", "status": "busy"}
+    ]
+    provider = _provider([_item(busy=late)], calendar_get=AsyncMock(return_value=event))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, start_raw="2027-03-14T01:30")
+
+    assert "busy" in {f.check for f in caught.value.findings}
+
+
+def test_a_bare_no_all_day_checks_the_midnight_meeting_it_creates() -> None:
+    event = _event("2026-11-10T00:00:00-05:00", "2026-11-11T00:00:00-05:00")
+    event["event"]["is_all_day"] = True
+    provider = _provider([_item()], calendar_get=AsyncMock(return_value=event))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, all_day=False)
+
+    assert "hours" in {f.check for f in caught.value.findings}  # 00:00-00:30 is off-hours
+
+
+def test_the_refusal_text_carries_the_warnings_about_what_was_not_checked() -> None:
+    error = BookingGuardError([Finding("holiday", "x")], warnings=["could not read availability"])
+
+    assert "not checked: could not read availability" in str(error)

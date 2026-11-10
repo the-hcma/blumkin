@@ -1223,3 +1223,26 @@ def test_calendar_suggest_fails_closed_when_primary_missing(tmp_path: Path) -> N
                     duration=timedelta(minutes=30),
                 )
             )
+
+
+def test_calendar_freebusy_marks_a_calendar_google_left_out_as_unreadable(tmp_path: Path) -> None:
+    """A missing calendar is not a free person: its item carries an error (issue #716 review)."""
+    service = MagicMock()
+    service.freebusy.return_value.query.return_value.execute.return_value = {
+        "calendars": {"ada@example.com": {"busy": []}}
+    }
+    start = datetime(2026, 8, 30, 13, 0, tzinfo=UTC)
+    end = datetime(2026, 8, 30, 17, 0, tzinfo=UTC)
+    with (
+        patch("blumkin.providers.google.calendar.get_credentials", return_value=MagicMock()),
+        patch("blumkin.providers.google.calendar.build_api_service", return_value=service),
+    ):
+        result = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).calendar_freebusy(
+                with_emails=["ada@example.com", "ghost@example.com"], start=start, end=end
+            )
+        )
+
+    by_address = {item["schedule"]: item for item in result["items"]}
+    assert by_address["ada@example.com"]["error"] is None
+    assert by_address["ghost@example.com"]["error"] == "no schedule returned"

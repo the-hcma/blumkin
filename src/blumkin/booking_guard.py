@@ -222,13 +222,19 @@ def _busy_findings(
     own_slot: tuple[datetime, datetime] | None,
 ) -> list[Finding]:
     findings: list[Finding] = []
+    own_seen = False
     for slot in busy:
         status = str(slot.get("status") or "busy").lower()
         begins, ends = _parse_instant(slot.get("start")), _parse_instant(slot.get("end"))
         if status in _NOT_BUSY or begins is None or ends is None:
             continue
-        if own_slot is not None and _is_event_itself(begins, ends, own_slot, (start, end)):
-            continue  # the event being moved is not its own conflict
+        if (
+            own_slot is not None
+            and not own_seen
+            and _is_event_itself(begins, ends, own_slot, (start, end))
+        ):
+            own_seen = True  # the event being moved is not its own conflict, but only one block is
+            continue
         if begins < end and ends > start:
             local = start.tzinfo
             shown = (begins.astimezone(local), ends.astimezone(local))
@@ -319,7 +325,9 @@ async def _slot(
         start = parse_local_datetime(kwargs["start_raw"], zone)
         length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
         return start, (start.astimezone(UTC) + length).astimezone(zone), [], None, frozenset()
-    changes_time = any(kwargs.get(key) for key in ("start_raw", "end_raw", "duration"))
+    changes_time = any(kwargs.get(key) for key in ("start_raw", "end_raw", "duration")) or (
+        kwargs.get("all_day") is False
+    )
     invites = kwargs.get("with_emails")
     if kwargs.get("all_day") or not (changes_time or invites):
         return None
@@ -331,16 +339,19 @@ async def _slot(
     # `--no-all-day --start ...` turns an all-day event into a meeting: the new slot is checked,
     # and the old all-day span is neither its own busy time nor the length of the meeting.
     converting = bool(event.get("is_all_day")) and kwargs.get("all_day") is False
-    if event.get("is_all_day") and not (converting and kwargs.get("start_raw")):
+    if event.get("is_all_day") and not converting:
         return None
     old_start, old_end = _parse_instant(event.get("start")), _parse_instant(event.get("end"))
     if old_start is None or old_end is None:
         raise ValueError("could not read the event's current time to check the booking")
     if kwargs.get("start_raw"):
         reject_date_only_start(kwargs["start_raw"])  # as create does: a date is not a time
-    start = (
-        parse_local_datetime(kwargs["start_raw"], zone) if kwargs.get("start_raw") else old_start
-    )
+    if kwargs.get("start_raw"):
+        start = parse_local_datetime(kwargs["start_raw"], zone)
+    elif converting:  # as the provider does: the event's date, opening at local midnight
+        start = datetime.combine(old_start.date(), time.min, tzinfo=zone)
+    else:
+        start = old_start
     if kwargs.get("end_raw"):
         end = parse_local_datetime(kwargs["end_raw"], zone)
     elif kwargs.get("duration"):
@@ -348,7 +359,7 @@ async def _slot(
     elif converting:
         end = (start.astimezone(UTC) + parse_duration(_DEFAULT_DURATION)).astimezone(zone)
     else:
-        end = start + (old_end - old_start)
+        end = (start.astimezone(UTC) + (old_end - old_start)).astimezone(zone)
     if invites is not None:
         invitees = [str(email) for email in invites]
     else:
