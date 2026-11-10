@@ -79,7 +79,8 @@ def schedule_findings(
     `item` is one entry of `calendar freebusy`. A missing item, an error, no working hours
     or an unknown time zone are warnings that the check was not made, never a pass. `own_slot`
     is the event's current start and end when it is being moved: the organizer's own busy time
-    is ignored (pass it for the organizer only; an invitee busy then is a real conflict).
+    is ignored for the organizer and for people already on the event (they accepted it, so it
+    shows as their busy time); pass None for a newly invited person, whose busy time is real.
     """
     label = "you" if who == "you" else who
     if item is None:
@@ -155,7 +156,7 @@ async def check_booking(
     slot = await _slot(provider, config, skill_id, kwargs)
     if slot is None:
         return None
-    start, end, invitees, own_slot = slot
+    start, end, invitees, own_slot, on_event = slot
     findings = slot_findings(start, end, config.preferences)
     checked: set[str] = {"weekend", "holiday"}
     if config.preferences.booking_exclusions:
@@ -179,7 +180,7 @@ async def check_booking(
                     end,
                     by_address.get(address.lower()),
                     who=who,
-                    own_slot=own_slot if who == "you" else None,
+                    own_slot=own_slot if who == "you" or address.lower() in on_event else None,
                 )
                 findings.extend(more)
                 warnings.extend(notes)
@@ -226,7 +227,7 @@ def _busy_findings(
         begins, ends = _parse_instant(slot.get("start")), _parse_instant(slot.get("end"))
         if status in _NOT_BUSY or begins is None or ends is None:
             continue
-        if own_slot is not None and _same(begins, own_slot[0]) and _same(ends, own_slot[1]):
+        if own_slot is not None and _is_event_itself(begins, ends, own_slot, (start, end)):
             continue  # the event being moved is not its own conflict
         if begins < end and ends > start:
             local = start.tzinfo
@@ -284,13 +285,29 @@ def _parse_instant(raw: Any) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
+def _is_event_itself(
+    begins: datetime,
+    ends: datetime,
+    old: tuple[datetime, datetime],
+    new: tuple[datetime, datetime],
+) -> bool:
+    """Whether a busy block is the event's own: its old slot, or that slot clipped to the new one.
+
+    Microsoft reports the whole old slot; Google clips a busy block to the window asked about,
+    so a move that partly overlaps the old slot shows only the overlap.
+    """
+    starts = (old[0], max(old[0], new[0]))
+    stops = (old[1], min(old[1], new[1]))
+    return any(_same(begins, a) for a in starts) and any(_same(ends, b) for b in stops)
+
+
 def _same(left: datetime, right: datetime) -> bool:
     return abs(left - right) <= _SAME_SLOT
 
 
 async def _slot(
     provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
-) -> tuple[datetime, datetime, list[str], tuple[datetime, datetime] | None] | None:
+) -> tuple[datetime, datetime, list[str], tuple[datetime, datetime] | None, frozenset[str]] | None:
     """The slot a call books and who is in it, or None when it books no meeting time."""
     zone_name = kwargs.get("tz_name") or config.default_tz
     if not zone_name:
@@ -302,7 +319,7 @@ async def _slot(
         reject_date_only_start(kwargs["start_raw"])
         start = parse_local_datetime(kwargs["start_raw"], zone)
         length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
-        return start, (start.astimezone(UTC) + length).astimezone(zone), [], None
+        return start, (start.astimezone(UTC) + length).astimezone(zone), [], None, frozenset()
     changes_time = any(kwargs.get(key) for key in ("start_raw", "end_raw", "duration"))
     invites = kwargs.get("with_emails")
     if kwargs.get("all_day") or not (changes_time or invites):
@@ -336,4 +353,9 @@ async def _slot(
         ]
     own = {config.email.lower()} if config.email else set()
     unique = list(dict.fromkeys(e for e in invitees if e.lower() not in own))
-    return start.astimezone(zone), end.astimezone(zone), unique, (old_start, old_end)
+    on_event = frozenset(
+        str(person["email"]).lower()
+        for person in event.get("attendees") or []
+        if person.get("email")
+    )
+    return start.astimezone(zone), end.astimezone(zone), unique, (old_start, old_end), on_event

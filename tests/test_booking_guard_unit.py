@@ -606,3 +606,38 @@ def test_exclusion_times_out_of_range_are_a_config_error_and_24_00_ends_the_day(
     assert whole_day.end == time.max
     with pytest.raises(ProviderConfigError, match="out of range"):
         _booking_exclusions(["thu 00:00-25:30"])
+
+
+def test_moving_an_event_ignores_the_busy_block_of_people_already_on_it() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    event["event"]["attendees"] = [{"email": "ana@example.com"}]
+    whole = [
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ]
+    provider = _provider(
+        [_item(busy=whole), _item("ana@example.com", busy=whole)],
+        calendar_get=AsyncMock(return_value=event),
+    )
+
+    assert _update(provider, start_raw="2026-11-10T10:15", duration="30m") is not None
+
+
+def test_a_busy_block_clipped_to_the_new_slot_is_still_the_event_itself() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    clipped = [  # Google clips to the window asked about: the overlap of old and new slots
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:15:00-05:00", "status": "busy"}
+    ]
+    provider = _provider([_item(busy=clipped)], calendar_get=AsyncMock(return_value=event))
+
+    assert _update(provider, start_raw="2026-11-10T10:15", duration="30m") is not None
+
+
+def test_a_different_meeting_inside_the_old_slot_is_still_a_conflict() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T11:00:00-05:00")
+    other = [
+        {"end": "2026-11-10T10:45:00-05:00", "start": "2026-11-10T10:30:00-05:00", "status": "busy"}
+    ]
+    provider = _provider([_item(busy=other)], calendar_get=AsyncMock(return_value=event))
+
+    with pytest.raises(BookingGuardError):
+        _update(provider, start_raw="2026-11-10T10:15", duration="45m")
