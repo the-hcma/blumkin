@@ -11,7 +11,7 @@ import stat
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -256,6 +256,16 @@ class MessagePolicyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BookingExclusion:
+    """A weekly window the person never wants a meeting booked in (`thu 00:00-12:00`)."""
+
+    day: int  # 0 = Monday ... 6 = Sunday
+    end: time
+    start: time
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class PreferencesConfig:
     """Display preferences for composed mail: a top-level default, per-profile override."""
 
@@ -263,9 +273,14 @@ class PreferencesConfig:
     # before `emit` (`mail.send-draft`, ...) will act on it - see issue #365.
     # `BLUMKIN_CONFIRM_COOLDOWN_SECONDS` overrides this for CI/tests only; it
     # is never a per-call tool argument.
+    #: Weekly windows no meeting may be booked in (`booking_exclusions` in config.toml).
+    booking_exclusions: tuple[BookingExclusion, ...] = ()
     confirm_cooldown_seconds: int = DEFAULT_CONFIRM_COOLDOWN_SECONDS
     font_name: str = ""
     font_size: int | None = None
+    #: The observed holidays (date and name) no meeting may be booked on (`holidays` in
+    #: config.toml, per profile: the list belongs to an employer, not to blumkin).
+    holidays: tuple[tuple[date, str], ...] = ()
     html_email: bool = True
     # Maximum age (seconds) a `calendar.get` read of a given event may be before
     # `calendar.accept` / `decline` / `tentative` / `cancel` on that same event
@@ -1005,6 +1020,69 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_EXCLUSION = re.compile(
+    r"(?P<day>[A-Za-z]{3})"
+    r"(?: +(?P<start>[0-2][0-9]:[0-5][0-9]) *- *(?P<end>[0-2][0-9]:[0-5][0-9]))?"
+)
+_HOLIDAY = re.compile(r"(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})(?: +(?P<name>[^\x00-\x1f]{1,60}))?")
+
+
+def _booking_exclusions(raw: Any) -> tuple[BookingExclusion, ...]:
+    """`booking_exclusions = ["thu 00:00-12:00", "fri"]`: a weekday, with an optional window."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProviderConfigError(
+            f"preferences.booking_exclusions must be a list in config.toml, got {raw!r}"
+        )
+    found: list[BookingExclusion] = []
+    for item in raw:
+        match = _EXCLUSION.fullmatch(item.strip()) if isinstance(item, str) else None
+        day = match.group("day").lower() if match else ""
+        if match is None or day not in _WEEKDAYS:
+            raise ProviderConfigError(
+                "preferences.booking_exclusions entries look like 'thu 00:00-12:00' or 'fri' "
+                f"in config.toml, got {item!r}"
+            )
+        start = time.fromisoformat(match.group("start") or "00:00")
+        end = time.fromisoformat(match.group("end") or "23:59")
+        if end <= start:
+            raise ProviderConfigError(
+                f"preferences.booking_exclusions window must end after it starts, got {item!r}"
+            )
+        found.append(
+            BookingExclusion(day=_WEEKDAYS.index(day), end=end, start=start, text=item.strip())
+        )
+    return tuple(found)
+
+
+def _holidays(raw: Any) -> tuple[tuple[date, str], ...]:
+    """`holidays = ["2026-11-11 Veterans Day", "2026-11-26"]`: an observed date, then a name."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProviderConfigError(
+            f"preferences.holidays must be a list in config.toml, got {raw!r}"
+        )
+    found: dict[date, str] = {}
+    for item in raw:
+        match = _HOLIDAY.fullmatch(item.strip()) if isinstance(item, str) else None
+        if match is None:
+            raise ProviderConfigError(
+                "preferences.holidays entries look like '2026-11-11 Veterans Day' in "
+                f"config.toml, got {item!r}"
+            )
+        try:
+            day = date.fromisoformat(match.group("date"))
+        except ValueError as exc:
+            raise ProviderConfigError(
+                f"preferences.holidays has an invalid date in config.toml, got {item!r}"
+            ) from exc
+        found[day] = (match.group("name") or "").strip()
+    return tuple(sorted(found.items()))
+
+
 def _confirm_cooldown_seconds(merged: dict[str, Any]) -> int:
     """Resolve ``preferences.confirm_cooldown_seconds``, honoring the CI/test-only env override.
 
@@ -1263,9 +1341,11 @@ def _preferences_config(
             )
         html_email = raw_html_email
     return PreferencesConfig(
+        booking_exclusions=_booking_exclusions(merged.get("booking_exclusions")),
         confirm_cooldown_seconds=_confirm_cooldown_seconds(merged),
         font_name=str(merged.get("font_name") or "").strip(),
         font_size=_positive_int(merged.get("font_size"), key="preferences.font_size"),
+        holidays=_holidays(merged.get("holidays")),
         html_email=html_email,
         rsvp_freshness_seconds=_rsvp_freshness_seconds(merged),
     )

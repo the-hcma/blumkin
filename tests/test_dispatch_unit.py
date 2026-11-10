@@ -49,6 +49,13 @@ _GOOGLE = SimpleNamespace(
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_booking_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about the gates and the argument mapping; the booking guard (#716) has
+    its own tests in test_booking_guard_unit.py."""
+    monkeypatch.setattr("blumkin.skills.dispatch.check_booking", AsyncMock(return_value=None))
+
+
 def _provider(*methods: str) -> SimpleNamespace:
     return SimpleNamespace(**{name: AsyncMock(return_value={"ok": True}) for name in methods})
 

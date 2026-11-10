@@ -391,6 +391,11 @@ _DEFAULT_HINTS: dict[str, str] = {
         "restart the MCP server (reload / restart your editor or MCP client) to pick up "
         "the update, then retry."
     ),
+    "booking_blocked": (
+        "Pick a slot that passes the weekend, holiday, working-hours and availability checks. "
+        "Override one only when the person says the booking is meant (`--allow weekend`), "
+        "never on your own."
+    ),
     "stale_or_unread": (
         "Call `calendar.get --event-id <id>` (or `calendar get --event-id <id>`) to see the "
         "event's current state, show it to the user, then retry this command."
@@ -7515,6 +7520,14 @@ def calendar_cancel_cmd(
     default=None,
     help="Weekly only: comma list of weekdays, e.g. mon,tue,wed,thu,fri.",
 )
+@click.option(
+    "--allow",
+    "allow",
+    multiple=True,
+    type=click.Choice(["busy", "exclusion", "holiday", "hours", "weekend"]),
+    help="Override one booking check by name (repeatable); only when the person says the "
+    "slot is meant.",
+)
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -7536,6 +7549,7 @@ def calendar_create_cmd(
     until: str | None,
     count: int | None,
     days: str | None,
+    allow: tuple[str, ...],
     tz_flag: str | None,
     as_json_flag: bool,
 ) -> None:
@@ -7569,6 +7583,7 @@ def calendar_create_cmd(
             "until": until,
             "count": count,
             "days": days,
+            "allow": list(allow),
             "tz": _tz_name(ctx, tz_flag),
         },
         human=format_create_human,
@@ -7618,6 +7633,14 @@ def calendar_create_cmd(
     default=None,
     help="Attach (--teams) or remove (--no-teams) the online meeting; omit to leave it.",
 )
+@click.option(
+    "--allow",
+    "allow",
+    multiple=True,
+    type=click.Choice(["busy", "exclusion", "holiday", "hours", "weekend"]),
+    help="Override one booking check by name (repeatable); only when the person says the "
+    "slot is meant.",
+)
 @click.option("--yes", "yes", is_flag=True, help="Confirm notify-others action.")
 @click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
@@ -7637,6 +7660,7 @@ def calendar_update_cmd(
     body_type: str,
     with_emails: tuple[str, ...],
     teams: bool | None,
+    allow: tuple[str, ...],
     yes: bool,
     tz_flag: str | None,
     as_json_flag: bool,
@@ -7662,6 +7686,7 @@ def calendar_update_cmd(
             "body_type": body_type,
             "with": list(with_emails) if with_emails else None,
             "no_teams": None if teams is None else not teams,
+            "allow": list(allow),
             "tz": _tz_name(ctx, tz_flag),
             "yes": yes,
         },

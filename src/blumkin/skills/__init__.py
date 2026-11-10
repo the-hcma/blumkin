@@ -143,6 +143,9 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     # `teams` kwarg (negated by the `negate_flag` coerce below).
     ("calendar.create", "--no-teams"): "teams",
     ("calendar.update", "--no-teams"): "teams",
+    # --allow names the booking checks to override; the guard reads it, the provider never does.
+    ("calendar.create", "--allow"): None,
+    ("calendar.update", "--allow"): None,
     # recurrence flags are folded into a single `recurrence` value object.
     ("calendar.create", "--repeat"): None,
     ("calendar.create", "--interval"): None,
@@ -224,6 +227,8 @@ _ARG_COERCE: dict[tuple[str, str], str] = {
     ("mail.search", "--until"): "local_datetime",
     ("mail.auto-reply", "--start"): "date",
     ("mail.auto-reply", "--until"): "date",
+    ("calendar.create", "--allow"): "list",
+    ("calendar.update", "--allow"): "list",
     ("calendar.update", "--with"): "list",
     ("calendar.freebusy", "--with"): "list",
     ("calendar.suggest", "--with"): "list",
@@ -377,6 +382,17 @@ SKILLS: list[SkillSpec] = [
                 "required": False,
                 "type": "flag",
                 "note": "--teams / --no-teams; a Teams online meeting is attached by default",
+            },
+            {
+                "name": "--allow",
+                "required": False,
+                "type": "enum",
+                "values": ["busy", "exclusion", "holiday", "hours", "weekend"],
+                "multiple": True,
+                "note": (
+                    "override one booking check by name (weekend, holiday, hours, busy, "
+                    "exclusion); only when the person says the slot is meant, never on your own"
+                ),
             },
             {
                 "name": "--repeat",
@@ -593,6 +609,17 @@ SKILLS: list[SkillSpec] = [
                 "type": "email",
                 "multiple": True,
                 "note": "replaces the attendee list",
+            },
+            {
+                "name": "--allow",
+                "required": False,
+                "type": "enum",
+                "values": ["busy", "exclusion", "holiday", "hours", "weekend"],
+                "multiple": True,
+                "note": (
+                    "override one booking check by name (weekend, holiday, hours, busy, "
+                    "exclusion); only when the person says the slot is meant, never on your own"
+                ),
             },
             {
                 "name": "--no-teams",

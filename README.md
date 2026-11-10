@@ -171,6 +171,14 @@ html_email = true
 font_size = 13  # overrides just this key for this profile
 ```
 
+`holidays` and `booking_exclusions` (set per profile, under `[profiles.<name>.preferences]`: a holiday list belongs to an employer) feed the booking guard that runs before `calendar create` and before a `calendar update` that moves an event or invites people. `holidays` lists the observed dates, each with an optional name; `booking_exclusions` lists weekly windows nothing may be booked in (`"thu 00:00-12:00"`, or a bare `"fri"` for the whole day). The guard refuses a weekend, a listed holiday, an excluded window, a slot outside anyone's working hours (read in their own time zone from `calendar freebusy`) and a slot anyone is busy in. A refusal is overridden one check at a time with `--allow weekend|holiday|exclusion|hours|busy`, only when the person says the slot is meant. A schedule it could not read (no working hours, freebusy returned nothing) is reported as a warning, never passed silently. All-day events are not checked, and a recurring series is checked at its first occurrence.
+
+```toml
+[profiles.work.preferences]
+holidays = ["2026-11-11 Veterans Day", "2026-11-26 Thanksgiving Day", "2026-11-27"]
+booking_exclusions = ["thu 00:00-12:00"]
+```
+
 Set `tenant_id`, `default_tz`, and `provider` in the profile table (there are no org-specific code defaults). `provider` defaults to `microsoft` when omitted. `token_storage` defaults to `"auto"`. `keychain_unlock` defaults to `"gui"` ([Keychain unlock](#keychain-unlock-macos)). `token_reverify_after` defaults to `"24h"` and accepts the same compact duration forms blumkin already uses elsewhere (`30m`, `24h`, `7d`, `1w`); `0` or `"never"` disables agent-mode for that profile entirely.
 
 Interactive browser auth is public-client only (`client_id`; plus `tenant_id` for Microsoft). Do not set a client secret for these flows. Set `tenant_id` to your tenant's specific GUID or verified domain, never `common` / `organizations` / `consumers` - see the app-registration hardening checklist in [`docs/SECURITY-AT-A-GLANCE.md`](./docs/SECURITY-AT-A-GLANCE.md#microsoft-app-registration-hardening) before your first login.

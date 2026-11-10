@@ -436,6 +436,19 @@ def format_cancel_human(payload: dict[str, Any]) -> list[str]:
     return [f"Cancelled event {payload.get('cancelled')!r}"]
 
 
+def _booking_lines(payload: dict[str, Any]) -> list[str]:
+    """What the booking guard checked, overrode and could not check (issue #716)."""
+    report = payload.get("booking_checks")
+    if not report:
+        return []
+    lines = [f"  checked: {', '.join(report.get('checked') or []) or 'nothing'}"]
+    lines.extend(
+        f"  allowed anyway: {sanitize_terminal(text)}" for text in report.get("allowed", [])
+    )
+    lines.extend(f"  warning: {sanitize_terminal(text)}" for text in report.get("warnings", []))
+    return lines
+
+
 def _format_when(event: dict[str, Any]) -> str:
     """Human ``when`` for a created/updated event: ``all day`` or ``start -> end``."""
     if event.get("is_all_day"):
@@ -454,6 +467,7 @@ def format_create_human(payload: dict[str, Any]) -> list[str]:
     if event.get("online_join_url"):
         lines.append(f"  join: {sanitize_terminal(str(event['online_join_url']))}")
     lines.append(f"  id={event.get('id')}")
+    lines.extend(_booking_lines(payload))
     return lines
 
 
@@ -467,6 +481,7 @@ def format_update_human(payload: dict[str, Any]) -> list[str]:
     if event.get("online_join_url"):
         lines.append(f"  join: {sanitize_terminal(str(event['online_join_url']))}")
     lines.append(f"  id={event.get('id')}")
+    lines.extend(_booking_lines(payload))
     return lines
 
 

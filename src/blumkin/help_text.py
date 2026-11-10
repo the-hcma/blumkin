@@ -1587,6 +1587,13 @@ patternedRecurrence / Google RRULE). Bound it with `--until DATE` or `--count N`
 weekly patterns restrict the weekdays with `--days mon,tue,...` (which must
 include the `--start` weekday). Monthly repeats on the same day-of-month as
 `--start`.
+
+Before anything is booked the slot is checked (issue #716): a weekend, a date in the profile's
+`holidays`, a `booking_exclusions` window, working hours (read in each person's own zone from
+freebusy) and busy time all refuse the call with `booking_blocked`. Override one check at a time
+with `--allow weekend|holiday|exclusion|hours|busy`, only when the person says that slot is
+meant; whatever could not be checked is a warning in `booking_checks`, never a silent pass.
+All-day events are not checked and a recurring series is checked at its first occurrence.
 """
 
 CALENDAR_EPILOG = """
@@ -1713,6 +1720,11 @@ until `preferences.confirm_cooldown_seconds` has passed since the create, so
 there is a beat to review the event before anyone is notified. Editing an
 event that was not just created (or that cooldown has already elapsed for)
 proceeds normally.
+
+A change of time, or `--with`, runs the same booking checks as `calendar create` against the
+new slot and every attendee, ignoring the event's own current time, and refuses with
+`booking_blocked`; `--allow` names the check to override, only when the person says the slot is
+meant.
 """
 
 CALENDAR_VIEW_EPILOG = """
