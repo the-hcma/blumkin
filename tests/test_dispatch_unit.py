@@ -1211,3 +1211,28 @@ def test_a_failed_draft_id_lookup_leaves_the_id_for_the_call_to_report(
     _run("mail.delete-draft", {"id": "msg-1", "yes": True}, config=cfg, provider=prov)
 
     assert prov.mail_delete_draft.await_args.kwargs["draft_id"] == "msg-1"
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "method", "result", "reported"),
+    [
+        ("mail.delete-draft", "mail_delete_draft", {"deleted": "r-draft"}, "deleted"),
+        ("mail.send-draft", "mail_send_draft", {"sent": "r-draft"}, "sent"),
+        ("mail.update-draft", "mail_update_draft", {"draft": {"id": "r-draft"}}, "draft"),
+    ],
+)
+def test_a_draft_skill_reports_the_draft_id_when_given_a_message_id(
+    tmp_path, monkeypatch, skill_id: str, method: str, result: dict[str, Any], reported: str
+) -> None:
+    """The result carries the stable draft id, as `mail draft` and `mail reply` already do."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=0)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value="r-draft"),
+        **{method: AsyncMock(return_value=result)},
+    )
+    args: dict[str, Any] = {"id": "msg-1", "yes": True, "subject": "s"}
+
+    payload = _run_payload(skill_id, args, config=cfg, provider=prov)
+
+    assert payload[reported] in ("r-draft", {"id": "r-draft"})
+    assert args["id"] == "msg-1"  # the caller's own arguments are not rewritten
