@@ -16,6 +16,7 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from blumkin.booking_guard import GUARDED_SKILLS, check_booking
 from blumkin.compose_state import clear_composed, record_composed, seconds_since_composed
 from blumkin.config import BlumkinConfig
 from blumkin.contacts import people_context
@@ -602,12 +603,19 @@ async def run_skill(
     if preprocess is not None:
         preprocess(kwargs, arguments, config)
 
+    booking: dict[str, Any] | None = None
     if skill_id in CONFIG_SKILLS:
         payload = await _CONFIG_HANDLERS[skill_id](config=config, **kwargs)
     else:
         prov = provider if provider is not None else get_provider(config)
+        if skill_id in GUARDED_SKILLS:
+            # A weekend, a holiday, off-hours or a busy slot is refused before anything is
+            # booked, unless the caller named the check with --allow (issue #716).
+            booking = await check_booking(prov, config, skill_id, kwargs, arguments)
         method = getattr(prov, skill_method_name(skill_id))
         payload = await method(**kwargs)
+    if booking is not None:
+        payload = {**payload, "booking_checks": booking}
     _apply_compose_state(skill_id, arguments, payload, config)
     _apply_read_state(skill_id, arguments, payload, config)
     return _postprocess_items(skill_id, payload, arguments)

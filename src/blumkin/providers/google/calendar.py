@@ -400,8 +400,11 @@ async def calendar_freebusy(
                 "freebusy lookup failed for: "
                 + "; ".join(f"{email}: no schedule returned" for email in missing)
             )
+    # A calendar Google left out of the answer is unreadable, not free: say so on its item.
+    missing_entry = {"errors": [{"reason": "no schedule returned"}]}
     items = [
-        _schedule_to_dict(email, calendars.get(email) or {}, display_tz) for email in with_emails
+        _schedule_to_dict(email, calendars.get(email) or missing_entry, display_tz)
+        for email in with_emails
     ]
     return {
         "end": end.isoformat(),

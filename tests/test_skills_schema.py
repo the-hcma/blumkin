@@ -102,6 +102,7 @@ _ARG_PARAM_PINS = {
         "--body-type": ("body_type", None),
         "--remind-email": ("remind_email", None),
         "--no-teams": ("teams", "negate_flag"),
+        "--allow": (None, "list"),
         "--repeat": (None, None),
         "--interval": (None, None),
         "--until": (None, None),
@@ -372,6 +373,7 @@ _ARG_SIGNATURES = {
         ("--body-type", False, "enum"),
         ("--remind-email", False, "duration"),
         ("--no-teams", False, "flag"),
+        ("--allow", False, "enum"),
         ("--repeat", False, "enum"),
         ("--interval", False, "int"),
         ("--until", False, "date"),
@@ -435,6 +437,8 @@ _ENUM_VALUES = {
     ("docs.update", "--format"): ["markdown", "text"],
     ("drive.list", "--order"): ["modified", "name"],
     ("calendar.create", "--repeat"): ["daily", "weekly", "monthly"],
+    ("calendar.create", "--allow"): ["busy", "exclusion", "holiday", "hours", "weekend"],
+    ("calendar.update", "--allow"): ["busy", "exclusion", "holiday", "hours", "weekend"],
     ("calendar.update", "--body-type"): ["html", "text"],
     ("calendar.get", "--body-type"): ["html", "text"],
     ("calendar.suggest", "--treat-tentative"): ["busy", "free"],
@@ -461,6 +465,7 @@ _ERROR_KEYS = {"error", "message", "ok"}
 
 _ERROR_VALUES = {
     "auth_required",
+    "booking_blocked",
     "export_failed",
     "graph_error",
     "install_failed",

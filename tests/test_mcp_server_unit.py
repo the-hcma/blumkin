@@ -783,6 +783,8 @@ def _unknown_arguments_call(tool: str, arguments: dict[str, Any]) -> tuple[Any, 
     with (
         patch("blumkin.mcp_server.load_config", return_value=_CFG),
         patch("blumkin.skills.dispatch.get_provider", return_value=prov),
+        # These tests are about the argument check; the booking guard (#716) has its own.
+        patch("blumkin.skills.dispatch.check_booking", AsyncMock(return_value=None)),
     ):
         return _drive(lambda c: c.call_tool(tool, arguments)), provider_call
 

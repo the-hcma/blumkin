@@ -8,7 +8,9 @@ is what stops the two surfaces from drifting.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 from zoneinfo import ZoneInfoNotFoundError
 
 import httpx
@@ -101,6 +103,33 @@ class ErrorInfo:
     # Only set on a `too_soon` cooldown rejection (issue #365).
     agent_instructions: str | None = None
     retry_after_seconds: float | None = None
+
+
+class BookingGuardError(ValueError):
+    """A booking lands on a weekend, a holiday, off-hours or a busy slot (issue #716).
+
+    `findings` are the checks that failed and were not named with `--allow`; `warnings` are
+    what could not be checked at all. The agent is told not to override on its own: the person
+    picks another time, or says the booking is meant.
+    """
+
+    def __init__(self, findings: Sequence[Any], *, warnings: Sequence[str] = ()) -> None:
+        text = "not booked: " + "; ".join(finding.text() for finding in findings)
+        if warnings:
+            text += " (not checked: " + "; ".join(warnings) + ")"
+        super().__init__(text)
+        self.findings = list(findings)
+        self.warnings = list(warnings)
+        flags = " ".join(f"--allow {name}" for name in sorted({f.check for f in findings}))
+        self.hint = (
+            "Pick a slot that passes the checks, or, if the person chose this one knowing "
+            f"it, repeat the call with {flags}."
+        )
+        self.agent_instructions = (
+            "Do not retry with --allow on your own. Tell the user which checks failed and "
+            "propose a slot that passes them; override only when the user says the booking "
+            "is meant as it is."
+        )
 
 
 class ConsentRequiredError(ValueError):
@@ -207,6 +236,14 @@ def graph_http_status(exc: BaseException) -> int | None:
 def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a flat ladder
     """Map any blumkin exception to its ``(slug, exit_code, message, hint)``."""
     # 0. typed gate exceptions from the dispatch layer
+    if isinstance(exc, BookingGuardError):
+        return ErrorInfo(
+            "booking_blocked",
+            EXIT_USAGE,
+            str(exc),
+            exc.hint,
+            agent_instructions=exc.agent_instructions,
+        )
     if isinstance(exc, EmitCooldownError):
         return ErrorInfo(
             "too_soon",

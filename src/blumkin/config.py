@@ -11,7 +11,7 @@ import stat
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, time, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -256,9 +256,21 @@ class MessagePolicyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BookingExclusion:
+    """A weekly window the person never wants a meeting booked in (`thu 00:00-12:00`)."""
+
+    day: int  # 0 = Monday ... 6 = Sunday
+    end: time
+    start: time
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class PreferencesConfig:
     """Display preferences for composed mail: a top-level default, per-profile override."""
 
+    #: Weekly windows no meeting may be booked in (`booking_exclusions` in config.toml).
+    booking_exclusions: tuple[BookingExclusion, ...] = ()
     # Minimum wall-clock time (seconds) a notifying skill must sit composed
     # before `emit` (`mail.send-draft`, ...) will act on it - see issue #365.
     # `BLUMKIN_CONFIRM_COOLDOWN_SECONDS` overrides this for CI/tests only; it
@@ -266,6 +278,9 @@ class PreferencesConfig:
     confirm_cooldown_seconds: int = DEFAULT_CONFIRM_COOLDOWN_SECONDS
     font_name: str = ""
     font_size: int | None = None
+    #: The observed holidays (date and name) no meeting may be booked on (`holidays` in
+    #: config.toml, per profile: the list belongs to an employer, not to blumkin).
+    holidays: tuple[tuple[date, str], ...] = ()
     html_email: bool = True
     # Maximum age (seconds) a `calendar.get` read of a given event may be before
     # `calendar.accept` / `decline` / `tentative` / `cancel` on that same event
@@ -797,6 +812,48 @@ def _account_type(file_data: dict[str, Any]) -> str:
     )
 
 
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_EXCLUSION = re.compile(
+    r"(?P<day>[A-Za-z]{3})"
+    r"(?: +(?P<start>[0-2][0-9]:[0-5][0-9]) *- *(?P<end>[0-2][0-9]:[0-5][0-9]))?"
+)
+
+
+def _booking_exclusions(raw: Any) -> tuple[BookingExclusion, ...]:
+    """`booking_exclusions = ["thu 00:00-12:00", "fri"]`: a weekday, with an optional window."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProviderConfigError(
+            f"preferences.booking_exclusions must be a list in config.toml, got {raw!r}"
+        )
+    found: list[BookingExclusion] = []
+    for item in raw:
+        match = _EXCLUSION.fullmatch(item.strip()) if isinstance(item, str) else None
+        day = match.group("day").lower() if match else ""
+        if match is None or day not in _WEEKDAYS:
+            raise ProviderConfigError(
+                "preferences.booking_exclusions entries look like 'thu 00:00-12:00' or 'fri' "
+                f"in config.toml, got {item!r}"
+            )
+        try:
+            start = time.fromisoformat(match.group("start") or "00:00")
+            end = _window_end(match.group("end"))
+        except ValueError as exc:
+            raise ProviderConfigError(
+                f"preferences.booking_exclusions has a time out of range in config.toml, "
+                f"got {item!r}"
+            ) from exc
+        if end <= start:
+            raise ProviderConfigError(
+                f"preferences.booking_exclusions window must end after it starts, got {item!r}"
+            )
+        found.append(
+            BookingExclusion(day=_WEEKDAYS.index(day), end=end, start=start, text=item.strip())
+        )
+    return tuple(found)
+
+
 def _browser_config(file_data: dict[str, Any]) -> BrowserConfig:
     """Parse the optional top-level `[browser]` table (issues #468 and #474)."""
     raw = file_data.get("browser")
@@ -1136,6 +1193,35 @@ def _graph_timeout_seconds(file_data: dict[str, Any]) -> float:
     return DEFAULT_GRAPH_TIMEOUT_SECONDS
 
 
+_HOLIDAY = re.compile(r"(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})(?: +(?P<name>[^\x00-\x1f]{1,60}))?")
+
+
+def _holidays(raw: Any) -> tuple[tuple[date, str], ...]:
+    """`holidays = ["2026-11-11 Veterans Day", "2026-11-26"]`: an observed date, then a name."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProviderConfigError(
+            f"preferences.holidays must be a list in config.toml, got {raw!r}"
+        )
+    found: dict[date, str] = {}
+    for item in raw:
+        match = _HOLIDAY.fullmatch(item.strip()) if isinstance(item, str) else None
+        if match is None:
+            raise ProviderConfigError(
+                "preferences.holidays entries look like '2026-11-11 Veterans Day' in "
+                f"config.toml, got {item!r}"
+            )
+        try:
+            day = date.fromisoformat(match.group("date"))
+        except ValueError as exc:
+            raise ProviderConfigError(
+                f"preferences.holidays has an invalid date in config.toml, got {item!r}"
+            ) from exc
+        found[day] = (match.group("name") or "").strip()
+    return tuple(sorted(found.items()))
+
+
 def _keychain_unlock_preference(file_data: dict[str, Any]) -> str:
     """Parse ``keychain_unlock`` (issue #444); any unrecognized value is "gui"."""
     raw = file_data.get("keychain_unlock")
@@ -1263,9 +1349,11 @@ def _preferences_config(
             )
         html_email = raw_html_email
     return PreferencesConfig(
+        booking_exclusions=_booking_exclusions(merged.get("booking_exclusions")),
         confirm_cooldown_seconds=_confirm_cooldown_seconds(merged),
         font_name=str(merged.get("font_name") or "").strip(),
         font_size=_positive_int(merged.get("font_size"), key="preferences.font_size"),
+        holidays=_holidays(merged.get("holidays")),
         html_email=html_email,
         rsvp_freshness_seconds=_rsvp_freshness_seconds(merged),
     )
@@ -1666,6 +1754,13 @@ def _validate_cooldown_seconds(
             f"{floor} in config.toml, got {value!r}"
         )
     return value
+
+
+def _window_end(raw: str | None) -> time:
+    """The end of an exclusion window: no end or `24:00` is the last moment of the day."""
+    if raw is None or raw == "24:00":
+        return time.max
+    return time.fromisoformat(raw)
 
 
 def _wo1162425_scopes_enabled(file_data: dict[str, Any]) -> bool:
