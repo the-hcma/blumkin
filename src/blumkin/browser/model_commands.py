@@ -135,7 +135,6 @@ def model_flow_add(
             "add --replace to replace it"
         )
     _refuse_finalizing_clicks(model, flow)
-    _refuse_unpinned_uploads(model, flow)
     # A replaced flow keeps its place, so `model diff` shows the change and not a reordering;
     # the pages were not re-recorded, so their `recorded_at` and version stay as they were.
     flows = tuple(flow if existing.name == name else existing for existing in model.flows)
@@ -266,35 +265,6 @@ def _refuse_finalizing_clicks(model: SiteModel, flow: Flow) -> None:
                 f"Expected step {number} not to click {step.control!r}, got a control the "
                 "model records as finalizing; blumkin never submits, so hand that step to the "
                 "person with a handoff step"
-            )
-
-
-def _refuse_unpinned_uploads(model: SiteModel, flow: Flow) -> None:
-    """An upload step on a control the model records as a button must say which input (`nth`).
-
-    The page gives the file input its trigger's name (Oracle's `File Name`), so the name alone
-    can match several inputs, and a label that merely contains it another one: the step has to
-    pin the input by its position, which the run checks against the real count.
-    """
-    buttons = {
-        (page.page_id, control.name)
-        for page in model.pages
-        for control in page.controls
-        if control.kind.value == "button"
-    }
-    for number, step in enumerate(flow.steps, start=1):
-        if step.action != "upload" or step.control is None or step.nth is not None:
-            continue
-        hit = (
-            (step.page, step.control) in buttons
-            if step.page is not None
-            else any(name == step.control for _page, name in buttons)
-        )
-        if hit:
-            raise FlowSpecError(
-                f"Expected step {number} to say which input to upload to with nth=N, got none: "
-                f"the model records {step.control!r} as a button (the trigger of the file "
-                "input), so its name alone can match several inputs"
             )
 
 

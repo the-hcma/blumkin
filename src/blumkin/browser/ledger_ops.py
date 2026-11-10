@@ -808,10 +808,12 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             target = Path(os.path.join(os.getcwd(), path)) if step.bind else Path(path)
             label, field_role, recorded = _control_ref(site, step.control, step.page)
             if field_role is not None and field_role not in FIELD_ROLES:
-                # A file input is recorded under the role the page gives its trigger (a button);
-                # the upload finds the input by its label, as `browser upload` does by hand.
-                # A control recorded by its label alone (no role) keeps its whole-name match.
-                field_role, recorded = None, False
+                # A file input is recorded under the role the page gives its trigger (a button),
+                # and the upload finds the input by its label, as `browser upload` does by hand.
+                # The recorded name is the input's whole label (Oracle's `File Name`), so it is
+                # matched whole: the hidden text boxes beside the input only contain it, and
+                # `Receipt` never reaches an input named `Receipt for payroll`.
+                field_role = None
             actions.upload_task(
                 config,
                 task,
