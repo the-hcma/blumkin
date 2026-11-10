@@ -931,6 +931,10 @@ def _get_draft(service: Any, draft_id: str) -> dict[str, Any]:
         raise
 
 
+#: Drafts are listed 100 at a time; this many pages is a mailbox of 10,000 drafts.
+_DRAFT_LIST_MAX_PAGES = 100
+
+
 def _resolve_draft(service: Any, given: str) -> tuple[str, dict[str, Any]]:
     """The Gmail draft id and stored draft for an id the caller passed (issue #718).
 
@@ -943,7 +947,7 @@ def _resolve_draft(service: Any, given: str) -> tuple[str, dict[str, Any]]:
     except MailDraftNotFoundError:
         pass
     page: str | None = None
-    while True:
+    for _ in range(_DRAFT_LIST_MAX_PAGES):
         listing = execute(
             service.users().drafts().list(userId="me", maxResults=100, pageToken=page)
         )
@@ -951,9 +955,11 @@ def _resolve_draft(service: Any, given: str) -> tuple[str, dict[str, Any]]:
             if (entry.get("message") or {}).get("id") == given and entry.get("id"):
                 draft = str(entry["id"])
                 return draft, _get_draft(service, draft)
-        page = listing.get("nextPageToken")
-        if not page:
-            raise MailDraftNotFoundError(f"message not found: {given}")
+        token = listing.get("nextPageToken")
+        if not isinstance(token, str) or not token:
+            break
+        page = token
+    raise MailDraftNotFoundError(f"message not found: {given}")
 
 
 def _get_message(service: Any, message_id: str) -> dict[str, Any]:

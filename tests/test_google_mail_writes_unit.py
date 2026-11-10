@@ -448,6 +448,7 @@ def test_mail_delete_draft_missing_raises_not_found(tmp_path: Path) -> None:
     service.users.return_value.drafts.return_value.get.return_value.execute.side_effect = HttpError(
         httplib2.Response({"status": 404}), b"{}", uri="x"
     )
+    service.users.return_value.drafts.return_value.list.return_value.execute.return_value = {}
     with _patched(service), pytest.raises(MailDraftNotFoundError):
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="gone"))
 
