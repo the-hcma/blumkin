@@ -92,6 +92,7 @@ def _update_draft_via_cli(tmp_path: Path, monkeypatch, args: list[str]) -> Magic
     _signature_config(tmp_path)
     monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
     provider = MagicMock()
+    provider.mail_canonical_draft_id = None  # the Microsoft provider has one id per draft
 
     async def _update(**kwargs):
         from blumkin.config import load_config

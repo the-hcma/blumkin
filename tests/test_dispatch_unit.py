@@ -1199,18 +1199,40 @@ def test_update_by_a_gmail_message_id_restarts_the_cooldown_of_the_draft(
     assert seconds_since_composed(cfg, "msg-1") is None
 
 
-def test_a_failed_draft_id_lookup_leaves_the_id_for_the_call_to_report(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("skill_id", "method"),
+    [
+        ("mail.delete-draft", "mail_delete_draft"),
+        ("mail.send-draft", "mail_send_draft"),
+        ("mail.update-draft", "mail_update_draft"),
+    ],
+)
+def test_a_failed_draft_id_lookup_stops_the_call_instead_of_skipping_the_cooldown(
+    tmp_path, monkeypatch, skill_id: str, method: str
 ) -> None:
+    """A transient lookup failure must not fall back to the message id: the draft's cooldown
+    is recorded under its draft id, so a send by the message id would slip past the gate."""
     cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
     prov = SimpleNamespace(
-        mail_canonical_draft_id=AsyncMock(side_effect=RuntimeError("boom")),
-        mail_delete_draft=AsyncMock(return_value={"ok": True}),
+        mail_canonical_draft_id=AsyncMock(side_effect=RuntimeError("transient")),
+        **{method: AsyncMock(return_value={"ok": True})},
     )
 
-    _run("mail.delete-draft", {"id": "msg-1", "yes": True}, config=cfg, provider=prov)
+    with pytest.raises(RuntimeError, match="transient"):
+        _run(skill_id, {"id": "msg-1", "yes": True, "subject": "s"}, config=cfg, provider=prov)
 
-    assert prov.mail_delete_draft.await_args.kwargs["draft_id"] == "msg-1"
+    getattr(prov, method).assert_not_awaited()
+
+
+def test_a_provider_without_a_draft_id_resolver_keeps_the_id_it_was_given(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=0)
+    prov = _provider("mail_delete_draft")
+
+    _run("mail.delete-draft", {"id": "m-1", "yes": True}, config=cfg, provider=prov)
+
+    assert prov.mail_delete_draft.await_args.kwargs["draft_id"] == "m-1"
 
 
 @pytest.mark.parametrize(

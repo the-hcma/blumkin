@@ -276,20 +276,19 @@ async def _with_canonical_draft_id(
 ) -> dict[str, Any]:
     """`arguments` with `id` replaced by the provider's canonical draft id, when it has one.
 
-    Best-effort: a provider with a single id, a lookup that fails, or no id leaves the arguments
-    as they were, so the call itself reports the real error.
+    A provider with a single id (no resolver) or a call with no id leaves the arguments as they
+    were. A resolver that fails is not skipped: the draft's cooldown is recorded under its
+    canonical id, so falling back to the caller's id would let a send slip past the gate. The
+    error is reported before anything is sent, edited or deleted.
     """
     given = arguments.get("id")
     if not isinstance(given, str) or not given.strip():
         return arguments
-    try:
-        prov = provider if provider is not None else get_provider(config)
-        resolve = getattr(prov, "mail_canonical_draft_id", None)
-        if resolve is None:
-            return arguments
-        canonical = await resolve(draft_id=given.strip())
-    except Exception:  # noqa: BLE001 - the call itself will raise the error to report
+    prov = provider if provider is not None else get_provider(config)
+    resolve = getattr(prov, "mail_canonical_draft_id", None)
+    if resolve is None:
         return arguments
+    canonical = await resolve(draft_id=given.strip())
     return {**arguments, "id": canonical} if isinstance(canonical, str) and canonical else arguments
 
 
