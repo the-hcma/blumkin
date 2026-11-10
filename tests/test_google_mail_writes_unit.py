@@ -1436,3 +1436,18 @@ def test_an_id_that_is_neither_a_draft_nor_a_draft_message_is_not_found(tmp_path
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="m-404"))
 
     service.users.return_value.drafts.return_value.delete.assert_not_called()
+
+
+def test_a_draft_lookup_that_never_runs_out_of_pages_stops_at_the_bound(tmp_path: Path) -> None:
+    from blumkin.providers.google.mail_writes import _DRAFT_LIST_MAX_PAGES
+
+    endless = {"drafts": [{"id": "x", "message": {"id": "other"}}], "nextPageToken": "again"}
+    service = _message_id_service(pages=[])
+    lister = service.users.return_value.drafts.return_value.list
+    lister.return_value.execute.side_effect = None
+    lister.return_value.execute.return_value = endless
+    with _patched(service), pytest.raises(MailDraftNotFoundError, match="m-5"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="m-5"))
+
+    assert lister.call_count == _DRAFT_LIST_MAX_PAGES
+    service.users.return_value.drafts.return_value.delete.assert_not_called()
