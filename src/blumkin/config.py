@@ -269,12 +269,12 @@ class BookingExclusion:
 class PreferencesConfig:
     """Display preferences for composed mail: a top-level default, per-profile override."""
 
+    #: Weekly windows no meeting may be booked in (`booking_exclusions` in config.toml).
+    booking_exclusions: tuple[BookingExclusion, ...] = ()
     # Minimum wall-clock time (seconds) a notifying skill must sit composed
     # before `emit` (`mail.send-draft`, ...) will act on it - see issue #365.
     # `BLUMKIN_CONFIRM_COOLDOWN_SECONDS` overrides this for CI/tests only; it
     # is never a per-call tool argument.
-    #: Weekly windows no meeting may be booked in (`booking_exclusions` in config.toml).
-    booking_exclusions: tuple[BookingExclusion, ...] = ()
     confirm_cooldown_seconds: int = DEFAULT_CONFIRM_COOLDOWN_SECONDS
     font_name: str = ""
     font_size: int | None = None
