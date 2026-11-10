@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime
+from datetime import date, datetime, time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -579,3 +579,30 @@ def test_the_allow_option_of_both_calendar_commands_reaches_the_skill(
     assert seen["allow"] == ["weekend", "busy"]
     bad = CliRunner().invoke(main, [*args, "--allow", "lunch", "--json"])
     assert bad.exit_code == 2  # not one of the five checks
+
+
+def test_an_invitee_busy_at_the_events_current_slot_is_a_real_conflict() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    same_slot = [
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ]
+    provider = _provider(
+        [_item(busy=same_slot), _item("ana@example.com", busy=same_slot)],
+        calendar_get=AsyncMock(return_value=event),
+    )
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, with_emails=["ana@example.com"])
+
+    # only the guest's block counts: the organizer's is the event itself
+    assert [(f.check, f.who) for f in caught.value.findings] == [("busy", "ana@example.com")]
+
+
+def test_exclusion_times_out_of_range_are_a_config_error_and_24_00_ends_the_day() -> None:
+    from blumkin.config import ProviderConfigError
+
+    (whole_day,) = _booking_exclusions(["thu 00:00-24:00"])
+
+    assert whole_day.end == time.max
+    with pytest.raises(ProviderConfigError, match="out of range"):
+        _booking_exclusions(["thu 00:00-25:30"])

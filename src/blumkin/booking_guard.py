@@ -78,7 +78,8 @@ def schedule_findings(
 
     `item` is one entry of `calendar freebusy`. A missing item, an error, no working hours
     or an unknown time zone are warnings that the check was not made, never a pass. `own_slot`
-    is the event's current start and end when it is being moved: its own busy time is ignored.
+    is the event's current start and end when it is being moved: the organizer's own busy time
+    is ignored (pass it for the organizer only; an invitee busy then is a real conflict).
     """
     label = "you" if who == "you" else who
     if item is None:
@@ -174,7 +175,11 @@ async def check_booking(
             by_address = {str(item.get("schedule") or "").lower(): item for item in items}
             for who, address in people:
                 more, notes, done = schedule_findings(
-                    start, end, by_address.get(address.lower()), who=who, own_slot=own_slot
+                    start,
+                    end,
+                    by_address.get(address.lower()),
+                    who=who,
+                    own_slot=own_slot if who == "you" else None,
                 )
                 findings.extend(more)
                 warnings.extend(notes)

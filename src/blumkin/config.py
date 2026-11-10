@@ -1045,8 +1045,14 @@ def _booking_exclusions(raw: Any) -> tuple[BookingExclusion, ...]:
                 "preferences.booking_exclusions entries look like 'thu 00:00-12:00' or 'fri' "
                 f"in config.toml, got {item!r}"
             )
-        start = time.fromisoformat(match.group("start") or "00:00")
-        end = time.fromisoformat(match.group("end")) if match.group("end") else time.max
+        try:
+            start = time.fromisoformat(match.group("start") or "00:00")
+            end = _window_end(match.group("end"))
+        except ValueError as exc:
+            raise ProviderConfigError(
+                f"preferences.booking_exclusions has a time out of range in config.toml, "
+                f"got {item!r}"
+            ) from exc
         if end <= start:
             raise ProviderConfigError(
                 f"preferences.booking_exclusions window must end after it starts, got {item!r}"
@@ -1055,6 +1061,13 @@ def _booking_exclusions(raw: Any) -> tuple[BookingExclusion, ...]:
             BookingExclusion(day=_WEEKDAYS.index(day), end=end, start=start, text=item.strip())
         )
     return tuple(found)
+
+
+def _window_end(raw: str | None) -> time:
+    """The end of an exclusion window: no end or `24:00` is the last moment of the day."""
+    if raw is None or raw == "24:00":
+        return time.max
+    return time.fromisoformat(raw)
 
 
 def _holidays(raw: Any) -> tuple[tuple[date, str], ...]:
