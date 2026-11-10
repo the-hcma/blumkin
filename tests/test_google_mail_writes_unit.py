@@ -1451,3 +1451,15 @@ def test_a_draft_lookup_that_never_runs_out_of_pages_stops_at_the_bound(tmp_path
 
     assert lister.call_count == _DRAFT_LIST_MAX_PAGES
     service.users.return_value.drafts.return_value.delete.assert_not_called()
+
+
+def test_canonical_draft_id_maps_a_message_id_to_its_draft_and_keeps_a_draft_id(
+    tmp_path: Path,
+) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+    with _patched(service):
+        from_message = asyncio.run(provider.mail_canonical_draft_id(draft_id="m-5"))
+        from_draft = asyncio.run(provider.mail_canonical_draft_id(draft_id="r-9"))
+
+    assert (from_message, from_draft) == ("r-9", "r-9")

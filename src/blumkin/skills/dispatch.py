@@ -55,6 +55,11 @@ _COMPOSE_CLEAR_SKILLS: dict[str, str] = {
     "mail.send-draft": "id",
 }
 
+# Draft skills that take a draft `id` which a provider may know under two ids (Gmail shows a
+# draft's message id but acts on its draft id, issue #718). The id is made canonical before the
+# cooldown gate, so the compose record, the gate and the clear all use one identity.
+_CANONICAL_DRAFT_SKILLS = frozenset({"mail.delete-draft", "mail.send-draft", "mail.update-draft"})
+
 # Skills whose payload carries a fresh/edited ``{"draft": {"id": ...}}`` - each
 # call (re)stamps that draft's compose timestamp, so an edit right before send
 # restarts the cooldown rather than grandfathering in the original compose time.
@@ -264,6 +269,28 @@ def _apply_read_state(
             f"{skill_id} succeeded, but the read-freshness record was not saved "
             f"({type(exc).__name__})"
         )
+
+
+async def _with_canonical_draft_id(
+    arguments: dict[str, Any], config: BlumkinConfig, provider: Any | None
+) -> dict[str, Any]:
+    """`arguments` with `id` replaced by the provider's canonical draft id, when it has one.
+
+    Best-effort: a provider with a single id, a lookup that fails, or no id leaves the arguments
+    as they were, so the call itself reports the real error.
+    """
+    given = arguments.get("id")
+    if not isinstance(given, str) or not given.strip():
+        return arguments
+    try:
+        prov = provider if provider is not None else get_provider(config)
+        resolve = getattr(prov, "mail_canonical_draft_id", None)
+        if resolve is None:
+            return arguments
+        canonical = await resolve(draft_id=given.strip())
+    except Exception:  # noqa: BLE001 - the call itself will raise the error to report
+        return arguments
+    return {**arguments, "id": canonical} if isinstance(canonical, str) and canonical else arguments
 
 
 def _argkey(name: str) -> str:
@@ -586,6 +613,8 @@ async def run_skill(
     if spec is None:
         raise ValueError(f"unknown skill: {skill_id}")
 
+    if skill_id in _CANONICAL_DRAFT_SKILLS:
+        arguments = await _with_canonical_draft_id(arguments, config, provider)
     _run_gates(skill_id, spec.args, arguments, config)
 
     tz_name = arguments.get("tz")

@@ -489,6 +489,11 @@ class GoogleWorkspaceProvider:
             "before send-draft is the safety net for this provider)"
         )
 
+    async def mail_canonical_draft_id(self, *, draft_id: str) -> str:
+        return await google_mail_writes.mail_canonical_draft_id(
+            draft_id=draft_id, config=self._config
+        )
+
     async def mail_delete_draft(self, *, draft_id: str) -> dict[str, Any]:
         return await google_mail_writes.mail_delete_draft(draft_id=draft_id, config=self._config)
 

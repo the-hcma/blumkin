@@ -344,6 +344,23 @@ def _triage_batch(
     return {key: done, "count": len(done), "skipped": skipped}
 
 
+async def mail_canonical_draft_id(
+    *,
+    draft_id: str,
+    config: BlumkinConfig | None = None,
+) -> str:
+    """The Gmail draft id for an id the caller passed: a draft id or a draft's message id.
+
+    The confirm cooldown is keyed by one identity per draft, so dispatch resolves a message id
+    to the draft id before it checks, calls and records (issue #718).
+    """
+    given = draft_id.strip()
+    if not given:
+        raise ValueError("--id is required")
+    draft, _ = _resolve_draft(_gmail_service(config or load_config()), given)
+    return draft
+
+
 async def mail_delete_draft(
     *,
     draft_id: str,
