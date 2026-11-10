@@ -1046,7 +1046,7 @@ def _booking_exclusions(raw: Any) -> tuple[BookingExclusion, ...]:
                 f"in config.toml, got {item!r}"
             )
         start = time.fromisoformat(match.group("start") or "00:00")
-        end = time.fromisoformat(match.group("end") or "23:59")
+        end = time.fromisoformat(match.group("end")) if match.group("end") else time.max
         if end <= start:
             raise ProviderConfigError(
                 f"preferences.booking_exclusions window must end after it starts, got {item!r}"

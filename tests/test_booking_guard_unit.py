@@ -461,3 +461,121 @@ def test_an_event_that_cannot_be_read_is_not_waved_through() -> None:
 
     with pytest.raises(ValueError, match="could not read the event's current time"):
         _update(provider, start_raw="2026-11-10T10:00")
+
+
+# --------------------------------------------------------------------------- review follow-ups
+
+
+def _google_item(address: str, busy: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """What the Google provider returns: no availability string and no working hours."""
+    return {
+        "availability_view": None,
+        "busy": busy or [],
+        "error": None,
+        "schedule": address,
+        "timezone": None,
+        "working_hours": None,
+    }
+
+
+def test_a_free_google_schedule_is_a_result_not_an_unreadable_one() -> None:
+    found, warnings, checked = schedule_findings(
+        *_slot("2026-11-10", 10), _google_item("ana@example.com"), who="ana@example.com"
+    )
+
+    assert found == [] and checked == {"busy"}  # busy WAS checked; hours were not
+    assert warnings == ["no working hours known for ana@example.com: hours not checked"]
+
+
+def test_a_busy_google_slot_blocks_and_a_microsoft_empty_view_still_warns() -> None:
+    busy = [
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ]
+
+    found, _, _ = schedule_findings(
+        *_slot("2026-11-10", 10), _google_item("a@x.com", busy), who="a@x.com"
+    )
+    _, warnings, checked = schedule_findings(
+        *_slot("2026-11-10", 10), _item(view="", busy=None), who="ana@example.com"
+    )
+
+    assert [f.check for f in found] == ["busy"]
+    assert any("nothing usable" in w for w in warnings) and "busy" not in checked
+
+
+def test_a_google_free_slot_is_booked_with_a_warning_about_the_hours_it_could_not_see() -> None:
+    provider = _provider([_google_item("me@example.com")])
+
+    payload = _create(provider, "2026-11-10T10:00")
+
+    provider.calendar_create.assert_awaited_once()
+    assert "busy" in payload["booking_checks"]["checked"]
+    assert any("no working hours known" in w for w in payload["booking_checks"]["warnings"])
+
+
+def test_a_bare_weekday_exclusion_covers_the_whole_day_to_the_last_minute() -> None:
+    prefs = PreferencesConfig(booking_exclusions=_booking_exclusions(["fri"]))
+    last_minute = datetime(2026, 11, 13, 23, 59, tzinfo=_NY)
+
+    found = slot_findings(last_minute, datetime(2026, 11, 13, 23, 59, 30, tzinfo=_NY), prefs)
+
+    assert [f.check for f in found] == ["exclusion"]
+
+
+def test_a_date_only_start_on_an_update_is_rejected_like_it_is_on_create() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    provider = _provider([_item()], calendar_get=AsyncMock(return_value=event))
+
+    with pytest.raises(ValueError, match="date"):
+        _update(provider, start_raw="2026-11-11")
+
+
+def test_holidays_and_exclusions_load_from_a_profiles_preferences(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.config import load_config
+
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "abc"\n'
+        "[profiles.default.preferences]\n"
+        'holidays = ["2026-11-11 Veterans Day"]\n'
+        'booking_exclusions = ["thu 00:00-12:00"]\n'
+    )
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+
+    prefs = load_config().preferences
+
+    assert prefs.holidays == ((date(2026, 11, 11), "Veterans Day"),)
+    assert [(r.day, r.text) for r in prefs.booking_exclusions] == [(3, "thu 00:00-12:00")]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["calendar", "create", "--subject", "S", "--start", "2026-11-14T10:00"],
+        ["calendar", "update", "--event-id", "e1", "--subject", "S", "--yes"],
+    ],
+)
+def test_the_allow_option_of_both_calendar_commands_reaches_the_skill(
+    args: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run_skill(skill_id: str, arguments: dict[str, Any], **_: Any) -> dict[str, Any]:
+        seen.update(arguments)
+        return {"event": {"id": "e1"}}
+
+    monkeypatch.setattr("blumkin.cli.run_skill", fake_run_skill)
+    monkeypatch.setattr("blumkin.cli._load_config", lambda: _config())
+    monkeypatch.setattr("blumkin.cli._workspace", lambda: object())
+
+    result = CliRunner().invoke(main, [*args, "--allow", "weekend", "--allow", "busy", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert seen["allow"] == ["weekend", "busy"]
+    bad = CliRunner().invoke(main, [*args, "--allow", "lunch", "--json"])
+    assert bad.exit_code == 2  # not one of the five checks

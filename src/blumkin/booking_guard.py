@@ -103,7 +103,9 @@ def schedule_findings(
         checked.add("hours")
         findings.extend(hours_found)
     busy = item.get("busy")
-    if not item.get("availability_view") and not busy:
+    # Microsoft answers an unreadable mailbox with an empty availability string; Google has no
+    # such string (`None`) and answers a free person with an empty busy list, which is a result.
+    if item.get("availability_view") == "" and not busy:
         warnings.append(f"freebusy returned nothing usable for {label}: availability not checked")
     else:
         checked.add("busy")
@@ -310,6 +312,8 @@ async def _slot(
     old_start, old_end = _parse_instant(event.get("start")), _parse_instant(event.get("end"))
     if old_start is None or old_end is None:
         raise ValueError("could not read the event's current time to check the booking")
+    if kwargs.get("start_raw"):
+        reject_date_only_start(kwargs["start_raw"])  # as create does: a date is not a time
     start = (
         parse_local_datetime(kwargs["start_raw"], zone) if kwargs.get("start_raw") else old_start
     )
