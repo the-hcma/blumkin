@@ -1234,5 +1234,6 @@ def test_a_draft_skill_reports_the_draft_id_when_given_a_message_id(
 
     payload = _run_payload(skill_id, args, config=cfg, provider=prov)
 
+    assert getattr(prov, method).await_args.kwargs["draft_id"] == "r-draft"  # not the message id
     assert payload[reported] in ("r-draft", {"id": "r-draft"})
     assert args["id"] == "msg-1"  # the caller's own arguments are not rewritten
