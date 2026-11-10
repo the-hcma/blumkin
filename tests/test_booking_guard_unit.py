@@ -641,3 +641,14 @@ def test_a_different_meeting_inside_the_old_slot_is_still_a_conflict() -> None:
 
     with pytest.raises(BookingGuardError):
         _update(provider, start_raw="2026-11-10T10:15", duration="45m")
+
+
+def test_a_block_matching_the_old_start_and_the_clipped_end_is_not_the_event() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T11:00:00-05:00")
+    mixed = [  # old start, but the end of the clipped overlap: a different meeting
+        {"end": "2026-11-10T10:45:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ]
+    provider = _provider([_item(busy=mixed)], calendar_get=AsyncMock(return_value=event))
+
+    with pytest.raises(BookingGuardError):
+        _update(provider, start_raw="2026-11-10T10:15", duration="30m")

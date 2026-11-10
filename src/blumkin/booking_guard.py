@@ -296,9 +296,8 @@ def _is_event_itself(
     Microsoft reports the whole old slot; Google clips a busy block to the window asked about,
     so a move that partly overlaps the old slot shows only the overlap.
     """
-    starts = (old[0], max(old[0], new[0]))
-    stops = (old[1], min(old[1], new[1]))
-    return any(_same(begins, a) for a in starts) and any(_same(ends, b) for b in stops)
+    pairs = (old, (max(old[0], new[0]), min(old[1], new[1])))
+    return any(_same(begins, a) and _same(ends, b) for a, b in pairs)
 
 
 def _same(left: datetime, right: datetime) -> bool:
