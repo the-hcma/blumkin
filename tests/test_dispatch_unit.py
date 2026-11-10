@@ -1259,3 +1259,47 @@ def test_a_draft_skill_reports_the_draft_id_when_given_a_message_id(
     assert getattr(prov, method).await_args.kwargs["draft_id"] == "r-draft"  # not the message id
     assert payload[reported] in ("r-draft", {"id": "r-draft"})
     assert args["id"] == "msg-1"  # the caller's own arguments are not rewritten
+
+
+def test_a_resolver_that_answers_with_no_draft_id_stops_the_call(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value=""),
+        mail_send_draft=AsyncMock(return_value={"ok": True}),
+    )
+
+    with pytest.raises(ValueError, match="could not resolve the draft id"):
+        _run("mail.send-draft", {"id": "msg-1", "yes": True}, config=cfg, provider=prov)
+
+    prov.mail_send_draft.assert_not_awaited()
+
+
+def test_a_missing_yes_is_reported_before_any_draft_id_lookup(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(side_effect=RuntimeError("lookup")),
+        mail_send_draft=AsyncMock(return_value={"ok": True}),
+    )
+
+    with pytest.raises(ConsentRequiredError):
+        _run("mail.send-draft", {"id": "msg-1"}, config=cfg, provider=prov)
+
+    prov.mail_canonical_draft_id.assert_not_awaited()
+
+
+def test_a_send_by_message_id_clears_the_cooldown_record_of_its_draft(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"r-draft": stale}))
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value="r-draft"),
+        mail_send_draft=AsyncMock(return_value={"sent": "r-draft"}),
+    )
+
+    _run("mail.send-draft", {"id": "msg-1", "yes": True}, config=cfg, provider=prov)
+
+    prov.mail_send_draft.assert_awaited_once()
+    assert seconds_since_composed(cfg, "r-draft") is None
