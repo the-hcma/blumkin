@@ -652,3 +652,22 @@ def test_a_block_matching_the_old_start_and_the_clipped_end_is_not_the_event() -
 
     with pytest.raises(BookingGuardError):
         _update(provider, start_raw="2026-11-10T10:15", duration="30m")
+
+
+def test_converting_an_all_day_event_to_a_meeting_checks_the_new_slot() -> None:
+    event = _event("2026-11-10T00:00:00-05:00", "2026-11-11T00:00:00-05:00")
+    event["event"]["is_all_day"] = True
+    provider = _provider([_item()], calendar_get=AsyncMock(return_value=event))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, all_day=False, start_raw="2026-11-14T10:00")  # a Saturday
+
+    assert "weekend" in {f.check for f in caught.value.findings}
+
+
+def test_an_update_that_leaves_an_all_day_event_all_day_is_not_checked() -> None:
+    event = _event("2026-11-14T00:00:00-05:00", "2026-11-15T00:00:00-05:00")
+    event["event"]["is_all_day"] = True
+    provider = _provider([_item()], calendar_get=AsyncMock(return_value=event))
+
+    assert _update(provider, start_raw="2026-11-14T10:00") is None

@@ -328,7 +328,10 @@ async def _slot(
             event_id=kwargs["event_id"], calendar=kwargs.get("calendar"), tz_name=zone.key
         )
     ).get("event") or {}
-    if event.get("is_all_day"):
+    # `--no-all-day --start ...` turns an all-day event into a meeting: the new slot is checked,
+    # and the old all-day span is neither its own busy time nor the length of the meeting.
+    converting = bool(event.get("is_all_day")) and kwargs.get("all_day") is False
+    if event.get("is_all_day") and not (converting and kwargs.get("start_raw")):
         return None
     old_start, old_end = _parse_instant(event.get("start")), _parse_instant(event.get("end"))
     if old_start is None or old_end is None:
@@ -342,6 +345,8 @@ async def _slot(
         end = parse_local_datetime(kwargs["end_raw"], zone)
     elif kwargs.get("duration"):
         end = (start.astimezone(UTC) + parse_duration(kwargs["duration"])).astimezone(zone)
+    elif converting:
+        end = (start.astimezone(UTC) + parse_duration(_DEFAULT_DURATION)).astimezone(zone)
     else:
         end = start + (old_end - old_start)
     if invites is not None:
@@ -357,4 +362,5 @@ async def _slot(
         for person in event.get("attendees") or []
         if person.get("email")
     )
-    return start.astimezone(zone), end.astimezone(zone), unique, (old_start, old_end), on_event
+    own_slot = None if converting else (old_start, old_end)
+    return start.astimezone(zone), end.astimezone(zone), unique, own_slot, on_event
