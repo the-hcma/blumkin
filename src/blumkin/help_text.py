@@ -1380,6 +1380,7 @@ Examples:
   blumkin browser inspect time-sheet "Quantity" --role gridcell --nth 3
   blumkin browser inspect expense-report "File Name" --json
   blumkin browser inspect expense-report --requests
+  blumkin browser inspect expense-report --requests --watch 20
 
 With a label, reports facts about one element and never its value or text: its tag (and input
 type), its own role, its class names (kept only when they are plain words, at most 30), whether
@@ -1392,9 +1393,17 @@ since its last navigation from the browser's own timing buffer: the initiator (f
 xmlhttprequest, script, ...), the HTTP status when the browser exposes it, the time and a
 masked path on an allowed or sign-in host (a query, a fragment and long ids are never shown,
 and, once the task declares `allowed_hosts`, another host shows only its name). The timing
-buffer has no request method, body or header, so writes stay with BLUMKIN_BROWSER_NET_LOG.
-Read-only: nothing is clicked, typed or intercepted. Once the task declares `allowed_hosts` the
-page must be on one of them (a task that declares none is not held to a host, so declare them).
+buffer has no request method, body or header. For the method, add `--watch SECONDS` (0.1 to
+120): the page's own network events are listened to for that long, and each request made
+meanwhile is listed with its method, masked path, status and kind, so run it as a background
+command, act on the page, then read what it saw. It shows what a click or a save tries to
+send, not necessarily what reaches the server: a write that a task's strict safety net
+swallowed is answered with an empty 204 and is listed as one. A body or header is never read
+and nothing is held back, and the watch attaches without the form-submission safety net (it
+can last two minutes, and that net would swallow a form post you make by hand meanwhile).
+Read-only: nothing is clicked, typed or intercepted. Once the task
+declares `allowed_hosts` the page must be on one of them (a task that declares none is not held
+to a host, so declare them).
 """
 
 BROWSER_OPTIONS_EPILOG = """

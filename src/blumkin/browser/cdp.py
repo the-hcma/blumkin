@@ -14,6 +14,7 @@ drivers here are for synchronous callers such as the CLI.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import dataclasses
 import functools
@@ -291,6 +292,11 @@ class RequestEntry:
     ms: int
     status: int
     url: str
+    #: The HTTP method, known only for a request seen while watching (the timing buffer has none).
+    method: str = ""
+    #: For a watched request that did not complete normally: `failed`, or `pending` (started
+    #: during the watch and still unanswered when it ended).
+    outcome: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +418,8 @@ _SECRET_AUTOCOMPLETE = frozenset({"current-password", "new-password", "one-time-
 _INSPECT_CLASS = re.compile(r"[A-Za-z0-9_:-]{1,60}")
 #: The initiator kind of a resource (`fetch`, `script`, ...) as the browser spells it.
 _INSPECT_KIND = re.compile(r"[a-z]{1,20}")
+#: An HTTP method as the browser spells it; anything else is reported as `OTHER`.
+_INSPECT_METHOD = re.compile(r"[A-Z]{3,10}")
 #: A tag, input type or role `inspect` passes on: one plain lowercase token.
 _INSPECT_WORD = re.compile(r"[a-z][a-z0-9_.:-]{0,39}")
 #: Most class names `inspect` reports for one element.
@@ -420,6 +428,9 @@ _MAX_INSPECT_CLASSES = 30
 _MAX_READ_BACK = 100_000
 #: Most resources `list_requests` returns (the newest ones).
 _MAX_REQUESTS = 200
+#: Shortest and longest `watch_requests` waits, in seconds.
+MIN_WATCH_S = 0.1
+MAX_WATCH_S = 120.0
 
 #: Most matches listed when a label is ambiguous.
 MAX_LISTED_MATCHES = 12
@@ -1494,6 +1505,28 @@ class PlaywrightDriver:
                 )
             )
         return tuple(entries)
+
+    def watch_requests(self, seconds: float) -> tuple[RequestEntry, ...]:
+        """The requests the page makes during the next `seconds`: method, address, status, kind.
+
+        Listens to the page's own network events (nothing is intercepted, changed or held back,
+        and no body or header is read), so it sees what a click or a save tries to send. A write
+        that another command's safety net swallowed is answered with an empty `204` and is
+        listed as such, though it never reached the server. Only requests that began during
+        the watch count; one still unanswered when it ends is listed as `pending`. The newest
+        `_MAX_REQUESTS` are kept. Run it while something else acts on the page, and on a raw
+        driver attached without the form-submission safety net: a watch can last two minutes,
+        and that net would swallow a form post the person makes by hand meanwhile.
+        """
+        self._require_open()
+        if not MIN_WATCH_S <= seconds <= MAX_WATCH_S:
+            raise ValueError(
+                f"Expected {MIN_WATCH_S} to {MAX_WATCH_S:.0f} seconds to watch, got {seconds!r}"
+            )
+        try:
+            return _watch(self._page, seconds)
+        except _playwright_error() as exc:
+            raise self._action_error("watch the page's requests", exc) from exc
 
     def select(
         self,
@@ -3706,6 +3739,60 @@ def _sync_playwright() -> Any:
             "to restore it, then retry the browser command"
         ) from exc
     return sync_playwright()
+
+
+def _watch(page: Any, seconds: float) -> tuple[RequestEntry, ...]:
+    """Listen to `page`'s network events for `seconds` and say what its requests did.
+
+    Only a request whose start was seen counts, so one already in flight when the watch began
+    is not attributed to it; a request still unanswered at the end is reported `pending`. The
+    listeners are removed whatever happens.
+    """
+    started: dict[Any, float] = {}
+    seen: collections.deque[RequestEntry] = collections.deque(maxlen=_MAX_REQUESTS)
+
+    def on_request(request: Any) -> None:
+        started[request] = time.monotonic()
+
+    def finish(request: Any, status: int, outcome: str) -> None:
+        began = started.pop(request, None)
+        if began is not None:
+            seen.append(_watched_entry(request, status, outcome, began))
+
+    def on_response(response: Any) -> None:
+        finish(response.request, int(response.status), "")
+
+    def on_failed(request: Any) -> None:
+        finish(request, 0, "failed")
+
+    listeners = (("request", on_request), ("response", on_response), ("requestfailed", on_failed))
+    for name, callback in listeners:
+        page.on(name, callback)
+    try:
+        page.wait_for_timeout(round(seconds * 1000))
+    finally:
+        for name, callback in listeners:
+            with contextlib.suppress(_playwright_error()):
+                page.remove_listener(name, callback)
+    pending = [
+        _watched_entry(request, 0, "pending", began)
+        for request, began in sorted(started.items(), key=lambda item: item[1])
+    ]
+    return (*seen, *pending)[-_MAX_REQUESTS:]
+
+
+def _watched_entry(request: Any, status: int, outcome: str, began: float) -> RequestEntry:
+    """One watched request as an entry, its text fields kept to plain tokens."""
+    kind = str(getattr(request, "resource_type", "") or "")
+    method = str(getattr(request, "method", "") or "").upper()
+    return RequestEntry(
+        kind=kind if _INSPECT_KIND.fullmatch(kind) else "other",
+        method=method if _INSPECT_METHOD.fullmatch(method) else "OTHER",
+        ms=max(0, round((time.monotonic() - began) * 1000)),
+        outcome=outcome,
+        status=max(0, status),
+        url=str(getattr(request, "url", "")),
+    )
 
 
 def _web_host(url: str) -> str:

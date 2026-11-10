@@ -71,6 +71,7 @@ class _Raw:
             visible=True, enabled=True,
         )  # fmt: skip
         self.requests: tuple[RequestEntry, ...] = ()
+        self.watched: tuple[RequestEntry, ...] = ()
         #: What `read_field` finds.
         self.reading = FieldReading("read", "4111 1111")
         self.controls: dict[str, ControlInfo] = {}
@@ -297,6 +298,10 @@ class _Raw:
     def list_requests(self) -> tuple[RequestEntry, ...]:
         self.calls.append(("list_requests",))
         return self.requests
+
+    def watch_requests(self, seconds: float) -> tuple[RequestEntry, ...]:
+        self.calls.append(("watch_requests", seconds))
+        return self.watched
 
     def goto(self, url: str) -> None:
         self.calls.append(("goto", url))
@@ -5323,3 +5328,90 @@ def test_inspect_is_refused_on_a_sign_in_page_or_any_page_off_the_allowed_hosts(
         assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
     # Refused before the page was asked anything: nothing was inspected or listed.
     assert [call[0] for call in raw.calls if call[0] in ("inspect_field", "list_requests")] == []
+
+
+# --------------------------------------------------------------------- inspect --watch (#707)
+
+
+def test_inspect_watch_lists_the_requests_seen_with_their_method_and_masked_path(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.watched = (
+        RequestEntry("fetch", 120, 200, "https://erp.example.com/api/save?token=SECRET", "POST"),
+        RequestEntry("document", 30, 302, "https://erp.example.com/home", "GET"),
+        RequestEntry("script", 0, 0, "https://cdn.example.net/secret/path.js", "GET"),
+        RequestEntry("fetch", 4000, 0, "https://erp.example.com/api/slow", "POST", "pending"),
+    )
+
+    result = _run("browser", "inspect", "expense-report", "--requests", "--watch", "2.5")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = _json(result)
+    assert payload["watched_s"] == 2.5 and payload["count"] == 4
+    first, second, third, fourth = payload["requests"]
+    assert fourth["outcome"] == "pending" and "outcome" not in first
+    assert first == {
+        "kind": "fetch", "method": "POST", "ms": 120, "status": 200,
+        "where": "https://erp.example.com/api/save",
+    }  # fmt: skip
+    assert second["method"] == "GET" and third["where"] == "https://cdn.example.net (other host)"
+    assert "SECRET" not in result.output and "secret/path" not in result.output
+    assert ("watch_requests", 2.5) in raw.calls and ("list_requests",) not in raw.calls
+    # A watch can last two minutes: it must not hold the form-submission safety net, which
+    # would swallow a form post the person makes by hand meanwhile. It also detaches.
+    assert raw.net_installed == 0 and raw.closed == 1
+
+
+def test_inspect_watch_text_mode_shows_the_method_column(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.watched = (RequestEntry("fetch", 5, 204, "https://erp.example.com/api/save", "DELETE"),)
+
+    result = CliRunner().invoke(
+        main, ["browser", "inspect", "expense-report", "--requests", "--watch", "1"]
+    )
+
+    assert "1 request(s) in the 1.0 seconds watched" in result.output
+    assert "DELETE" in result.output and "204" in result.output
+
+
+def test_inspect_watch_needs_requests_and_stays_within_its_bounds(raw: _Raw) -> None:
+    assert _run("browser", "inspect", "expense-report", "Amount", "--watch", "2").exit_code == (
+        EXIT_USAGE
+    )
+    for too_short in ("0", "0.05"):
+        assert (
+            _run(
+                "browser", "inspect", "expense-report", "--requests", "--watch", too_short
+            ).exit_code
+            == EXIT_USAGE
+        )
+    assert _run(
+        "browser", "inspect", "expense-report", "--requests", "--watch", "121"
+    ).exit_code == (EXIT_USAGE)
+    assert [call for call in raw.calls if call[0] == "watch_requests"] == []
+
+
+def test_inspect_watch_is_refused_on_a_sign_in_page_like_the_other_modes(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize"
+
+    result = _run("browser", "inspect", "expense-report", "--requests", "--watch", "2")
+
+    assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
+    assert [call for call in raw.calls if call[0] == "watch_requests"] == []
+
+
+def test_inspect_watch_without_a_page_on_an_allowed_host_listens_to_nothing(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.url = "https://elsewhere.example.net/page"
+
+    result = _run("browser", "inspect", "expense-report", "--requests", "--watch", "2")
+
+    assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
+    assert [call for call in raw.calls if call[0] == "watch_requests"] == []
+    assert raw.net_installed == 0 and raw.closed == 1  # still detached

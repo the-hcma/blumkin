@@ -189,3 +189,59 @@ def test_a_timeout_after_the_element_was_found_is_an_error_not_a_missing_element
                 driver.inspect_field("Amount")
         finally:
             browser.close()
+
+
+def test_watch_requests_sees_a_post_made_during_the_wait_with_its_method_and_no_body() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.cdp import PlaywrightDriver
+    from blumkin.browser.discovery import resolve_browser
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(
+            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+        )
+        try:
+            page = browser.new_page()
+            served: list[tuple[str, str]] = []
+
+            def serve(route: object) -> None:
+                request = route.request  # type: ignore[attr-defined]
+                served.append((request.method, request.url))
+                route.fulfill(status=200, body="ok")  # type: ignore[attr-defined]
+
+            page.route("**/*", serve)
+            page.goto("http://example.test/start")
+            driver = PlaywrightDriver(browser=browser, page=page, playwright=None, timeout_s=2)
+            page.evaluate(
+                "setTimeout(() => { fetch('http://example.test/api/save?token=SECRET', "
+                "{method: 'POST', body: 'amount=12.50'}); "
+                "fetch('http://example.test/api/read'); }, 150)"
+            )
+
+            entries = driver.watch_requests(1.0)
+
+            by_url = {entry.url.split("?")[0]: entry for entry in entries}
+            save = by_url["http://example.test/api/save"]
+            assert (save.method, save.status, save.kind) == ("POST", 200, "fetch")
+            assert by_url["http://example.test/api/read"].method == "GET"
+            assert "12.50" not in repr(entries)  # no body is ever read
+            # Nothing was held back or changed: both requests really went out, once each.
+            assert sorted(m for m, u in served if "/api/" in u) == ["GET", "POST"]
+        finally:
+            browser.close()
+
+
+def test_watch_requests_refuses_a_time_outside_its_bounds() -> None:
+    from playwright.sync_api import sync_playwright
+
+    from blumkin.browser.cdp import MAX_WATCH_S
+
+    with sync_playwright() as playwright:
+        browser, _page_, driver = _page(playwright)
+        try:
+            for seconds in (0, 0.05, -1, MAX_WATCH_S + 1):
+                with pytest.raises(ValueError, match="seconds to watch"):
+                    driver.watch_requests(seconds)
+        finally:
+            browser.close()

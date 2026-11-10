@@ -88,6 +88,8 @@ from blumkin.browser.actions import (
 from blumkin.browser.aria_view import parse_within
 from blumkin.browser.cdp import (
     MAX_WAIT_S,
+    MAX_WATCH_S,
+    MIN_WATCH_S,
     BrowserActionError,
     BrowserAttachError,
     BrowserDependencyError,
@@ -4812,6 +4814,14 @@ def browser_options(
     is_flag=True,
     help="List the resources the page loaded since its last navigation (no label).",
 )
+@click.option(
+    "--watch",
+    "watch",
+    type=click.FloatRange(min=MIN_WATCH_S, max=MAX_WATCH_S),
+    default=None,
+    help="With --requests: listen for this many seconds instead and list the requests the "
+    "page makes, with their method (run it as a background command while something acts).",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_inspect(
@@ -4825,11 +4835,14 @@ def browser_inspect(
     nth: int | None,
     role: str | None,
     requests: bool,
+    watch: float | None,
 ) -> None:
     """Facts about one element (class names, visibility, state) or the page's resources."""
     _require_frame_for_host(frame, host)
     if requests == (label is not None):
         raise click.UsageError("give a LABEL to inspect, or --requests (not both, not neither)")
+    if watch is not None and not requests:
+        raise click.UsageError("--watch needs --requests")
     as_json = _as_json(ctx, as_json_flag)
     try:
         payload = inspect_task(
@@ -4842,6 +4855,7 @@ def browser_inspect(
             nth=nth,
             requests=requests,
             role=role,
+            watch=watch,
         )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
@@ -4849,10 +4863,16 @@ def browser_inspect(
         emit_json(payload)
         return
     if payload.get("mode") == "requests":
-        lines = [f"{task}: {payload['count']} resource(s) loaded since the last navigation"]
+        watched = payload.get("watched_s")
+        lines = [
+            f"{task}: {payload['count']} request(s) in the {watched} seconds watched"
+            if watched is not None
+            else f"{task}: {payload['count']} resource(s) loaded since the last navigation"
+        ]
         lines.extend(
-            f"  {entry['kind']:<14} {entry['status'] or '-':>4} {entry['ms']:>5} ms  "
-            f"{sanitize_terminal(entry['where'])}"
+            f"  {entry.get('method', ''):<7} {entry['kind']:<14} "
+            f"{entry.get('outcome') or entry['status'] or '-':>7} "
+            f"{entry['ms']:>5} ms  {sanitize_terminal(entry['where'])}"
             for entry in payload["requests"]
         )
         emit_lines(lines)
