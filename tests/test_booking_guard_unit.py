@@ -895,3 +895,16 @@ def test_check_is_not_ok_when_the_availability_lookup_itself_fails() -> None:
 
     assert report["ok"] is False
     assert any("could not read availability" in w for w in report["warnings"])
+
+
+def test_check_human_output_strips_terminal_control_characters_but_json_is_untouched() -> None:
+    from blumkin.skills.calendar import format_slot_check_human
+
+    nasty = "ana\x1b[31m@example.com"
+    provider = _provider([_item(), _item(nasty, error="boom\x1b]0;owned\x07")])
+    report = _check(provider, "2026-11-10T10:00", with_emails=[nasty])
+
+    text = "\n".join(format_slot_check_human(report))
+
+    assert "\x1b" not in text and "\x07" not in text
+    assert any("\x1b" in w for w in report["warnings"])  # the JSON payload is left as it is
