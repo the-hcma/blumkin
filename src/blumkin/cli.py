@@ -255,6 +255,7 @@ from blumkin.skills.calendar import (
     format_calendar_get_human,
     format_calendar_list_human,
     format_freebusy_human,
+    format_slot_check_human,
     format_suggest_human,
     format_today_human,
     format_view_human,
@@ -7157,6 +7158,51 @@ def calendar_freebusy_cmd(
             "tz": _tz_name(ctx, tz_flag),
         },
         human=format_freebusy_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@calendar.command("check", epilog=help_text.CALENDAR_CHECK_EPILOG)
+@click.option(
+    "--start",
+    "start_raw",
+    required=True,
+    help="Local start of the time to propose, YYYY-MM-DDTHH:MM.",
+)
+@click.option("--duration", default=None, help="Length, e.g. 30m, 1h (default 30m).")
+@click.option(
+    "--with",
+    "with_emails",
+    multiple=True,
+    default=(),
+    help="Each person the time is proposed to; repeat once per person (you are always included).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.option("--tz", "tz_flag", default=None, help="IANA timezone (default from config).")
+@click.pass_context
+def calendar_check_cmd(
+    ctx: click.Context,
+    start_raw: str,
+    duration: str | None,
+    with_emails: tuple[str, ...],
+    as_json_flag: bool,
+    tz_flag: str | None,
+) -> None:
+    """Check a time before proposing it in a mail or chat message.
+
+    Reads only and books nothing: weekend, holidays, excluded windows, working hours and busy
+    time for you and each --with person. Findings are in the result, not an error.
+    """
+    _dispatch(
+        ctx,
+        "calendar.check",
+        {
+            "start": start_raw,
+            "duration": duration,
+            "with": list(with_emails),
+            "tz": _tz_name(ctx, tz_flag),
+        },
+        human=format_slot_check_human,
         as_json_flag=as_json_flag,
     )
 

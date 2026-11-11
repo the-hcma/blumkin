@@ -1649,6 +1649,20 @@ non-default calendar (an ambiguous name is a usage error - use the id).
 Read-only, no extra scope.
 """
 
+CALENDAR_CHECK_EPILOG = """
+Examples:
+
+\b
+  blumkin calendar check --start "2026-11-12T10:00" --duration 30m --with sam@example.com --json
+
+Run this for every time you are about to propose in a mail or chat message. It runs the same
+checks as the booking guard on `calendar create` and `calendar update` - weekend, the profile's
+holidays and excluded windows, working hours and busy time for you and for each --with person in
+their own time zone - and books nothing. It exits 0 with the findings and warnings in the result
+(`ok` is false when there are any); a person whose schedule could not be read is a warning, never
+a pass. Pick another time when it reports findings.
+"""
+
 CALENDAR_FREEBUSY_EPILOG = """
 Example:
 

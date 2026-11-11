@@ -41,6 +41,17 @@ _SAME_SLOT = timedelta(minutes=1)
 
 
 @dataclass(frozen=True, slots=True)
+class Assessment:
+    """What the checks found for one slot: its bounds, findings, warnings and the checks run."""
+
+    checked: tuple[str, ...]
+    end: datetime
+    findings: list[Finding]
+    start: datetime
+    warnings: list[str]
+
+
+@dataclass(frozen=True, slots=True)
 class Finding:
     """One reason a slot should not be booked, named by the check that found it."""
 
@@ -139,20 +150,10 @@ def slot_findings(start: datetime, end: datetime, prefs: PreferencesConfig) -> l
     return findings
 
 
-async def check_booking(
-    provider: Any,
-    config: BlumkinConfig,
-    skill_id: str,
-    kwargs: dict[str, Any],
-    arguments: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Check the slot a `calendar create` / `calendar update` is about to book.
-
-    Returns the report to attach to the result (`checked`, `allowed`, `warnings`), or None when
-    the call books no meeting time. Raises :class:`BookingGuardError` when a finding is not
-    allowed by `--allow`.
-    """
-    allowed = allowed_checks(arguments.get("allow"))
+async def assess_slot(
+    provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
+) -> Assessment | None:
+    """Run every check on the slot a call books or is asked about; None when it has no slot."""
     slot = await _slot(provider, config, skill_id, kwargs)
     if slot is None:
         return None
@@ -185,13 +186,58 @@ async def check_booking(
                 findings.extend(more)
                 warnings.extend(notes)
                 checked |= done
-    blocking = [finding for finding in findings if finding.check not in allowed]
+    return Assessment(tuple(sorted(checked)), end, findings, start, warnings)
+
+
+async def check_booking(
+    provider: Any,
+    config: BlumkinConfig,
+    skill_id: str,
+    kwargs: dict[str, Any],
+    arguments: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Check the slot a `calendar create` / `calendar update` is about to book.
+
+    Returns the report to attach to the result (`checked`, `allowed`, `warnings`), or None when
+    the call books no meeting time. Raises :class:`BookingGuardError` when a finding is not
+    allowed by `--allow`.
+    """
+    allowed = allowed_checks(arguments.get("allow"))
+    assessment = await assess_slot(provider, config, skill_id, kwargs)
+    if assessment is None:
+        return None
+    blocking = [finding for finding in assessment.findings if finding.check not in allowed]
     if blocking:
-        raise BookingGuardError(blocking, warnings=warnings)
+        raise BookingGuardError(blocking, warnings=assessment.warnings)
     return {
-        "allowed": [finding.text() for finding in findings],
-        "checked": sorted(checked),
-        "warnings": warnings,
+        "allowed": [finding.text() for finding in assessment.findings],
+        "checked": list(assessment.checked),
+        "warnings": assessment.warnings,
+    }
+
+
+async def slot_report(
+    provider: Any, config: BlumkinConfig, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """`calendar check`: every finding and warning for a slot, books nothing, never refuses.
+
+    An agent runs it for each time it is about to propose in a mail or chat message (issue #720).
+    """
+    assessment = await assess_slot(provider, config, "calendar.check", kwargs)
+    if assessment is None:
+        raise ValueError("no time zone to read the slot in: pass --tz or set default_tz")
+    return {
+        "checked": list(assessment.checked),
+        "findings": [
+            {"check": f.check, "message": f.message, "who": f.who} for f in assessment.findings
+        ],
+        "ok": not assessment.findings and not assessment.warnings,
+        "slot": {
+            "end": assessment.end.isoformat(),
+            "start": assessment.start.isoformat(),
+            "timezone": str(assessment.start.tzinfo),
+        },
+        "warnings": assessment.warnings,
     }
 
 
@@ -318,6 +364,14 @@ async def _slot(
     if not zone_name:
         return None  # no zone to read the slot in: the provider refuses the call itself
     zone = ZoneInfo(zone_name)
+    if skill_id == "calendar.check":
+        reject_date_only_start(kwargs["start_raw"])
+        start = parse_local_datetime(kwargs["start_raw"], zone)
+        length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
+        own = {config.email.lower()} if config.email else set()
+        guests = [str(e) for e in kwargs.get("with_emails") or [] if str(e).lower() not in own]
+        end = (start.astimezone(UTC) + length).astimezone(zone)
+        return start, end, list(dict.fromkeys(guests)), None, frozenset()
     if skill_id == "calendar.create":
         if kwargs.get("all_day") or not kwargs.get("start_raw"):
             return None

@@ -496,6 +496,7 @@ _CONSENT = {
     "auth.status": (False, False),
     "calendar.accept": (True, True),
     "calendar.cancel": (True, True),
+    "calendar.check": (False, False),
     "calendar.create": (True, False),
     "calendar.decline": (True, True),
     "calendar.freebusy": (False, False),

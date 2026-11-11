@@ -108,6 +108,7 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     # --tz: `tz_name` where the provider method takes it; consumed (folded into a
     # tz-aware datetime) on the range/search verbs.
     ("calendar.accept", "--tz"): "tz_name",
+    ("calendar.check", "--tz"): "tz_name",
     ("calendar.create", "--tz"): "tz_name",
     ("calendar.decline", "--tz"): "tz_name",
     ("calendar.get", "--tz"): "tz_name",
@@ -121,6 +122,7 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("mail.list", "--tz"): None,
     ("mail.search", "--tz"): None,
     # --with: attendee emails vs a display name to resolve.
+    ("calendar.check", "--with"): "with_emails",
     ("calendar.update", "--with"): "with_emails",
     ("calendar.freebusy", "--with"): "with_emails",
     ("calendar.suggest", "--with"): "with_emails",
@@ -131,6 +133,7 @@ _ARG_PARAM: dict[tuple[str, str], str | None] = {
     ("chat.last", "--with"): "with_name",
     # calendar create/update take the start/end strings raw (the skill parses them);
     # calendar view folds --from/--to into a [start, end) datetime pair.
+    ("calendar.check", "--start"): "start_raw",
     ("calendar.create", "--start"): "start_raw",
     ("calendar.update", "--start"): "start_raw",
     ("calendar.update", "--end"): "end_raw",
@@ -206,6 +209,7 @@ _ARG_COERCE: dict[tuple[str, str], str] = {
     ("calendar.today", "--date"): "date",
     ("calendar.view", "--from"): "local_midnight",
     ("calendar.view", "--to"): "local_midnight",
+    ("calendar.check", "--start"): "raw",
     ("calendar.create", "--start"): "raw",
     ("calendar.create", "--no-teams"): "negate_flag",
     ("calendar.update", "--start"): "raw",
@@ -227,6 +231,7 @@ _ARG_COERCE: dict[tuple[str, str], str] = {
     ("mail.search", "--until"): "local_datetime",
     ("mail.auto-reply", "--start"): "date",
     ("mail.auto-reply", "--until"): "date",
+    ("calendar.check", "--with"): "list",
     ("calendar.create", "--allow"): "list",
     ("calendar.update", "--allow"): "list",
     ("calendar.update", "--with"): "list",
@@ -331,6 +336,30 @@ SKILLS: list[SkillSpec] = [
             {"name": "--event-id", "required": True, "type": "string"},
             {"name": "--calendar", "required": False, "type": "string"},
             {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
+        id="calendar.check",
+        cli=["blumkin", "calendar", "check"],
+        summary=(
+            "Check a time before proposing it in a mail or chat: weekend, holiday, excluded "
+            "window, working hours and busy time for you and the people in --with. Reads only "
+            "and books nothing (issue #720)"
+        ),
+        mutates=False,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--start", "required": True, "type": "datetime"},
+            {"name": "--duration", "required": False, "type": "duration"},
+            {
+                "name": "--with",
+                "required": False,
+                "type": "email",
+                "multiple": True,
+                "note": "the people the time is proposed to; you are always included",
+            },
+            {"name": "--tz", "required": False, "type": "iana_tz"},
         ],
     ),
     SkillSpec(

@@ -18,6 +18,7 @@ from blumkin.booking_guard import (
     check_booking,
     schedule_findings,
     slot_findings,
+    slot_report,
 )
 from blumkin.config import BookingExclusion, PreferencesConfig, _booking_exclusions, _holidays
 from blumkin.providers.kind import ProviderKind
@@ -715,3 +716,145 @@ def test_the_refusal_text_carries_the_warnings_about_what_was_not_checked() -> N
     error = BookingGuardError([Finding("holiday", "x")], warnings=["could not read availability"])
 
     assert "not checked: could not read availability" in str(error)
+
+
+# --------------------------------------------------------------------------- calendar check (#720)
+
+
+def _check(provider: Any, start: str, **extra: Any) -> dict[str, Any]:
+    kwargs = {"start_raw": start, "tz_name": "America/New_York", **extra}
+    return asyncio.run(slot_report(provider, _config(), kwargs))
+
+
+def test_check_reports_a_clear_slot_as_ok_with_what_was_checked() -> None:
+    report = _check(_provider([_item()]), "2026-11-10T10:00")
+
+    assert report["ok"] is True and report["findings"] == [] and report["warnings"] == []
+    assert set(report["checked"]) >= {"busy", "exclusion", "holiday", "hours", "weekend"}
+    assert report["slot"]["start"].startswith("2026-11-10T10:00")
+    assert report["slot"]["end"].startswith("2026-11-10T10:30")  # the 30m default
+
+
+def test_check_reports_every_finding_and_never_refuses() -> None:
+    report = _check(_provider([_item()]), "2026-11-14T10:00")  # a Saturday
+
+    assert report["ok"] is False
+    assert {f["check"] for f in report["findings"]} >= {"weekend", "hours"}
+
+
+def test_check_reports_a_busy_guest_by_address_and_asks_freebusy_for_both_people() -> None:
+    busy = [
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ]
+    provider = _provider([_item(), _item("ana@example.com", busy=busy)])
+
+    report = _check(provider, "2026-11-10T10:00", with_emails=["ana@example.com", "ME@example.com"])
+
+    assert [(f["check"], f["who"]) for f in report["findings"]] == [("busy", "ana@example.com")]
+    asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
+    assert asked == ["me@example.com", "ana@example.com"]  # you once, the guest once
+
+
+def test_check_does_not_call_a_guest_free_when_their_schedule_could_not_be_read() -> None:
+    provider = _provider([_item(), _item("ana@example.com", error="no access")])
+
+    report = _check(provider, "2026-11-10T10:00", with_emails=["ana@example.com"])
+
+    assert report["ok"] is False and report["findings"] == []
+    assert any("ana@example.com" in w for w in report["warnings"])
+
+
+def test_check_uses_the_duration_and_rejects_a_date_only_start_and_a_missing_zone() -> None:
+    report = _check(_provider([_item()]), "2026-11-10T10:00", duration="2h")
+    assert report["slot"]["end"].startswith("2026-11-10T12:00")
+
+    with pytest.raises(ValueError, match="date"):
+        _check(_provider([_item()]), "2026-11-10")
+    with pytest.raises(ValueError, match="no time zone"):
+        asyncio.run(
+            slot_report(
+                _provider([_item()]),
+                _config(default_tz=""),
+                {"start_raw": "2026-11-10T10:00", "tz_name": None},
+            )
+        )
+
+
+def test_check_books_nothing() -> None:
+    provider = _provider([_item()])
+
+    _check(provider, "2026-11-10T10:00")
+
+    provider.calendar_create.assert_not_awaited()
+
+
+def test_check_human_output_names_the_verdict_the_findings_and_what_was_not_checked() -> None:
+    from blumkin.skills.calendar import format_slot_check_human
+
+    provider = _provider([_item(), _item("ana@example.com", error="no access")])
+    report = _check(provider, "2026-11-14T10:00", with_emails=["ana@example.com"])
+
+    text = "\n".join(format_slot_check_human(report))
+
+    assert "NOT clear to propose" in text and "weekend:" in text and "not checked:" in text
+    clear = "\n".join(format_slot_check_human(_check(_provider([_item()]), "2026-11-10T10:00")))
+    assert "OK to propose" in clear
+
+
+def test_the_check_command_reaches_the_skill_with_its_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    seen: dict[str, Any] = {}
+
+    async def fake_run_skill(skill_id: str, arguments: dict[str, Any], **_: Any) -> dict[str, Any]:
+        seen.update({"skill": skill_id, **arguments})
+        return {
+            "checked": ["weekend"],
+            "findings": [],
+            "ok": True,
+            "slot": {"end": "e", "start": "s", "timezone": "America/New_York"},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("blumkin.cli.run_skill", fake_run_skill)
+    monkeypatch.setattr("blumkin.cli._load_config", lambda: _config())
+    monkeypatch.setattr("blumkin.cli._workspace", lambda: object())
+
+    result = CliRunner().invoke(
+        main,
+        ["calendar", "check", "--start", "2026-11-12T10:00", "--duration", "1h",
+         "--with", "ana@example.com", "--with", "bo@example.com", "--json"],
+    )  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    assert seen["skill"] == "calendar.check" and seen["duration"] == "1h"
+    assert seen["start"] == "2026-11-12T10:00" and seen["with"] == [
+        "ana@example.com",
+        "bo@example.com",
+    ]
+
+
+def test_both_providers_hand_calendar_check_to_the_shared_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.providers.google_provider import GoogleWorkspaceProvider
+    from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
+
+    seen: list[dict[str, Any]] = []
+
+    async def fake_report(provider: Any, config: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+        seen.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("blumkin.booking_guard.slot_report", fake_report)
+    for cls in (GoogleWorkspaceProvider, MicrosoftWorkspaceProvider):
+        provider = cls.__new__(cls)
+        provider._config = _config()
+        asyncio.run(provider.calendar_check(start_raw="2026-11-10T10:00", with_emails=("a@x.com",)))
+
+    assert [k["with_emails"] for k in seen] == [["a@x.com"], ["a@x.com"]]
+    assert all(k["start_raw"] == "2026-11-10T10:00" for k in seen)
