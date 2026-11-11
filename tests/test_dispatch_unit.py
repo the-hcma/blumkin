@@ -1158,3 +1158,148 @@ def test_an_unknown_field_suggests_the_closest_valid_names(
         assert "did you mean" not in head
     else:
         assert head.endswith("(did you mean " + " or ".join(repr(n) for n in suggested) + "?)")
+
+
+def test_send_by_a_gmail_message_id_still_waits_out_the_cooldown_of_its_draft(
+    tmp_path, monkeypatch
+) -> None:
+    """Gmail lists a draft by its message id but composes it under the draft id (issue #718)."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    _run(
+        "mail.draft",
+        {"to": ["a@x.com"], "subject": "s"},
+        config=cfg,
+        provider=SimpleNamespace(mail_draft=AsyncMock(return_value={"draft": {"id": "r-draft"}})),
+    )
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value="r-draft"),
+        mail_send_draft=AsyncMock(return_value={"ok": True}),
+    )
+
+    with pytest.raises(EmitCooldownError):
+        _run("mail.send-draft", {"id": "msg-1", "yes": True}, config=cfg, provider=prov)
+
+    prov.mail_canonical_draft_id.assert_awaited_once_with(draft_id="msg-1")
+    prov.mail_send_draft.assert_not_awaited()
+
+
+def test_update_by_a_gmail_message_id_restarts_the_cooldown_of_the_draft(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value="r-draft"),
+        mail_update_draft=AsyncMock(return_value={"draft": {"id": "r-draft"}}),
+    )
+
+    _run("mail.update-draft", {"id": "msg-1", "subject": "s"}, config=cfg, provider=prov)
+
+    assert prov.mail_update_draft.await_args.kwargs["draft_id"] == "r-draft"
+    assert seconds_since_composed(cfg, "r-draft") is not None
+    assert seconds_since_composed(cfg, "msg-1") is None
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "method"),
+    [
+        ("mail.delete-draft", "mail_delete_draft"),
+        ("mail.send-draft", "mail_send_draft"),
+        ("mail.update-draft", "mail_update_draft"),
+    ],
+)
+def test_a_failed_draft_id_lookup_stops_the_call_instead_of_skipping_the_cooldown(
+    tmp_path, monkeypatch, skill_id: str, method: str
+) -> None:
+    """A transient lookup failure must not fall back to the message id: the draft's cooldown
+    is recorded under its draft id, so a send by the message id would slip past the gate."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(side_effect=RuntimeError("transient")),
+        **{method: AsyncMock(return_value={"ok": True})},
+    )
+
+    with pytest.raises(RuntimeError, match="transient"):
+        _run(skill_id, {"id": "msg-1", "yes": True, "subject": "s"}, config=cfg, provider=prov)
+
+    getattr(prov, method).assert_not_awaited()
+
+
+def test_a_provider_without_a_draft_id_resolver_keeps_the_id_it_was_given(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=0)
+    prov = _provider("mail_delete_draft")
+
+    _run("mail.delete-draft", {"id": "m-1", "yes": True}, config=cfg, provider=prov)
+
+    assert prov.mail_delete_draft.await_args.kwargs["draft_id"] == "m-1"
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "method", "result", "reported"),
+    [
+        ("mail.delete-draft", "mail_delete_draft", {"deleted": "r-draft"}, "deleted"),
+        ("mail.send-draft", "mail_send_draft", {"sent": "r-draft"}, "sent"),
+        ("mail.update-draft", "mail_update_draft", {"draft": {"id": "r-draft"}}, "draft"),
+    ],
+)
+def test_a_draft_skill_reports_the_draft_id_when_given_a_message_id(
+    tmp_path, monkeypatch, skill_id: str, method: str, result: dict[str, Any], reported: str
+) -> None:
+    """The result carries the stable draft id, as `mail draft` and `mail reply` already do."""
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=0)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value="r-draft"),
+        **{method: AsyncMock(return_value=result)},
+    )
+    args: dict[str, Any] = {"id": "msg-1", "yes": True, "subject": "s"}
+
+    payload = _run_payload(skill_id, args, config=cfg, provider=prov)
+
+    assert getattr(prov, method).await_args.kwargs["draft_id"] == "r-draft"  # not the message id
+    assert payload[reported] in ("r-draft", {"id": "r-draft"})
+    assert args["id"] == "msg-1"  # the caller's own arguments are not rewritten
+
+
+def test_a_resolver_that_answers_with_no_draft_id_stops_the_call(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value=""),
+        mail_send_draft=AsyncMock(return_value={"ok": True}),
+    )
+
+    with pytest.raises(ValueError, match="could not resolve the draft id"):
+        _run("mail.send-draft", {"id": "msg-1", "yes": True}, config=cfg, provider=prov)
+
+    prov.mail_send_draft.assert_not_awaited()
+
+
+def test_a_missing_yes_is_reported_before_any_draft_id_lookup(tmp_path, monkeypatch) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(side_effect=RuntimeError("lookup")),
+        mail_send_draft=AsyncMock(return_value={"ok": True}),
+    )
+
+    with pytest.raises(ConsentRequiredError):
+        _run("mail.send-draft", {"id": "msg-1"}, config=cfg, provider=prov)
+
+    prov.mail_canonical_draft_id.assert_not_awaited()
+
+
+def test_a_send_by_message_id_clears_the_cooldown_record_of_its_draft(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = _cooldown_cfg(tmp_path, monkeypatch, cooldown_seconds=60)
+    cfg.compose_state_path.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    cfg.compose_state_path.write_text(json.dumps({"r-draft": stale}))
+    prov = SimpleNamespace(
+        mail_canonical_draft_id=AsyncMock(return_value="r-draft"),
+        mail_send_draft=AsyncMock(return_value={"sent": "r-draft"}),
+    )
+
+    _run("mail.send-draft", {"id": "msg-1", "yes": True}, config=cfg, provider=prov)
+
+    prov.mail_send_draft.assert_awaited_once()
+    assert seconds_since_composed(cfg, "r-draft") is None

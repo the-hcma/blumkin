@@ -448,6 +448,7 @@ def test_mail_delete_draft_missing_raises_not_found(tmp_path: Path) -> None:
     service.users.return_value.drafts.return_value.get.return_value.execute.side_effect = HttpError(
         httplib2.Response({"status": 404}), b"{}", uri="x"
     )
+    service.users.return_value.drafts.return_value.list.return_value.execute.return_value = {}
     with _patched(service), pytest.raises(MailDraftNotFoundError):
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="gone"))
 
@@ -1368,3 +1369,97 @@ def _service(
     }
     users.getProfile.return_value.execute.return_value = {"emailAddress": profile_email}
     return service
+
+
+def _message_id_service(*, pages: list[dict[str, Any]]) -> MagicMock:
+    """A mailbox where `drafts.get` knows only the draft id `r-9`, not the message id `m-5`."""
+    service = _service(get_result=_raw_draft(subject="Re: hi", to="ada@example.com"))
+    drafts = service.users.return_value.drafts.return_value
+
+    def get(*, userId: str, id: str, format: str) -> MagicMock:  # noqa: A002, N803
+        call = MagicMock()
+        if id == "r-9":
+            call.execute.return_value = _raw_draft(subject="Re: hi", to="ada@example.com")
+        else:
+            call.execute.side_effect = HttpError(httplib2.Response({"status": 404}), b"{}", uri="x")
+        return call
+
+    drafts.get.side_effect = get
+    drafts.list.return_value.execute.side_effect = pages
+    return service
+
+
+_DRAFT_PAGES = [
+    {"drafts": [{"id": "other", "message": {"id": "m-1"}}], "nextPageToken": "p2"},
+    {"drafts": [{"id": "r-9", "message": {"id": "m-5"}}]},
+]
+
+
+def test_delete_draft_given_a_message_id_deletes_the_draft_behind_it(tmp_path: Path) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    with _patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="m-5")
+        )
+
+    assert payload == {"deleted": "m-5"}
+    service.users.return_value.drafts.return_value.delete.assert_called_once_with(
+        userId="me", id="r-9"
+    )
+
+
+def test_update_draft_given_a_message_id_patches_the_draft_behind_it(tmp_path: Path) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    with _patched(service):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).mail_update_draft(
+                draft_id="m-5", subject="New subject"
+            )
+        )
+
+    assert service.users.return_value.drafts.return_value.update.call_args.kwargs["id"] == "r-9"
+
+
+def test_send_draft_given_a_message_id_sends_the_draft_behind_it(tmp_path: Path) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    with _patched(service):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_send_draft(draft_id="m-5"))
+
+    service.users.return_value.drafts.return_value.send.assert_called_once_with(
+        userId="me", body={"id": "r-9"}
+    )
+
+
+def test_an_id_that_is_neither_a_draft_nor_a_draft_message_is_not_found(tmp_path: Path) -> None:
+    service = _message_id_service(pages=[{"drafts": [{"id": "r-9", "message": {"id": "m-5"}}]}])
+    with _patched(service), pytest.raises(MailDraftNotFoundError, match="m-404"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="m-404"))
+
+    service.users.return_value.drafts.return_value.delete.assert_not_called()
+
+
+def test_a_draft_lookup_that_never_runs_out_of_pages_stops_at_the_bound(tmp_path: Path) -> None:
+    from blumkin.providers.google.mail_writes import _DRAFT_LIST_MAX_PAGES
+
+    endless = {"drafts": [{"id": "x", "message": {"id": "other"}}], "nextPageToken": "again"}
+    service = _message_id_service(pages=[])
+    lister = service.users.return_value.drafts.return_value.list
+    lister.return_value.execute.side_effect = None
+    lister.return_value.execute.return_value = endless
+    with _patched(service), pytest.raises(MailDraftNotFoundError, match="m-5"):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).mail_delete_draft(draft_id="m-5"))
+
+    assert lister.call_count == _DRAFT_LIST_MAX_PAGES
+    service.users.return_value.drafts.return_value.delete.assert_not_called()
+
+
+def test_canonical_draft_id_maps_a_message_id_to_its_draft_and_keeps_a_draft_id(
+    tmp_path: Path,
+) -> None:
+    service = _message_id_service(pages=list(_DRAFT_PAGES))
+    provider = GoogleWorkspaceProvider(_cfg(tmp_path))
+    with _patched(service):
+        from_message = asyncio.run(provider.mail_canonical_draft_id(draft_id="m-5"))
+        from_draft = asyncio.run(provider.mail_canonical_draft_id(draft_id="r-9"))
+
+    assert (from_message, from_draft) == ("r-9", "r-9")

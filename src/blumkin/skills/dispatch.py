@@ -55,6 +55,11 @@ _COMPOSE_CLEAR_SKILLS: dict[str, str] = {
     "mail.send-draft": "id",
 }
 
+# Draft skills that take a draft `id` which a provider may know under two ids (Gmail shows a
+# draft's message id but acts on its draft id, issue #718). The id is made canonical before the
+# cooldown gate, so the compose record, the gate and the clear all use one identity.
+_CANONICAL_DRAFT_SKILLS = frozenset({"mail.delete-draft", "mail.send-draft", "mail.update-draft"})
+
 # Skills whose payload carries a fresh/edited ``{"draft": {"id": ...}}`` - each
 # call (re)stamps that draft's compose timestamp, so an edit right before send
 # restarts the cooldown rather than grandfathering in the original compose time.
@@ -264,6 +269,29 @@ def _apply_read_state(
             f"{skill_id} succeeded, but the read-freshness record was not saved "
             f"({type(exc).__name__})"
         )
+
+
+async def _with_canonical_draft_id(
+    arguments: dict[str, Any], config: BlumkinConfig, provider: Any | None
+) -> dict[str, Any]:
+    """`arguments` with `id` replaced by the provider's canonical draft id, when it has one.
+
+    A provider with a single id (no resolver) or a call with no id leaves the arguments as they
+    were. A resolver that fails, or answers with no id, is not skipped: the draft's cooldown is
+    recorded under its canonical id, so falling back to the caller's id would let a send slip
+    past the gate. The error is reported before anything is sent, edited or deleted.
+    """
+    given = arguments.get("id")
+    if not isinstance(given, str) or not given.strip():
+        return arguments
+    prov = provider if provider is not None else get_provider(config)
+    resolve = getattr(prov, "mail_canonical_draft_id", None)
+    if resolve is None:
+        return arguments
+    canonical = await resolve(draft_id=given.strip())
+    if not isinstance(canonical, str) or not canonical:
+        raise ValueError(f"could not resolve the draft id for {given.strip()!r}")
+    return {**arguments, "id": canonical}
 
 
 def _argkey(name: str) -> str:
@@ -561,6 +589,9 @@ def _run_gates(
                 "--yes is required for this command", hint=_YES_HINT_TRANSCRIPTION
             )
 
+
+def _run_late_gates(skill_id: str, arguments: dict[str, Any], config: BlumkinConfig) -> None:
+    """The gates keyed by an id, run once the cheap gates passed and a draft id is canonical."""
     # confirm cooldown (issue #365) - only reachable once --yes/confirm passed above.
     _cooldown_gate(skill_id, arguments, config)
     # RSVP/cancel freshness (issue #365) - same reachability precondition.
@@ -587,6 +618,9 @@ async def run_skill(
         raise ValueError(f"unknown skill: {skill_id}")
 
     _run_gates(skill_id, spec.args, arguments, config)
+    if skill_id in _CANONICAL_DRAFT_SKILLS:
+        arguments = await _with_canonical_draft_id(arguments, config, provider)
+    _run_late_gates(skill_id, arguments, config)
 
     tz_name = arguments.get("tz")
     kwargs: dict[str, Any] = {}
