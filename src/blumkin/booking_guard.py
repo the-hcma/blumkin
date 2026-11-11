@@ -42,8 +42,13 @@ _SAME_SLOT = timedelta(minutes=1)
 
 @dataclass(frozen=True, slots=True)
 class Assessment:
-    """What the checks found for one slot: its bounds, findings, warnings and the checks run."""
+    """What the checks found for one slot: its bounds, findings, warnings and the checks run.
 
+    `blocking_warnings` are the warnings that mean someone's busy time was not read (they are
+    also in `warnings`); a warning that only says working hours are unknown is not one of them.
+    """
+
+    blocking_warnings: list[str]
     checked: tuple[str, ...]
     end: datetime
     findings: list[Finding]
@@ -163,16 +168,18 @@ async def assess_slot(
     if config.preferences.booking_exclusions:
         checked.add("exclusion")
     warnings: list[str] = []
+    blocking: list[str] = []
     people: list[tuple[str, str]] = [("you", config.email)] if config.email else []
     people += [(email, email) for email in invitees]
     if not config.email:
-        warnings.append(
-            "your own address is not in the config: your hours and busy time not checked"
-        )
+        gap = "your own address is not in the config: your hours and busy time not checked"
+        warnings.append(gap)
+        blocking.append(gap)
     if people:
         items, failure = await _availability(provider, [addr for _who, addr in people], start, end)
         if failure:
             warnings.append(failure)
+            blocking.append(failure)
         else:
             by_address = {str(item.get("schedule") or "").lower(): item for item in items}
             for who, address in people:
@@ -185,8 +192,10 @@ async def assess_slot(
                 )
                 findings.extend(more)
                 warnings.extend(notes)
+                if "busy" not in done:  # their busy time was not read: do not call them free
+                    blocking.extend(notes)
                 checked |= done
-    return Assessment(tuple(sorted(checked)), end, findings, start, warnings)
+    return Assessment(blocking, tuple(sorted(checked)), end, findings, start, warnings)
 
 
 async def check_booking(
@@ -231,7 +240,7 @@ async def slot_report(
         "findings": [
             {"check": f.check, "message": f.message, "who": f.who} for f in assessment.findings
         ],
-        "ok": not assessment.findings and not assessment.warnings,
+        "ok": not assessment.findings and not assessment.blocking_warnings,
         "slot": {
             "end": assessment.end.isoformat(),
             "start": assessment.start.isoformat(),

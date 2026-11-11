@@ -1658,9 +1658,11 @@ Examples:
 Run this for every time you are about to propose in a mail or chat message. It runs the same
 checks as the booking guard on `calendar create` and `calendar update` - weekend, the profile's
 holidays and excluded windows, working hours and busy time for you and for each --with person in
-their own time zone - and books nothing. It exits 0 with the findings and warnings in the result
-(`ok` is false when there are any); a person whose schedule could not be read is a warning, never
-a pass. Pick another time when it reports findings.
+their own time zone - and books nothing. It exits 0 with the findings and warnings in the result.
+`ok` is false when there are findings, or when someone's busy time could not be read (never a
+pass: do not call them free). A warning that only says working hours are unknown (Google never
+returns them) leaves `ok` true: the slot is free, but say that hours were not checked. Pick
+another time when it reports findings.
 """
 
 CALENDAR_FREEBUSY_EPILOG = """

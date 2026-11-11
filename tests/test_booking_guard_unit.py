@@ -858,3 +858,40 @@ def test_both_providers_hand_calendar_check_to_the_shared_report(
 
     assert [k["with_emails"] for k in seen] == [["a@x.com"], ["a@x.com"]]
     assert all(k["start_raw"] == "2026-11-10T10:00" for k in seen)
+
+
+def test_check_on_google_a_free_slot_is_ok_and_says_hours_were_not_checked() -> None:
+    provider = _provider([_google_item("me@example.com"), _google_item("ana@example.com")])
+
+    report = _check(provider, "2026-11-10T10:00", with_emails=["ana@example.com"])
+
+    assert report["ok"] is True and report["findings"] == []
+    assert "busy" in report["checked"] and "hours" not in report["checked"]
+    assert sum("no working hours known" in w for w in report["warnings"]) == 2
+
+
+def test_check_on_google_a_busy_slot_is_still_not_ok() -> None:
+    busy = [
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ]
+    provider = _provider([_google_item("me@example.com", busy=busy)])
+
+    report = _check(provider, "2026-11-10T10:00")
+
+    assert report["ok"] is False and [f["check"] for f in report["findings"]] == ["busy"]
+
+
+def test_check_is_not_ok_when_a_guests_busy_time_could_not_be_read() -> None:
+    unreadable = {**_google_item("ana@example.com"), "error": "notFound"}
+    provider = _provider([_google_item("me@example.com"), unreadable])
+
+    report = _check(provider, "2026-11-10T10:00", with_emails=["ana@example.com"])
+
+    assert report["ok"] is False and report["findings"] == []
+
+
+def test_check_is_not_ok_when_the_availability_lookup_itself_fails() -> None:
+    report = _check(_provider(RuntimeError("down")), "2026-11-10T10:00")
+
+    assert report["ok"] is False
+    assert any("could not read availability" in w for w in report["warnings"])
