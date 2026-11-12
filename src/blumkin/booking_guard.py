@@ -90,6 +90,7 @@ def schedule_findings(
     who: str,
     own_slot: tuple[datetime, datetime] | None = None,
     own_oof_events: list[dict[str, Any]] | None = None,
+    moved_series: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Finding], list[str], set[str]]:
     """What one person's schedule says about the slot: findings, warnings, checks made.
 
@@ -100,6 +101,8 @@ def schedule_findings(
     shows as their busy time); pass None for a newly invited person, whose busy time is real.
     `own_oof_events` are the out-of-office events behind an `oof` block on your own schedule
     (None when they could not be read), which tell your own time off from a colleague's.
+    `moved_series` are the out-of-office occurrences of the event being moved: their own busy
+    blocks are not conflicts either.
     """
     label = "you" if who == "you" else who
     if item is None:
@@ -130,7 +133,9 @@ def schedule_findings(
         warnings.append(f"freebusy returned nothing usable for {label}: availability not checked")
     else:
         checked.add("busy")
-        found, notes = _busy_findings(start, end, busy or [], label, own_slot, own_oof_events)
+        found, notes = _busy_findings(
+            start, end, busy or [], label, own_slot, own_oof_events, moved_series
+        )
         findings.extend(found)
         warnings.extend(notes)
     return findings, warnings, checked
@@ -195,13 +200,16 @@ async def assess_slot(
         else:
             by_address = {str(item.get("schedule") or "").lower(): item for item in items}
             own_oof: list[dict[str, Any]] | None = None
+            moved: list[dict[str, Any]] | None = None
             if organizer and _has_own_oof(by_address.get(organizer.lower()), start, end):
-                own_oof = await _oof_events(
+                found_events = await _oof_events(
                     provider,
                     start,
                     end,
                     kwargs.get("event_id") if skill_id == "calendar.update" else None,
                 )
+                if found_events is not None:
+                    own_oof, moved = found_events
             for who, address in people:
                 more, notes, done = schedule_findings(
                     start,
@@ -210,6 +218,7 @@ async def assess_slot(
                     who=who,
                     own_slot=own_slot if who == "you" or address.lower() in on_event else None,
                     own_oof_events=own_oof if who == "you" else None,
+                    moved_series=moved if who == "you" else None,
                 )
                 findings.extend(more)
                 warnings.extend(notes)
@@ -291,6 +300,7 @@ def _busy_findings(
     who: str,
     own_slot: tuple[datetime, datetime] | None,
     own_oof_events: list[dict[str, Any]] | None = None,
+    moved_series: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Finding], list[str]]:
     """The busy blocks that overlap the slot, as findings, plus notes for what is not counted.
 
@@ -300,12 +310,14 @@ def _busy_findings(
     decide: one you organized, or none at all, is your own time off (a conflict); events that are
     all organized by someone else are a note. When the events could not be read (None) it stays
     a note that asks the agent to tell the user. On an invitee's schedule an `oof` block is
-    always a conflict, because it is that person who is out.
+    always a conflict, because it is that person who is out. The blocks of `moved_series`, the
+    occurrences of a recurring event being moved, are the move itself and are skipped (#732).
     """
     findings: list[Finding] = []
     notes: list[str] = []
     own_oof_texts: list[str] = []
     own_seen = False
+    moved_spans = _event_spans(moved_series) if who == "you" else []
     for slot in busy:
         status = str(slot.get("status") or "busy").lower()
         begins, ends = _parse_instant(slot.get("start")), _parse_instant(slot.get("end"))
@@ -318,6 +330,8 @@ def _busy_findings(
         ):
             own_seen = True  # the event being moved is not its own conflict, but only one block is
             continue
+        if any(_same(begins, a) and _same(ends, b) for a, b in moved_spans):
+            continue  # another occurrence of the series being moved: the move itself
         if begins < end and ends > start:
             local = start.tzinfo
             shown = (begins.astimezone(local), ends.astimezone(local))
@@ -355,6 +369,16 @@ def _days(start: datetime, end: datetime) -> list[date]:
     """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
     last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
     return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
+
+
+def _event_spans(events: list[dict[str, Any]] | None) -> list[tuple[datetime, datetime]]:
+    """The start and end of each event, for the events that have both."""
+    spans = []
+    for event in events or []:
+        begins, ends = _parse_instant(event.get("start")), _parse_instant(event.get("end"))
+        if begins is not None and ends is not None:
+            spans.append((begins, ends))
+    return spans
 
 
 def _has_own_oof(item: dict[str, Any] | None, start: datetime, end: datetime) -> bool:
@@ -440,13 +464,15 @@ def _needs_slot(config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]) ->
 
 async def _oof_events(
     provider: Any, start: datetime, end: datetime, moved_event_id: str | None = None
-) -> list[dict[str, Any]] | None:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
     """The out-of-office events on your calendar during the slot, or None when unreadable.
 
+    Answers `(evidence, moved)`: `evidence` are the events that can explain a block, and `moved`
+    are the occurrences of the event being moved (or of its series, for a recurring one), which
+    are the move itself: their own blocks are already exempt, and they must not vouch for another.
+
     A view that is cut short (`complete` false) or a provider that cannot list events cannot say
-    that nothing explains a block, so it answers None, never an empty list. The event being
-    moved (or its series, for a recurring one) is left out: its own block is already exempt, and
-    it must not vouch for another one.
+    that nothing explains a block, so it answers None, never an empty list.
     """
     try:
         view = await provider.calendar_view(start=start, end=end)
@@ -454,14 +480,17 @@ async def _oof_events(
         return None
     if not isinstance(view, dict) or not view.get("complete", True):
         return None
-    return [
-        event
-        for event in view.get("items") or []
-        if str(event.get("show_as") or "").lower() == "oof"
-        and not (
-            moved_event_id and moved_event_id in (event.get("id"), event.get("series_master_id"))
+    evidence: list[dict[str, Any]] = []
+    moved: list[dict[str, Any]] = []
+    for event in view.get("items") or []:
+        if str(event.get("show_as") or "").lower() != "oof":
+            continue
+        is_moved = moved_event_id and moved_event_id in (
+            event.get("id"),
+            event.get("series_master_id"),
         )
-    ]
+        (moved if is_moved else evidence).append(event)
+    return evidence, moved
 
 
 def _oof_note(text: str, owner: str) -> str:
