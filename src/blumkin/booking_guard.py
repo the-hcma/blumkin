@@ -329,10 +329,11 @@ def _busy_findings(
             and _is_event_itself(begins, ends, own_slot, (start, end))
         ):
             own_seen = True  # the event being moved is not its own conflict, but only one block is
+            _consume_span(moved_spans, begins, ends)  # and that occurrence is used up
             continue
-        match = next(
-            (i for i, (a, b) in enumerate(moved_spans) if _same(begins, a) and _same(ends, b)), None
-        )
+        match = (
+            _span_index(moved_spans, begins, ends) if status == "oof" else None
+        )  # an occurrence is an OOO event: it explains an `oof` block, never an ordinary meeting
         if match is not None:
             del moved_spans[match]  # another occurrence of the series being moved: the move itself
             continue  # each occurrence explains one block, so a coincident event still counts
@@ -367,6 +368,13 @@ def _busy_text(begins: datetime, ends: datetime, status: str) -> str:
         else f"{begins:%a %Y-%m-%d %H:%M} → {ends:%a %Y-%m-%d %H:%M}"
     )
     return f"out of office {span}" if status == "oof" else f"busy {span} ({status})"
+
+
+def _consume_span(spans: list[tuple[datetime, datetime]], begins: datetime, ends: datetime) -> None:
+    """Drop the first span that matches the block, if any: an occurrence explains one block."""
+    index = _span_index(spans, begins, ends)
+    if index is not None:
+        del spans[index]
 
 
 def _days(start: datetime, end: datetime) -> list[date]:
@@ -665,3 +673,10 @@ async def _slot(
     )
     own_slot = None if converting else (old_start, old_end)
     return start.astimezone(zone), end.astimezone(zone), unique, own_slot, on_event
+
+
+def _span_index(
+    spans: list[tuple[datetime, datetime]], begins: datetime, ends: datetime
+) -> int | None:
+    """The index of the first span that matches the block's start and end, or None."""
+    return next((i for i, (a, b) in enumerate(spans) if _same(begins, a) and _same(ends, b)), None)

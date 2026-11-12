@@ -1558,3 +1558,25 @@ def test_moving_a_single_occurrence_onto_a_sibling_is_still_a_conflict() -> None
         _update(_series_move_provider(), event_id="occ-1", start_raw="2026-11-10T10:15")
 
     assert [f.check for f in caught.value.findings] == ["busy"]
+
+
+def test_the_occurrence_explains_an_oof_block_whatever_the_order_of_the_blocks() -> None:
+    provider = _series_move_provider()
+    busy = provider.calendar_freebusy.return_value["items"][0]["busy"]
+    busy.insert(1, _block("2026-11-10T10:30:00-05:00", "2026-11-10T11:00:00-05:00", "busy"))
+
+    with pytest.raises(BookingGuardError) as caught:  # the meeting comes before the oof block
+        _update(provider, start_raw="2026-11-10T10:15")
+
+    assert [f.message for f in caught.value.findings] == ["busy 10:30-11:00 (busy)"]
+
+
+def test_a_meeting_at_the_old_slots_time_is_not_exempted_by_the_moved_occurrence() -> None:
+    provider = _series_move_provider()
+    busy = provider.calendar_freebusy.return_value["items"][0]["busy"]
+    busy.append(_block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "busy"))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, start_raw="2026-11-10T10:15")
+
+    assert [f.message for f in caught.value.findings] == ["busy 10:00-10:30 (busy)"]
