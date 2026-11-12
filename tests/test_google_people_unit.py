@@ -206,6 +206,28 @@ def test_people_resolve_still_propagates_any_other_400_from_the_directory(tmp_pa
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).people_resolve(name="Ada"))
 
 
+def test_the_phrase_in_another_field_or_a_body_that_is_not_json_is_not_a_no_directory_answer(
+    tmp_path: Path,
+) -> None:
+    """Only `error.message` counts: the same words elsewhere in a 400 must still surface."""
+    bodies = [
+        (
+            b'{"error": {"code": 400, "message": "Invalid value", '
+            b'"details": "Must be a G Suite domain user"}}'
+        ),
+        b"Must be a G Suite domain user.",
+        b'{"error": "Must be a G Suite domain user."}',
+    ]
+    for body in bodies:
+        service = _service(contacts=[_contact("Ada Lovelace", "ada@example.com")])
+        search = service.people.return_value.searchDirectoryPeople
+        search.return_value.execute.side_effect = HttpError(
+            httplib2.Response({"status": 400}), body, uri="x"
+        )
+        with _patched(service), pytest.raises(HttpError):
+            asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).people_resolve(name="Ada"))
+
+
 def test_the_domain_user_message_is_only_a_no_directory_answer_on_a_400(tmp_path: Path) -> None:
     """The same words on a 500 are a server failure and must not drop the directory silently."""
     service = _service(contacts=[_contact("Ada Lovelace", "ada@example.com")])
