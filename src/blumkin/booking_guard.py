@@ -282,7 +282,9 @@ def _busy_findings(
 
     An `oof` block on your own schedule is a note, not a conflict: free/busy cannot say whose
     time off it is, and an accepted all-day OOO event from a colleague must not stop you from
-    booking (issue #726), so the note asks the agent to tell the user in case it is your own.
+    booking (issue #726), so the note asks the agent to tell the user in case it is your own. It
+    reaches the agent before a proposal with `calendar check`, and with the result of a create or
+    update.
     On an invitee's schedule it stays a conflict, because it is that person who is out.
     """
     findings: list[Finding] = []
@@ -308,7 +310,7 @@ def _busy_findings(
                 notes.append(
                     f"your calendar marks you {text}: not counted as a conflict (an accepted "
                     "OOO event from someone else does this); if it is your own time off, "
-                    "tell the user before booking"
+                    "tell the user"
                 )
                 continue
             findings.append(Finding("busy", text, who))

@@ -1032,7 +1032,7 @@ def test_the_guard_lets_you_book_over_your_own_oof_note_but_blocks_an_invitees()
     report = _update(alone, start_raw="2026-11-16T15:00")
 
     assert report is not None
-    assert any("tell the user before booking" in w for w in report["warnings"])
+    assert any(w.endswith("tell the user") for w in report["warnings"])
 
 
 def test_check_human_output_shows_your_out_of_office_note_as_a_warning() -> None:
