@@ -1107,6 +1107,7 @@ def test_a_failed_organizer_lookup_falls_back_to_the_label_and_says_so() -> None
 
     assert provider.calendar_freebusy.await_args.kwargs["with_emails"] == ["me@example.com"]
     assert any("could not resolve the signed-in account" in w for w in report["warnings"])
+    assert report["ok"] is False  # the label may be another account: not a complete check
 
 
 def test_a_blank_organizer_answer_with_no_label_is_not_called_free() -> None:
@@ -1133,7 +1134,7 @@ def test_the_signed_in_account_is_not_checked_twice_when_it_is_also_a_guest() ->
     _check(
         provider,
         "2026-11-10T10:00",
-        with_emails=["REAL@example.com", "me@example.com", "ana@example.com"],
+        with_emails=["REAL@example.com", "ana@example.com"],
     )
 
     asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
@@ -1158,3 +1159,42 @@ def test_the_providers_answer_who_the_organizer_is(monkeypatch: pytest.MonkeyPat
     assert asyncio.run(google.calendar_organizer()) == "primary"
     assert asyncio.run(microsoft.calendar_organizer()) == "real@example.com"
     assert len(seen) == 1
+
+
+def test_a_profile_email_that_is_not_the_signed_in_account_is_still_checked_as_a_guest() -> None:
+    provider = _provider(
+        [_item("real@example.com"), _item("me@example.com")],
+        calendar_organizer=AsyncMock(return_value="real@example.com"),
+    )
+
+    _check(provider, "2026-11-10T10:00", with_emails=["me@example.com"])
+
+    asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
+    assert asked == ["real@example.com", "me@example.com"]  # the label is someone else here
+
+
+def test_on_google_the_label_stands_in_for_the_primary_alias_when_deduplicating_guests() -> None:
+    provider = _provider(
+        [_item("primary"), _item("ana@example.com")],
+        calendar_organizer=AsyncMock(return_value="primary"),
+    )
+
+    _check(provider, "2026-11-10T10:00", with_emails=["ME@example.com", "ana@example.com"])
+
+    asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
+    assert asked == ["primary", "ana@example.com"]
+
+
+def test_microsoft_organizer_lookup_failure_raises_and_never_returns_the_label() -> None:
+    from types import SimpleNamespace as NS
+    from unittest.mock import patch
+
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    from blumkin.auth import AuthRequiredError
+    from blumkin.skills.calendar import calendar_organizer
+
+    client = NS(me=NS(get=AsyncMock(side_effect=ODataError())))
+    with patch("blumkin.skills.calendar.create_graph_client", return_value=client):
+        with pytest.raises(AuthRequiredError):
+            asyncio.run(calendar_organizer(config=_config()))

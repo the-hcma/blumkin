@@ -161,8 +161,12 @@ async def assess_slot(
     provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
 ) -> Assessment | None:
     """Run every check on the slot a call books or is asked about; None when it has no slot."""
-    organizer, notes_about_you = await _organizer(provider, config)
-    own = frozenset(a.lower() for a in (organizer, config.email, "primary") if a)
+    organizer, notes_about_you, verified = await _organizer(provider, config)
+    # Who is "you" among the guests: the resolved organizer. The `primary` alias carries no
+    # address, so there the profile label is the best guess; otherwise the label stays a guest.
+    own = frozenset(
+        a.lower() for a in (organizer, config.email if organizer == "primary" else None) if a
+    ) | {"primary"}
     slot = await _slot(provider, config, skill_id, kwargs, own)
     if slot is None:
         return None
@@ -172,7 +176,7 @@ async def assess_slot(
     if config.preferences.booking_exclusions:
         checked.add("exclusion")
     warnings: list[str] = list(notes_about_you)
-    blocking: list[str] = []
+    blocking: list[str] = [] if verified else list(notes_about_you)
     people: list[tuple[str, str]] = [("you", organizer)] if organizer else []
     people += [(email, email) for email in invitees]
     if not organizer:
@@ -260,34 +264,42 @@ def _days(start: datetime, end: datetime) -> list[date]:
     return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
 
 
-async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str]]:
-    """The signed-in organizer's address, and notes about how it was found.
+async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str], bool]:
+    """The signed-in organizer's address, notes about how it was found, and whether it is verified.
 
     The profile's `email` is an onboarding label that can differ from the account actually
     signed in (issue #725), so the provider's own answer wins (the primary mailbox on Microsoft,
-    the `primary` alias on Google). A provider with no answer, or a lookup that fails, falls back
-    to the label, and a failure is said, never silent.
+    the `primary` alias on Google). A provider with no answer falls back to the label as before.
+    A lookup that fails or answers nothing also falls back to the label, but says so and is not
+    verified: the label may be another account, so the result must not be read as complete.
     """
     label = config.email or None
     resolve = getattr(provider, "calendar_organizer", None)
     if resolve is None:
-        return label, []
+        return label, [], True
     try:
         resolved = await resolve()
     except Exception:  # noqa: BLE001 - the label is the fallback, and the failure is reported
         resolved = None
     if not isinstance(resolved, str) or not resolved.strip():
         if label:
-            return label, [
-                f"could not resolve the signed-in account: checked the profile email {label}"
-            ]
-        return None, []
+            return (
+                label,
+                [f"could not resolve the signed-in account: checked the profile email {label}"],
+                False,
+            )
+        return None, [], False
     resolved = resolved.strip()
     if label and resolved.lower() not in {"primary", label.lower()}:
-        return resolved, [
-            f"the profile email {label} is not the signed-in account {resolved}: checked {resolved}"
-        ]
-    return resolved, []
+        return (
+            resolved,
+            [
+                f"the profile email {label} is not the signed-in account {resolved}: "
+                f"checked {resolved}"
+            ],
+            True,
+        )
+    return resolved, [], True
 
 
 async def _availability(
