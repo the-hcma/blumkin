@@ -445,7 +445,7 @@ def format_slot_check_human(payload: dict[str, Any]) -> list[str]:
         who = "" if finding["who"] == "you" else f"{sanitize_terminal(str(finding['who']))}: "
         lines.append(f"  {finding['check']}: {who}{sanitize_terminal(str(finding['message']))}")
     for warning in payload["warnings"]:
-        lines.append(f"  not checked: {sanitize_terminal(str(warning))}")
+        lines.append(f"  warning: {sanitize_terminal(str(warning))}")
     lines.append(f"  checks run: {', '.join(payload['checked'])}")
     return lines
 

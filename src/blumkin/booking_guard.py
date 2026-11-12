@@ -127,7 +127,9 @@ def schedule_findings(
         warnings.append(f"freebusy returned nothing usable for {label}: availability not checked")
     else:
         checked.add("busy")
-        findings.extend(_busy_findings(start, end, busy or [], label, own_slot))
+        found, notes = _busy_findings(start, end, busy or [], label, own_slot)
+        findings.extend(found)
+        warnings.extend(notes)
     return findings, warnings, checked
 
 
@@ -275,8 +277,15 @@ def _busy_findings(
     busy: list[dict[str, Any]],
     who: str,
     own_slot: tuple[datetime, datetime] | None,
-) -> list[Finding]:
+) -> tuple[list[Finding], list[str]]:
+    """The busy blocks that overlap the slot, as findings, plus notes for what is not counted.
+
+    An `oof` block on your own schedule is a note, not a conflict: it is usually someone else's
+    all-day OOO event that you accepted, and that must not stop you from booking (issue #726).
+    On an invitee's schedule it stays a conflict, because it is that person who is out.
+    """
     findings: list[Finding] = []
+    notes: list[str] = []
     own_seen = False
     for slot in busy:
         status = str(slot.get("status") or "busy").lower()
@@ -293,17 +302,25 @@ def _busy_findings(
         if begins < end and ends > start:
             local = start.tzinfo
             shown = (begins.astimezone(local), ends.astimezone(local))
-            findings.append(Finding("busy", _busy_text(shown[0], shown[1], status), who))
-    return findings
+            text = _busy_text(shown[0], shown[1], status)
+            if status == "oof" and who == "you":
+                notes.append(
+                    f"your calendar marks you {text}: not counted as a conflict "
+                    "(an accepted OOO event from someone else does this)"
+                )
+                continue
+            findings.append(Finding("busy", text, who))
+    return findings, notes
 
 
 def _busy_text(begins: datetime, ends: datetime, status: str) -> str:
-    """One busy block as text: the clock times alone when it fits in a day, else with its dates.
+    """One busy block as text: clock times alone when it starts and ends on one date, else dates.
 
-    A block that runs across days (an all-day out-of-office entry) printed as `03:00-03:00` would
-    look like a broken check (issue #726), so it names its dates and, for `oof`, says what it is.
+    A block that runs across days (an all-day out-of-office entry) printed as `03:00-03:00` or
+    `00:00-00:00` would look like a broken check (issue #726), so it names its dates and, for
+    `oof`, says what it is.
     """
-    one_day = begins.date() == (ends - timedelta(microseconds=1)).date()
+    one_day = begins.date() == ends.date()
     span = (
         f"{begins:%H:%M}-{ends:%H:%M}"
         if one_day
