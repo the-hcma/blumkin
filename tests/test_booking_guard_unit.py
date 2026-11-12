@@ -1480,3 +1480,109 @@ def test_a_missing_is_organizer_stays_unknown_in_the_event_payload() -> None:
     assert _event_to_dict(event(None), tz)["is_organizer"] is None
     assert _event_to_dict(event(True), tz)["is_organizer"] is True
     assert _event_to_dict(event(False), tz)["is_organizer"] is False
+
+
+# --------------------------------------------------------------------------- a moved series (#732)
+
+
+def _occurrence(occ_id: str, start: str, end: str) -> dict[str, Any]:
+    return {
+        "end": end, "id": occ_id, "is_organizer": True, "series_master_id": "evt-1",
+        "show_as": "oof", "start": start,
+    }  # fmt: skip
+
+
+def _series_move_provider(extra_events: list[dict[str, Any]] | None = None) -> Any:
+    """A recurring OOO series (master evt-1) whose second occurrence overlaps the new slot."""
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    extra_blocks = [
+        _block("2026-11-09T03:00:00-05:00", "2026-11-12T03:00:00-05:00", "oof")
+        for _ in extra_events or []
+    ]
+    blocks = [
+        _block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "oof"),  # old slot
+        _block("2026-11-10T10:30:00-05:00", "2026-11-10T11:00:00-05:00", "oof"),  # next occurrence
+        *extra_blocks,
+    ]
+    items = [
+        _occurrence("occ-1", "2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00"),
+        _occurrence("occ-2", "2026-11-10T10:30:00-05:00", "2026-11-10T11:00:00-05:00"),
+        *(extra_events or []),
+    ]
+    view = AsyncMock(return_value={"complete": True, "items": items})
+    return _provider(
+        [_item(busy=blocks)], calendar_get=AsyncMock(return_value=event), calendar_view=view
+    )
+
+
+def test_moving_a_recurring_ooo_series_onto_its_own_occurrence_is_not_refused() -> None:
+    report = _update(_series_move_provider(), start_raw="2026-11-10T10:15")  # 10:15-10:45
+
+    assert report is not None  # not refused: the other occurrence is the move itself
+    assert not any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_a_colleagues_ooo_next_to_the_moved_series_is_still_a_note() -> None:
+    colleague = {"id": "c1", "is_organizer": False, "show_as": "oof"}
+
+    report = _update(_series_move_provider([colleague]), start_raw="2026-11-10T10:15")
+
+    assert report is not None
+    assert any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_an_out_of_office_block_that_is_not_an_occurrence_of_the_series_still_counts() -> None:
+    other_you = {"id": "mine", "is_organizer": True, "show_as": "oof"}  # your own, another event
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(_series_move_provider([other_you]), start_raw="2026-11-10T10:15")
+
+    assert [f.check for f in caught.value.findings] == ["busy"]
+
+
+def test_another_event_with_the_same_span_as_an_occurrence_still_counts() -> None:
+    provider = _series_move_provider()
+    busy = provider.calendar_freebusy.return_value["items"][0]["busy"]
+    busy.append(_block("2026-11-10T10:30:00-05:00", "2026-11-10T11:00:00-05:00", "busy"))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, start_raw="2026-11-10T10:15")
+
+    # the occurrence explains one block, so the meeting at the same time is still a conflict
+    assert [f.message for f in caught.value.findings] == ["busy 10:30-11:00 (busy)"]
+
+
+def test_moving_a_single_occurrence_onto_a_sibling_is_still_a_conflict() -> None:
+    # Moving occ-1 by its own id: its sibling occ-2 is another event of yours, not the move.
+    with pytest.raises(BookingGuardError) as caught:
+        _update(_series_move_provider(), event_id="occ-1", start_raw="2026-11-10T10:15")
+
+    assert [f.check for f in caught.value.findings] == ["busy"]
+
+
+def test_the_occurrence_explains_an_oof_block_whatever_the_order_of_the_blocks() -> None:
+    provider = _series_move_provider()
+    busy = provider.calendar_freebusy.return_value["items"][0]["busy"]
+    busy.insert(1, _block("2026-11-10T10:30:00-05:00", "2026-11-10T11:00:00-05:00", "busy"))
+
+    with pytest.raises(BookingGuardError) as caught:  # the meeting comes before the oof block
+        _update(provider, start_raw="2026-11-10T10:15")
+
+    assert [f.message for f in caught.value.findings] == ["busy 10:30-11:00 (busy)"]
+
+
+def test_another_oof_event_at_the_old_slots_time_is_not_exempted_by_the_moved_occurrence() -> None:
+    # A second OOO event of yours sits exactly where the series' old occurrence was. The old
+    # occurrence is already used up by the moved-event exemption, so this block still counts.
+    twin = {
+        "end": "2026-11-10T10:30:00-05:00", "id": "twin", "is_organizer": True,
+        "show_as": "oof", "start": "2026-11-10T10:00:00-05:00",
+    }  # fmt: skip
+    provider = _series_move_provider([twin])
+    busy = provider.calendar_freebusy.return_value["items"][0]["busy"]
+    busy.insert(1, _block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "oof"))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, start_raw="2026-11-10T10:15")
+
+    assert any(f.message == "out of office 10:00-10:30" for f in caught.value.findings)
