@@ -1397,4 +1397,57 @@ def test_calendar_view_asks_graph_for_the_availability_marking() -> None:
             )
         )
 
-    assert "showAs" in seen["select"]
+    assert {"seriesMasterId", "showAs"} <= set(seen["select"])
+
+
+def test_two_out_of_office_blocks_with_one_explaining_event_are_treated_as_yours() -> None:
+    blocks = [
+        _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof"),
+        _block("2026-11-16T13:00:00-05:00", "2026-11-16T17:00:00-05:00", "oof"),
+    ]
+    view = AsyncMock(
+        return_value={
+            "complete": True,
+            "items": [{"id": "c1", "is_organizer": False, "show_as": "oof"}],
+        }
+    )
+    provider = _provider([_item(busy=blocks)], calendar_view=view)
+
+    report = _check(provider, "2026-11-16T14:00")
+
+    assert report["ok"] is False  # one block has no event behind it: the safe reading
+    assert [f["check"] for f in report["findings"]] == ["busy", "busy"]
+
+
+def test_two_out_of_office_blocks_each_with_a_colleagues_event_are_notes() -> None:
+    blocks = [
+        _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof"),
+        _block("2026-11-16T13:00:00-05:00", "2026-11-16T17:00:00-05:00", "oof"),
+    ]
+    items = [{"id": f"c{i}", "is_organizer": False, "show_as": "oof"} for i in (1, 2)]
+    view = AsyncMock(return_value={"complete": True, "items": items})
+    provider = _provider([_item(busy=blocks)], calendar_view=view)
+
+    report = _check(provider, "2026-11-16T14:00")
+
+    assert report["ok"] is True and report["findings"] == []
+
+
+def test_moving_a_recurring_series_leaves_its_occurrences_out_of_the_evidence() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    blocks = [
+        _block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "oof"),
+        _block("2026-11-10T03:00:00-05:00", "2026-11-12T03:00:00-05:00", "oof"),
+    ]
+    items = [  # the occurrence of the series being moved, and a colleague's event
+        {"id": "occ-1", "series_master_id": "evt-1", "is_organizer": True, "show_as": "oof"},
+        {"id": "colleague", "is_organizer": False, "show_as": "oof"},
+    ]
+    view = AsyncMock(return_value={"complete": True, "items": items})
+    provider = _provider(
+        [_item(busy=blocks)], calendar_get=AsyncMock(return_value=event), calendar_view=view
+    )
+
+    report = _update(provider, start_raw="2026-11-10T10:15")
+
+    assert report is not None and any("organized by someone else" in w for w in report["warnings"])

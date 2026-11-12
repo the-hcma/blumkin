@@ -304,6 +304,7 @@ def _busy_findings(
     """
     findings: list[Finding] = []
     notes: list[str] = []
+    own_oof_texts: list[str] = []
     own_seen = False
     for slot in busy:
         status = str(slot.get("status") or "busy").lower()
@@ -322,11 +323,15 @@ def _busy_findings(
             shown = (begins.astimezone(local), ends.astimezone(local))
             text = _busy_text(shown[0], shown[1], status)
             if status == "oof" and who == "you":
-                owner = _oof_owner(own_oof_events)
-                if owner != "mine":
-                    notes.append(_oof_note(text, owner))
-                    continue
+                own_oof_texts.append(text)  # decided below, once all of them are known
+                continue
             findings.append(Finding("busy", text, who))
+    owner = _oof_owner(own_oof_events, len(own_oof_texts))
+    for text in own_oof_texts:
+        if owner == "mine":
+            findings.append(Finding("busy", text, who))
+        else:
+            notes.append(_oof_note(text, owner))
     return findings, notes
 
 
@@ -440,7 +445,8 @@ async def _oof_events(
 
     A view that is cut short (`complete` false) or a provider that cannot list events cannot say
     that nothing explains a block, so it answers None, never an empty list. The event being
-    moved is left out: its own block is already exempt, and it must not vouch for another one.
+    moved (or its series, for a recurring one) is left out: its own block is already exempt, and
+    it must not vouch for another one.
     """
     try:
         view = await provider.calendar_view(start=start, end=end)
@@ -452,7 +458,9 @@ async def _oof_events(
         event
         for event in view.get("items") or []
         if str(event.get("show_as") or "").lower() == "oof"
-        and not (moved_event_id and event.get("id") == moved_event_id)
+        and not (
+            moved_event_id and moved_event_id in (event.get("id"), event.get("series_master_id"))
+        )
     ]
 
 
@@ -468,16 +476,17 @@ def _oof_note(text: str, owner: str) -> str:
     )
 
 
-def _oof_owner(events: list[dict[str, Any]] | None) -> str:
-    """Whose time off an `oof` block on your schedule is: `mine`, `other` or `unknown`.
+def _oof_owner(events: list[dict[str, Any]] | None, blocks: int) -> str:
+    """Whose time off the `oof` blocks on your schedule are: `mine`, `other` or `unknown`.
 
-    `mine` when you organized one of the events behind it or none explains it (it may come from
-    a calendar the view did not list: the safe reading), `other` when every event behind it is
-    organized by someone else, `unknown` when the events could not be read.
+    `mine` when you organized one of the events behind them, or there are more blocks than events
+    (some block is unexplained, perhaps from a calendar the view did not list: the safe reading,
+    since blocks cannot be matched to events by their clock times), `other` when every event is
+    organized by someone else and each block has one, `unknown` when the events could not be read.
     """
     if events is None:
         return "unknown"
-    if not events or any(event.get("is_organizer") for event in events):
+    if blocks > len(events) or any(event.get("is_organizer") for event in events):
         return "mine"
     return "other"
 
