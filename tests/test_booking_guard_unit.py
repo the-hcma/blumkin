@@ -796,7 +796,7 @@ def test_check_human_output_names_the_verdict_the_findings_and_what_was_not_chec
 
     text = "\n".join(format_slot_check_human(report))
 
-    assert "NOT clear to propose" in text and "weekend:" in text and "not checked:" in text
+    assert "NOT clear to propose" in text and "weekend:" in text and "warning:" in text
     clear = "\n".join(format_slot_check_human(_check(_provider([_item()]), "2026-11-10T10:00")))
     assert "OK to propose" in clear
 
@@ -924,3 +924,138 @@ def test_check_asks_for_a_timed_start_and_never_suggests_all_day() -> None:
         _check(_provider([_item()]), "2026-11-10")
 
     assert "all-day" not in str(caught.value)
+
+
+# --------------------------------------------------------------------------- busy text (#726)
+
+
+def _block(start: str, end: str, status: str) -> dict[str, Any]:
+    return {"end": end, "start": start, "status": status}
+
+
+def _busy_message(block: dict[str, Any], who: str = "ana@example.com") -> str:
+    found, _, _ = schedule_findings(*_slot("2026-11-16", 14), _item(busy=[block]), who=who)
+    return found[0].message
+
+
+def test_a_multi_day_out_of_office_block_names_its_dates_and_says_what_it_is() -> None:
+    text = _busy_message(_block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof"))
+
+    assert text == "out of office Mon 2026-11-16 03:00 → Thu 2026-11-19 03:00"
+    assert "03:00-03:00" not in text
+
+
+def test_a_full_day_block_from_midnight_to_midnight_names_its_dates() -> None:
+    text = _busy_message(_block("2026-11-16T00:00:00-05:00", "2026-11-17T00:00:00-05:00", "oof"))
+
+    assert text == "out of office Mon 2026-11-16 00:00 → Tue 2026-11-17 00:00"
+    assert "00:00-00:00" not in text
+
+
+def test_a_same_day_meeting_keeps_its_clock_times_and_status() -> None:
+    text = _busy_message(_block("2026-11-16T14:00:00-05:00", "2026-11-16T14:30:00-05:00", "busy"))
+
+    assert text == "busy 14:00-14:30 (busy)"
+
+
+def test_a_same_day_out_of_office_block_says_out_of_office() -> None:
+    text = _busy_message(_block("2026-11-16T13:00:00-05:00", "2026-11-16T17:00:00-05:00", "oof"))
+
+    assert text == "out of office 13:00-17:00"
+
+
+def test_a_multi_day_block_that_is_not_out_of_office_still_names_its_dates() -> None:
+    text = _busy_message(
+        _block("2026-11-15T00:00:00-05:00", "2026-11-17T00:00:00-05:00", "tentative")
+    )
+
+    assert text == "busy Sun 2026-11-15 00:00 → Tue 2026-11-17 00:00 (tentative)"
+
+
+def test_your_own_out_of_office_block_is_a_note_and_not_a_conflict() -> None:
+    oof = _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")
+
+    found, warnings, checked = schedule_findings(
+        *_slot("2026-11-16", 14), _item(busy=[oof]), who="you"
+    )
+
+    assert found == [] and "busy" in checked
+    assert len(warnings) == 1 and "out of office Mon 2026-11-16 03:00" in warnings[0]
+    assert "not counted as a conflict" in warnings[0]
+
+
+def test_a_real_meeting_on_your_schedule_still_blocks_next_to_your_oof_note() -> None:
+    blocks = [
+        _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof"),
+        _block("2026-11-16T14:00:00-05:00", "2026-11-16T14:30:00-05:00", "busy"),
+    ]
+
+    found, warnings, _ = schedule_findings(*_slot("2026-11-16", 14), _item(busy=blocks), who="you")
+
+    assert [f.message for f in found] == ["busy 14:00-14:30 (busy)"] and len(warnings) == 1
+
+
+def test_an_invitees_out_of_office_block_is_a_conflict() -> None:
+    oof = _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")
+
+    found, warnings, _ = schedule_findings(
+        *_slot("2026-11-16", 14), _item("ana@example.com", busy=[oof]), who="ana@example.com"
+    )
+
+    assert [(f.check, f.who) for f in found] == [("busy", "ana@example.com")] and warnings == []
+
+
+def test_check_stays_ok_when_only_your_own_out_of_office_note_is_present() -> None:
+    oof = _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")
+    provider = _provider([_item(busy=[oof])])
+
+    report = _check(provider, "2026-11-16T14:00")
+
+    assert report["ok"] is True and report["findings"] == []
+    assert any("out of office" in w for w in report["warnings"])
+
+
+def test_the_guard_lets_you_book_over_your_own_oof_note_but_blocks_an_invitees() -> None:
+    event = _event("2026-11-16T14:00:00-05:00", "2026-11-16T14:30:00-05:00")
+    oof = [_block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")]
+    with_guest = _provider(
+        [_item(busy=oof), _item("ana@example.com", busy=oof)],
+        calendar_get=AsyncMock(return_value=event),
+    )
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(with_guest, with_emails=["ana@example.com"])
+
+    assert [(f.check, f.who) for f in caught.value.findings] == [("busy", "ana@example.com")]
+
+    alone = _provider([_item(busy=oof)], calendar_get=AsyncMock(return_value=event))
+    report = _update(alone, start_raw="2026-11-16T15:00")
+
+    assert report is not None
+    assert any(w.endswith("tell the user") for w in report["warnings"])
+
+
+def test_check_human_output_shows_your_out_of_office_note_as_a_warning() -> None:
+    from blumkin.skills.calendar import format_slot_check_human
+
+    oof = _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")
+
+    text = "\n".join(
+        format_slot_check_human(_check(_provider([_item(busy=[oof])]), "2026-11-16T14:00"))
+    )
+
+    assert "OK to propose" in text
+    assert "warning: your calendar marks you out of office Mon 2026-11-16 03:00" in text
+
+
+def test_create_books_over_your_own_oof_note_and_the_result_carries_the_warning() -> None:
+    oof = [_block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")]
+    provider = _provider([_item(busy=oof)])
+
+    payload = _create(provider, "2026-11-16T15:00")
+
+    provider.calendar_create.assert_awaited_once()
+    warnings = payload["booking_checks"]["warnings"]
+    assert any(
+        "out of office Mon 2026-11-16 03:00" in w and w.endswith("tell the user") for w in warnings
+    )
