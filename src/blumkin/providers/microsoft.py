@@ -16,6 +16,7 @@ from blumkin.skills.calendar import (
     calendar_freebusy,
     calendar_get,
     calendar_list,
+    calendar_organizer,
     calendar_suggest,
     calendar_today,
     calendar_view,
@@ -256,6 +257,9 @@ class MicrosoftWorkspaceProvider:
 
     async def calendar_list(self) -> dict[str, Any]:
         return await calendar_list(config=self._config)
+
+    async def calendar_organizer(self) -> str:
+        return await calendar_organizer(config=self._config)
 
     async def calendar_suggest(
         self,

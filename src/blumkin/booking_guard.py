@@ -161,7 +161,9 @@ async def assess_slot(
     provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
 ) -> Assessment | None:
     """Run every check on the slot a call books or is asked about; None when it has no slot."""
-    slot = await _slot(provider, config, skill_id, kwargs)
+    organizer, notes_about_you = await _organizer(provider, config)
+    own = frozenset(a.lower() for a in (organizer, config.email, "primary") if a)
+    slot = await _slot(provider, config, skill_id, kwargs, own)
     if slot is None:
         return None
     start, end, invitees, own_slot, on_event = slot
@@ -169,12 +171,12 @@ async def assess_slot(
     checked: set[str] = {"weekend", "holiday"}
     if config.preferences.booking_exclusions:
         checked.add("exclusion")
-    warnings: list[str] = []
+    warnings: list[str] = list(notes_about_you)
     blocking: list[str] = []
-    people: list[tuple[str, str]] = [("you", config.email)] if config.email else []
+    people: list[tuple[str, str]] = [("you", organizer)] if organizer else []
     people += [(email, email) for email in invitees]
-    if not config.email:
-        gap = "your own address is not in the config: your hours and busy time not checked"
+    if not organizer:
+        gap = "your own address is not known: your hours and busy time not checked"
         warnings.append(gap)
         blocking.append(gap)
     if people:
@@ -256,6 +258,36 @@ def _days(start: datetime, end: datetime) -> list[date]:
     """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
     last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
     return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
+
+
+async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str]]:
+    """The signed-in organizer's address, and notes about how it was found.
+
+    The profile's `email` is an onboarding label that can differ from the account actually
+    signed in (issue #725), so the provider's own answer wins (the primary mailbox on Microsoft,
+    the `primary` alias on Google). A provider with no answer, or a lookup that fails, falls back
+    to the label, and a failure is said, never silent.
+    """
+    label = config.email or None
+    resolve = getattr(provider, "calendar_organizer", None)
+    if resolve is None:
+        return label, []
+    try:
+        resolved = await resolve()
+    except Exception:  # noqa: BLE001 - the label is the fallback, and the failure is reported
+        resolved = None
+    if not isinstance(resolved, str) or not resolved.strip():
+        if label:
+            return label, [
+                f"could not resolve the signed-in account: checked the profile email {label}"
+            ]
+        return None, []
+    resolved = resolved.strip()
+    if label and resolved.lower() not in {"primary", label.lower()}:
+        return resolved, [
+            f"the profile email {label} is not the signed-in account {resolved}: checked {resolved}"
+        ]
+    return resolved, []
 
 
 async def _availability(
@@ -400,7 +432,11 @@ def _same(left: datetime, right: datetime) -> bool:
 
 
 async def _slot(
-    provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
+    provider: Any,
+    config: BlumkinConfig,
+    skill_id: str,
+    kwargs: dict[str, Any],
+    own: frozenset[str],
 ) -> tuple[datetime, datetime, list[str], tuple[datetime, datetime] | None, frozenset[str]] | None:
     """The slot a call books and who is in it, or None when it books no meeting time."""
     zone_name = kwargs.get("tz_name") or config.default_tz
@@ -419,7 +455,6 @@ async def _slot(
         length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
         if length <= timedelta(0):
             raise ValueError("--duration must be positive")
-        own = {config.email.lower()} if config.email else set()
         guests = [str(e) for e in kwargs.get("with_emails") or [] if str(e).lower() not in own]
         end = (start.astimezone(UTC) + length).astimezone(zone)
         return start, end, list(dict.fromkeys(guests)), None, frozenset()
@@ -471,7 +506,6 @@ async def _slot(
         invitees = [
             str(person["email"]) for person in event.get("attendees") or [] if person.get("email")
         ]
-    own = {config.email.lower()} if config.email else set()
     unique = list(dict.fromkeys(e for e in invitees if e.lower() not in own))
     on_event = frozenset(
         str(person["email"]).lower()

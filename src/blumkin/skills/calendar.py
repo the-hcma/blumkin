@@ -176,6 +176,12 @@ async def _organizer_mailbox(cfg: BlumkinConfig, *, fallback: str) -> str:
     return address
 
 
+async def calendar_organizer(*, config: BlumkinConfig | None = None) -> str:
+    """The signed-in account's primary mailbox, for checks that must be about "you" (issue #725)."""
+    cfg = config or load_config()
+    return await _organizer_mailbox(cfg, fallback=cfg.email or "")
+
+
 async def calendar_suggest(
     *,
     with_emails: list[str],
