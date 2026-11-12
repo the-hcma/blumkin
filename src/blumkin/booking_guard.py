@@ -196,7 +196,12 @@ async def assess_slot(
             by_address = {str(item.get("schedule") or "").lower(): item for item in items}
             own_oof: list[dict[str, Any]] | None = None
             if organizer and _has_own_oof(by_address.get(organizer.lower()), start, end):
-                own_oof = await _oof_events(provider, start, end)
+                own_oof = await _oof_events(
+                    provider,
+                    start,
+                    end,
+                    kwargs.get("event_id") if skill_id == "calendar.update" else None,
+                )
             for who, address in people:
                 more, notes, done = schedule_findings(
                     start,
@@ -428,11 +433,14 @@ def _needs_slot(config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]) ->
     return True
 
 
-async def _oof_events(provider: Any, start: datetime, end: datetime) -> list[dict[str, Any]] | None:
+async def _oof_events(
+    provider: Any, start: datetime, end: datetime, moved_event_id: str | None = None
+) -> list[dict[str, Any]] | None:
     """The out-of-office events on your calendar during the slot, or None when unreadable.
 
     A view that is cut short (`complete` false) or a provider that cannot list events cannot say
-    that nothing explains a block, so it answers None, never an empty list.
+    that nothing explains a block, so it answers None, never an empty list. The event being
+    moved is left out: its own block is already exempt, and it must not vouch for another one.
     """
     try:
         view = await provider.calendar_view(start=start, end=end)
@@ -444,6 +452,7 @@ async def _oof_events(provider: Any, start: datetime, end: datetime) -> list[dic
         event
         for event in view.get("items") or []
         if str(event.get("show_as") or "").lower() == "oof"
+        and not (moved_event_id and event.get("id") == moved_event_id)
     ]
 
 

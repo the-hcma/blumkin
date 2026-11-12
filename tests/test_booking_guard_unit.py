@@ -1342,3 +1342,59 @@ def test_the_event_payload_carries_the_availability_marking() -> None:
     tz = ZoneInfo("UTC")
     assert _event_to_dict(event(show_as=SimpleNamespace(value="oof")), tz)["show_as"] == "oof"
     assert _event_to_dict(event(), tz)["show_as"] is None
+
+
+def test_the_event_being_moved_does_not_vouch_for_a_colleagues_out_of_office_block() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")  # id evt-1
+    blocks = [
+        _block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "oof"),  # the moved event
+        _block("2026-11-10T03:00:00-05:00", "2026-11-12T03:00:00-05:00", "oof"),  # a colleague's
+    ]
+    view = AsyncMock(
+        return_value={
+            "complete": True,
+            "items": [
+                {"id": "evt-1", "is_organizer": True, "show_as": "oof"},
+                {"id": "colleague", "is_organizer": False, "show_as": "oof"},
+            ],
+        }
+    )
+    provider = _provider(
+        [_item(busy=blocks)], calendar_get=AsyncMock(return_value=event), calendar_view=view
+    )
+
+    report = _update(provider, start_raw="2026-11-10T10:15")
+
+    assert report is not None  # not refused: the colleague's block stays a note
+    assert any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_calendar_view_asks_graph_for_the_availability_marking() -> None:
+    """The ownership check reads `show_as`: if it left the select list, every OOO looked yours."""
+    from unittest.mock import patch
+
+    from blumkin.skills.calendar import calendar_view
+
+    seen: dict[str, Any] = {}
+
+    class Builder:
+        async def get(self, request_config: Any) -> Any:
+            seen["select"] = list(request_config.query_parameters.select)
+            return SimpleNamespace(value=[], odata_next_link=None)
+
+    async def fake_builder(client: Any, calendar: Any) -> Any:
+        return Builder()
+
+    with (
+        patch("blumkin.skills.calendar.create_graph_client", return_value=object()),
+        patch("blumkin.skills.calendar._graph_calendar_view_builder", fake_builder),
+    ):
+        asyncio.run(
+            calendar_view(
+                start=datetime(2026, 11, 16, tzinfo=_NY),
+                end=datetime(2026, 11, 17, tzinfo=_NY),
+                config=_config(),
+            )
+        )
+
+    assert "showAs" in seen["select"]
