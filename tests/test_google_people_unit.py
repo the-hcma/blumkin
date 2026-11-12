@@ -176,6 +176,68 @@ def test_people_resolve_clamps_top_to_the_people_api_page_cap(tmp_path: Path) ->
     assert service.people.return_value.searchDirectoryPeople.call_args.kwargs["pageSize"] == 30
 
 
+_DOMAIN_USER_400 = (
+    b'{"error": {"code": 400, "message": "Must be a G Suite domain user.", '
+    b'"status": "FAILED_PRECONDITION"}}'
+)
+
+
+def test_people_resolve_survives_a_consumer_account_that_answers_400_not_a_domain_user(
+    tmp_path: Path,
+) -> None:
+    """The directory call answers a consumer Gmail with 400, not 403/404 (issue #731)."""
+    service = _service(contacts=[_contact("Ada Lovelace", "ada@example.com")])
+    service.people.return_value.searchDirectoryPeople.return_value.execute.side_effect = HttpError(
+        httplib2.Response({"status": 400}), _DOMAIN_USER_400, uri="x"
+    )
+    with _patched(service):
+        payload = asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).people_resolve(name="Ada"))
+    assert payload["person"]["email"] == "ada@example.com"
+
+
+def test_people_resolve_still_propagates_any_other_400_from_the_directory(tmp_path: Path) -> None:
+    service = _service(contacts=[_contact("Ada Lovelace", "ada@example.com")])
+    service.people.return_value.searchDirectoryPeople.return_value.execute.side_effect = HttpError(
+        httplib2.Response({"status": 400}),
+        b'{"error": {"code": 400, "message": "Invalid value at query"}}',
+        uri="x",
+    )
+    with _patched(service), pytest.raises(HttpError):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).people_resolve(name="Ada"))
+
+
+def test_the_phrase_in_another_field_or_a_body_that_is_not_json_is_not_a_no_directory_answer(
+    tmp_path: Path,
+) -> None:
+    """Only `error.message` counts: the same words elsewhere in a 400 must still surface."""
+    bodies = [
+        (
+            b'{"error": {"code": 400, "message": "Invalid value", '
+            b'"details": "Must be a G Suite domain user"}}'
+        ),
+        b"Must be a G Suite domain user.",
+        b'{"error": "Must be a G Suite domain user."}',
+    ]
+    for body in bodies:
+        service = _service(contacts=[_contact("Ada Lovelace", "ada@example.com")])
+        search = service.people.return_value.searchDirectoryPeople
+        search.return_value.execute.side_effect = HttpError(
+            httplib2.Response({"status": 400}), body, uri="x"
+        )
+        with _patched(service), pytest.raises(HttpError):
+            asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).people_resolve(name="Ada"))
+
+
+def test_the_domain_user_message_is_only_a_no_directory_answer_on_a_400(tmp_path: Path) -> None:
+    """The same words on a 500 are a server failure and must not drop the directory silently."""
+    service = _service(contacts=[_contact("Ada Lovelace", "ada@example.com")])
+    service.people.return_value.searchDirectoryPeople.return_value.execute.side_effect = HttpError(
+        httplib2.Response({"status": 500}), _DOMAIN_USER_400, uri="x"
+    )
+    with _patched(service), pytest.raises(HttpError):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).people_resolve(name="Ada"))
+
+
 def test_people_resolve_propagates_a_transient_directory_failure(tmp_path: Path) -> None:
     """Swallowing a 429/5xx could turn two real candidates into one confident answer."""
     service = _service(contacts=[_contact("Ada Lovelace", "ada@example.com")])

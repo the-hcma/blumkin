@@ -11,6 +11,7 @@ and no winner, and exactly one sets ``person``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -27,6 +28,8 @@ _READ_MASK = "emailAddresses,names,organizations"
 # thing on both providers instead of erroring where Graph succeeds.
 _DIRECTORY_SCOPE = "https://www.googleapis.com/auth/directory.readonly"
 _MAX_PAGE_SIZE = 30
+#: The 400 a consumer account gets from a directory search (compared case-insensitively, no period).
+_NO_DIRECTORY_MESSAGE = "must be a g suite domain user"
 
 
 async def people_resolve(
@@ -169,6 +172,25 @@ def _http_status(exc: HttpError) -> int | None:
         return None
 
 
+def _is_not_a_domain_user(exc: HttpError) -> bool:
+    """A consumer account's answer to a directory search: 400 "Must be a G Suite domain user".
+
+    Only that exact refusal is "this account has no directory" (issue #731): the 400 body's
+    `error.message` must be that sentence, so the words in another field, a body that is not
+    JSON, or any other 400 (a bad query) still surface.
+    """
+    if _http_status(exc) != 400:
+        return False
+    content = exc.content if isinstance(exc.content, bytes | bytearray) else b""
+    try:
+        body = json.loads(bytes(content).decode("utf-8"))
+    except ValueError:  # includes UnicodeDecodeError and JSONDecodeError
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    return isinstance(message, str) and message.strip().rstrip(".").lower() == _NO_DIRECTORY_MESSAGE
+
+
 def _people_service(cfg: BlumkinConfig) -> Any:
     creds = get_credentials(cfg, allow_interactive=False, required_scopes=PEOPLE_SCOPES)
     return build_api_service("people", "v1", creds=creds, config=cfg)
@@ -219,9 +241,9 @@ def _search_directory(
 ) -> list[Mapping[str, Any]]:
     """Domain directory results, or nothing at all.
 
-    A consumer Gmail account has no directory and answers 403/404 here; that is a
-    normal shape for this CLI's personal profile, not a failure worth surfacing,
-    so the contacts half of the search still stands on its own.
+    A consumer Gmail account has no directory and answers 403/404, or 400 "Must be a G Suite
+    domain user", here; that is a normal shape for this CLI's personal profile, not a failure
+    worth surfacing, so the contacts half of the search still stands on its own.
 
     Everything else propagates. Swallowing a 429 or a 5xx would drop the directory
     silently and could turn two real candidates into one confident answer - turning
@@ -239,6 +261,8 @@ def _search_directory(
     except HttpError as exc:
         status = _http_status(exc)
         if status == 404 or (status == 403 and granted_directory_scope):
+            return []
+        if _is_not_a_domain_user(exc):
             return []
         # A 403 on a token that never carried directory.readonly is a scope problem,
         # not "this account has no directory". Propagating it lets the CLI report
