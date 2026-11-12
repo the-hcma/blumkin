@@ -381,9 +381,7 @@ def test_a_config_without_an_address_is_checked_on_its_dates_and_says_so() -> No
     )
 
     provider.calendar_freebusy.assert_not_awaited()
-    assert any(
-        "your own address is not in the config" in w for w in payload["booking_checks"]["warnings"]
-    )
+    assert any("your own address is not known" in w for w in payload["booking_checks"]["warnings"])
 
 
 # --------------------------------------------------------------------------- an update
@@ -1059,3 +1057,176 @@ def test_create_books_over_your_own_oof_note_and_the_result_carries_the_warning(
     assert any(
         "out of office Mon 2026-11-16 03:00" in w and w.endswith("tell the user") for w in warnings
     )
+
+
+# --------------------------------------------------------------------------- the organizer (#725)
+
+
+def _busy_block() -> list[dict[str, Any]]:
+    return [
+        {"end": "2026-11-10T10:30:00-05:00", "start": "2026-11-10T10:00:00-05:00", "status": "busy"}
+    ]
+
+
+def test_the_signed_in_account_is_checked_and_not_the_profile_email_label() -> None:
+    provider = _provider(
+        [_item("real@example.com", busy=_busy_block())],
+        calendar_organizer=AsyncMock(return_value="real@example.com"),
+    )
+
+    report = _check(provider, "2026-11-10T10:00")
+
+    asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
+    assert asked == ["real@example.com"]  # not the label, me@example.com
+    assert [(f["check"], f["who"]) for f in report["findings"]] == [("busy", "you")]
+    assert any(
+        "profile email me@example.com is not the signed-in account real@example.com" in w
+        for w in report["warnings"]
+    )
+
+
+def test_google_asks_about_the_primary_calendar_and_does_not_flag_the_label() -> None:
+    provider = _provider(
+        [_item("primary", busy=_busy_block())],
+        calendar_organizer=AsyncMock(return_value="primary"),
+    )
+
+    report = _check(provider, "2026-11-10T10:00")
+
+    assert provider.calendar_freebusy.await_args.kwargs["with_emails"] == ["primary"]
+    assert [f["check"] for f in report["findings"]] == ["busy"]
+    assert not any("signed-in account" in w for w in report["warnings"])
+
+
+def test_a_failed_organizer_lookup_falls_back_to_the_label_and_says_so() -> None:
+    provider = _provider(
+        [_item("me@example.com")], calendar_organizer=AsyncMock(side_effect=RuntimeError("down"))
+    )
+
+    report = _check(provider, "2026-11-10T10:00")
+
+    assert provider.calendar_freebusy.await_args.kwargs["with_emails"] == ["me@example.com"]
+    assert any("could not resolve the signed-in account" in w for w in report["warnings"])
+    assert report["ok"] is False  # the label may be another account: not a complete check
+
+
+def test_a_blank_organizer_answer_with_no_label_is_not_called_free() -> None:
+    provider = _provider([_item()], calendar_organizer=AsyncMock(return_value=" "))
+
+    report = asyncio.run(
+        slot_report(
+            provider,
+            _config(email=""),
+            {"start_raw": "2026-11-10T10:00", "tz_name": "America/New_York"},
+        )
+    )
+
+    assert report["ok"] is False
+    assert any("your own address is not known" in w for w in report["warnings"])
+
+
+def test_the_signed_in_account_is_not_checked_twice_when_it_is_also_a_guest() -> None:
+    provider = _provider(
+        [_item("real@example.com"), _item("ana@example.com")],
+        calendar_organizer=AsyncMock(return_value="real@example.com"),
+    )
+
+    _check(
+        provider,
+        "2026-11-10T10:00",
+        with_emails=["REAL@example.com", "ana@example.com"],
+    )
+
+    asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
+    assert asked == ["real@example.com", "ana@example.com"]  # you once, the guest once
+
+
+def test_the_providers_answer_who_the_organizer_is(monkeypatch: pytest.MonkeyPatch) -> None:
+    from blumkin.providers.google_provider import GoogleWorkspaceProvider
+    from blumkin.providers.microsoft import MicrosoftWorkspaceProvider
+
+    seen: list[Any] = []
+
+    async def fake_mailbox(*, config: Any = None) -> str:
+        seen.append(config)
+        return "real@example.com"
+
+    monkeypatch.setattr("blumkin.providers.microsoft.calendar_organizer", fake_mailbox)
+    google = GoogleWorkspaceProvider.__new__(GoogleWorkspaceProvider)
+    microsoft = MicrosoftWorkspaceProvider.__new__(MicrosoftWorkspaceProvider)
+    microsoft._config = _config()
+
+    assert asyncio.run(google.calendar_organizer()) == "primary"
+    assert asyncio.run(microsoft.calendar_organizer()) == "real@example.com"
+    assert len(seen) == 1
+
+
+def test_a_profile_email_that_is_not_the_signed_in_account_is_still_checked_as_a_guest() -> None:
+    provider = _provider(
+        [_item("real@example.com"), _item("me@example.com")],
+        calendar_organizer=AsyncMock(return_value="real@example.com"),
+    )
+
+    _check(provider, "2026-11-10T10:00", with_emails=["me@example.com"])
+
+    asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
+    assert asked == ["real@example.com", "me@example.com"]  # the label is someone else here
+
+
+def test_on_google_a_guest_listed_by_the_profile_label_is_checked_not_skipped() -> None:
+    # `_config()` labels the profile `me@example.com`; Google answers with the `primary` alias.
+    provider = _provider(
+        [_item("primary"), _item("me@example.com", busy=_busy_block()), _item("ana@example.com")],
+        calendar_organizer=AsyncMock(return_value="primary"),
+    )
+
+    report = _check(provider, "2026-11-10T10:00", with_emails=["me@example.com", "ana@example.com"])
+
+    asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
+    assert asked == ["primary", "me@example.com", "ana@example.com"]
+    assert [(f["check"], f["who"]) for f in report["findings"]] == [
+        ("busy", "me@example.com")
+    ]  # the busy guest is found, the free primary calendar does not mask it
+
+
+def test_microsoft_organizer_lookup_failure_raises_and_never_returns_the_label() -> None:
+    from types import SimpleNamespace as NS
+    from unittest.mock import patch
+
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    from blumkin.auth import AuthRequiredError
+    from blumkin.skills.calendar import calendar_organizer
+
+    client = NS(me=NS(get=AsyncMock(side_effect=ODataError())))
+    with patch("blumkin.skills.calendar.create_graph_client", return_value=client):
+        with pytest.raises(AuthRequiredError):
+            asyncio.run(calendar_organizer(config=_config()))
+
+
+def test_a_call_with_no_meeting_slot_never_looks_up_the_organizer() -> None:
+    organizer = AsyncMock(return_value="real@example.com")
+    provider = _provider(calendar_organizer=organizer, calendar_get=AsyncMock())
+
+    all_day = asyncio.run(
+        run_skill(
+            "calendar.create",
+            {"subject": "OOO", "start": "2026-11-16", "all_day": True, "tz": "America/New_York"},
+            config=_config(),
+            provider=provider,
+        )
+    )
+    metadata_only = _update(provider, subject="New title")
+
+    assert metadata_only is None and "booking_checks" not in all_day
+    organizer.assert_not_awaited()
+    provider.calendar_freebusy.assert_not_awaited()
+
+
+def test_a_call_with_a_slot_still_looks_up_the_organizer_once() -> None:
+    organizer = AsyncMock(return_value="real@example.com")
+    provider = _provider([_item("real@example.com")], calendar_organizer=organizer)
+
+    _check(provider, "2026-11-10T10:00")
+
+    organizer.assert_awaited_once()

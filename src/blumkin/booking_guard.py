@@ -161,7 +161,14 @@ async def assess_slot(
     provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
 ) -> Assessment | None:
     """Run every check on the slot a call books or is asked about; None when it has no slot."""
-    slot = await _slot(provider, config, skill_id, kwargs)
+    if not _needs_slot(config, skill_id, kwargs):
+        return None  # no meeting time to check: nothing to look up either
+    organizer, notes_about_you, verified = await _organizer(provider, config)
+    # Who is "you" among the guests: the resolved organizer and nothing else. The `primary` alias
+    # carries no address and the label is not verified, so a guest listed by that address is
+    # checked: a guest checked twice is better than one never checked.
+    own = frozenset(a.lower() for a in (organizer, "primary") if a)
+    slot = await _slot(provider, config, skill_id, kwargs, own)
     if slot is None:
         return None
     start, end, invitees, own_slot, on_event = slot
@@ -169,12 +176,12 @@ async def assess_slot(
     checked: set[str] = {"weekend", "holiday"}
     if config.preferences.booking_exclusions:
         checked.add("exclusion")
-    warnings: list[str] = []
-    blocking: list[str] = []
-    people: list[tuple[str, str]] = [("you", config.email)] if config.email else []
+    warnings: list[str] = list(notes_about_you)
+    blocking: list[str] = [] if verified else list(notes_about_you)
+    people: list[tuple[str, str]] = [("you", organizer)] if organizer else []
     people += [(email, email) for email in invitees]
-    if not config.email:
-        gap = "your own address is not in the config: your hours and busy time not checked"
+    if not organizer:
+        gap = "your own address is not known: your hours and busy time not checked"
         warnings.append(gap)
         blocking.append(gap)
     if people:
@@ -252,12 +259,6 @@ async def slot_report(
     }
 
 
-def _days(start: datetime, end: datetime) -> list[date]:
-    """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
-    last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
-    return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
-
-
 async def _availability(
     provider: Any, addresses: list[str], start: datetime, end: datetime
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -333,6 +334,12 @@ def _busy_text(begins: datetime, ends: datetime, status: str) -> str:
     return f"out of office {span}" if status == "oof" else f"busy {span} ({status})"
 
 
+def _days(start: datetime, end: datetime) -> list[date]:
+    """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
+    last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
+    return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
+
+
 def _hours_findings(
     start: datetime, end: datetime, hours: dict[str, Any] | None, who: str
 ) -> tuple[list[Finding], str | None]:
@@ -370,16 +377,6 @@ def _hours_findings(
     return findings, None
 
 
-def _parse_instant(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        value = datetime.fromisoformat(str(raw))
-    except ValueError:
-        return None
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
 def _is_event_itself(
     begins: datetime,
     ends: datetime,
@@ -395,12 +392,82 @@ def _is_event_itself(
     return any(_same(begins, a) and _same(ends, b) for a, b in pairs)
 
 
+def _needs_slot(config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]) -> bool:
+    """Whether the call can have a meeting slot to check, from its arguments alone.
+
+    `_slot` makes the final call (an update's stored event can turn out to be all-day), but these
+    cases need no provider call at all, so they must not trigger one, such as the organizer lookup.
+    """
+    if not (kwargs.get("tz_name") or config.default_tz):
+        return False  # no zone to read the slot in
+    if skill_id == "calendar.update":
+        changes_time = any(kwargs.get(key) for key in ("start_raw", "end_raw", "duration")) or (
+            kwargs.get("all_day") is False
+        )
+        return not kwargs.get("all_day") and bool(changes_time or kwargs.get("with_emails"))
+    if skill_id == "calendar.create":
+        return not kwargs.get("all_day") and bool(kwargs.get("start_raw"))
+    return True
+
+
+async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str], bool]:
+    """The signed-in organizer's address, notes about how it was found, and whether it is verified.
+
+    The profile's `email` is an onboarding label that can differ from the account actually
+    signed in (issue #725), so the provider's own answer wins (the primary mailbox on Microsoft,
+    the `primary` alias on Google). A provider with no answer falls back to the label as before.
+    A lookup that fails or answers nothing also falls back to the label, but says so and is not
+    verified: the label may be another account, so the result must not be read as complete.
+    """
+    label = config.email or None
+    resolve = getattr(provider, "calendar_organizer", None)
+    if resolve is None:
+        return label, [], True
+    try:
+        resolved = await resolve()
+    except Exception:  # noqa: BLE001 - the label is the fallback, and the failure is reported
+        resolved = None
+    if not isinstance(resolved, str) or not resolved.strip():
+        if label:
+            return (
+                label,
+                [f"could not resolve the signed-in account: checked the profile email {label}"],
+                False,
+            )
+        return None, [], False
+    resolved = resolved.strip()
+    if label and resolved.lower() not in {"primary", label.lower()}:
+        return (
+            resolved,
+            [
+                f"the profile email {label} is not the signed-in account {resolved}: "
+                f"checked {resolved}"
+            ],
+            True,
+        )
+    return resolved, [], True
+
+
+def _parse_instant(raw: Any) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _same(left: datetime, right: datetime) -> bool:
     return abs(left - right) <= _SAME_SLOT
 
 
 async def _slot(
-    provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
+    provider: Any,
+    config: BlumkinConfig,
+    skill_id: str,
+    kwargs: dict[str, Any],
+    own: frozenset[str],
 ) -> tuple[datetime, datetime, list[str], tuple[datetime, datetime] | None, frozenset[str]] | None:
     """The slot a call books and who is in it, or None when it books no meeting time."""
     zone_name = kwargs.get("tz_name") or config.default_tz
@@ -419,7 +486,6 @@ async def _slot(
         length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
         if length <= timedelta(0):
             raise ValueError("--duration must be positive")
-        own = {config.email.lower()} if config.email else set()
         guests = [str(e) for e in kwargs.get("with_emails") or [] if str(e).lower() not in own]
         end = (start.astimezone(UTC) + length).astimezone(zone)
         return start, end, list(dict.fromkeys(guests)), None, frozenset()
@@ -471,7 +537,6 @@ async def _slot(
         invitees = [
             str(person["email"]) for person in event.get("attendees") or [] if person.get("email")
         ]
-    own = {config.email.lower()} if config.email else set()
     unique = list(dict.fromkeys(e for e in invitees if e.lower() not in own))
     on_event = frozenset(
         str(person["email"]).lower()

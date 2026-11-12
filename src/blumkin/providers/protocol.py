@@ -111,6 +111,8 @@ class WorkspaceProvider(Protocol):
 
     async def calendar_list(self) -> dict[str, Any]: ...
 
+    async def calendar_organizer(self) -> str: ...
+
     async def calendar_suggest(
         self,
         *,

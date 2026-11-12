@@ -206,6 +206,10 @@ class GoogleWorkspaceProvider:
     async def calendar_list(self) -> dict[str, Any]:
         return await google_calendar.calendar_list(config=self._config)
 
+    async def calendar_organizer(self) -> str:
+        # "primary" is the signed-in account's own calendar, so no address lookup is needed.
+        return "primary"
+
     async def calendar_suggest(
         self,
         *,
