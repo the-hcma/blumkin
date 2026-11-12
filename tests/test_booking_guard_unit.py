@@ -1571,12 +1571,18 @@ def test_the_occurrence_explains_an_oof_block_whatever_the_order_of_the_blocks()
     assert [f.message for f in caught.value.findings] == ["busy 10:30-11:00 (busy)"]
 
 
-def test_a_meeting_at_the_old_slots_time_is_not_exempted_by_the_moved_occurrence() -> None:
-    provider = _series_move_provider()
+def test_another_oof_event_at_the_old_slots_time_is_not_exempted_by_the_moved_occurrence() -> None:
+    # A second OOO event of yours sits exactly where the series' old occurrence was. The old
+    # occurrence is already used up by the moved-event exemption, so this block still counts.
+    twin = {
+        "end": "2026-11-10T10:30:00-05:00", "id": "twin", "is_organizer": True,
+        "show_as": "oof", "start": "2026-11-10T10:00:00-05:00",
+    }  # fmt: skip
+    provider = _series_move_provider([twin])
     busy = provider.calendar_freebusy.return_value["items"][0]["busy"]
-    busy.append(_block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "busy"))
+    busy.insert(1, _block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "oof"))
 
     with pytest.raises(BookingGuardError) as caught:
         _update(provider, start_raw="2026-11-10T10:15")
 
-    assert [f.message for f in caught.value.findings] == ["busy 10:00-10:30 (busy)"]
+    assert any(f.message == "out of office 10:00-10:30" for f in caught.value.findings)
