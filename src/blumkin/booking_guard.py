@@ -469,7 +469,10 @@ def _oof_note(text: str, owner: str) -> str:
     if owner == "other":
         why = "every event behind it is organized by someone else, so it is a colleague's time off"
     else:
-        why = "the events behind it could not be read, so it may be a colleague's accepted OOO"
+        why = (
+            "the events behind it could not be read or do not say who organized them, "
+            "so it may be a colleague's accepted OOO"
+        )
     return (
         f"your calendar marks you {text}: not counted as a conflict ({why}); "
         "if it is your own time off, tell the user"
@@ -482,12 +485,15 @@ def _oof_owner(events: list[dict[str, Any]] | None, blocks: int) -> str:
     `mine` when you organized one of the events behind them, or there are more blocks than events
     (some block is unexplained, perhaps from a calendar the view did not list: the safe reading,
     since blocks cannot be matched to events by their clock times), `other` when every event is
-    organized by someone else and each block has one, `unknown` when the events could not be read.
+    organized by someone else and each block has one, `unknown` when the events could not be read
+    or one of them does not say who organized it.
     """
     if events is None:
         return "unknown"
     if blocks > len(events) or any(event.get("is_organizer") for event in events):
         return "mine"
+    if any(event.get("is_organizer") is None for event in events):
+        return "unknown"  # an event that does not say who organized it proves nothing
     return "other"
 
 

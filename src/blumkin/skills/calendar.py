@@ -869,7 +869,7 @@ def _event_to_dict(ev: Any, display_tz: ZoneInfo) -> dict[str, Any]:
         "end": end,
         "id": ev.id,
         "is_all_day": bool(ev.is_all_day),
-        "is_organizer": bool(ev.is_organizer),
+        "is_organizer": None if ev.is_organizer is None else bool(ev.is_organizer),
         "location": location,
         "online_join_url": online,
         "organizer": {"email": organizer_email, "name": organizer_name},

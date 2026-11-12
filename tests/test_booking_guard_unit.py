@@ -1451,3 +1451,32 @@ def test_moving_a_recurring_series_leaves_its_occurrences_out_of_the_evidence() 
     report = _update(provider, start_raw="2026-11-10T10:15")
 
     assert report is not None and any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_an_event_that_does_not_say_who_organized_it_leaves_the_block_a_note_not_a_colleagues() -> (
+    None
+):
+    event = {"id": "e1", "is_organizer": None, "show_as": "oof"}
+
+    report = _check(_with_events(event), "2026-11-16T14:00")
+
+    assert report["ok"] is True and report["findings"] == []
+    assert any("do not say who organized them" in w for w in report["warnings"])
+    assert not any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_a_missing_is_organizer_stays_unknown_in_the_event_payload() -> None:
+    from zoneinfo import ZoneInfo
+
+    from blumkin.skills.calendar import _event_to_dict
+
+    def event(is_organizer: bool | None) -> Any:
+        return SimpleNamespace(
+            end=None, id="e", is_all_day=False, is_organizer=is_organizer, location=None,
+            online_meeting=None, organizer=None, response_status=None, start=None, subject="x",
+        )  # fmt: skip
+
+    tz = ZoneInfo("UTC")
+    assert _event_to_dict(event(None), tz)["is_organizer"] is None
+    assert _event_to_dict(event(True), tz)["is_organizer"] is True
+    assert _event_to_dict(event(False), tz)["is_organizer"] is False
