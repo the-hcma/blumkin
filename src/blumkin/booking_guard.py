@@ -293,10 +293,23 @@ def _busy_findings(
         if begins < end and ends > start:
             local = start.tzinfo
             shown = (begins.astimezone(local), ends.astimezone(local))
-            findings.append(
-                Finding("busy", f"busy {shown[0]:%H:%M}-{shown[1]:%H:%M} ({status})", who)
-            )
+            findings.append(Finding("busy", _busy_text(shown[0], shown[1], status), who))
     return findings
+
+
+def _busy_text(begins: datetime, ends: datetime, status: str) -> str:
+    """One busy block as text: the clock times alone when it fits in a day, else with its dates.
+
+    A block that runs across days (an all-day out-of-office entry) printed as `03:00-03:00` would
+    look like a broken check (issue #726), so it names its dates and, for `oof`, says what it is.
+    """
+    one_day = begins.date() == (ends - timedelta(microseconds=1)).date()
+    span = (
+        f"{begins:%H:%M}-{ends:%H:%M}"
+        if one_day
+        else f"{begins:%a %Y-%m-%d %H:%M} → {ends:%a %Y-%m-%d %H:%M}"
+    )
+    return f"out of office {span}" if status == "oof" else f"busy {span} ({status})"
 
 
 def _hours_findings(

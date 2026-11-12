@@ -924,3 +924,48 @@ def test_check_asks_for_a_timed_start_and_never_suggests_all_day() -> None:
         _check(_provider([_item()]), "2026-11-10")
 
     assert "all-day" not in str(caught.value)
+
+
+# --------------------------------------------------------------------------- busy text (#726)
+
+
+def _block(start: str, end: str, status: str) -> dict[str, Any]:
+    return {"end": end, "start": start, "status": status}
+
+
+def _busy_message(block: dict[str, Any]) -> str:
+    found, _, _ = schedule_findings(*_slot("2026-11-16", 14), _item(busy=[block]), who="you")
+    return found[0].message
+
+
+def test_a_multi_day_out_of_office_block_names_its_dates_and_says_what_it_is() -> None:
+    text = _busy_message(_block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof"))
+
+    assert text == "out of office Mon 2026-11-16 03:00 → Thu 2026-11-19 03:00"
+    assert "03:00-03:00" not in text
+
+
+def test_a_same_day_meeting_keeps_its_clock_times_and_status() -> None:
+    text = _busy_message(_block("2026-11-16T14:00:00-05:00", "2026-11-16T14:30:00-05:00", "busy"))
+
+    assert text == "busy 14:00-14:30 (busy)"
+
+
+def test_a_same_day_out_of_office_block_says_out_of_office() -> None:
+    text = _busy_message(_block("2026-11-16T13:00:00-05:00", "2026-11-16T17:00:00-05:00", "oof"))
+
+    assert text == "out of office 13:00-17:00"
+
+
+def test_a_multi_day_block_that_is_not_out_of_office_still_names_its_dates() -> None:
+    text = _busy_message(
+        _block("2026-11-15T00:00:00-05:00", "2026-11-17T00:00:00-05:00", "tentative")
+    )
+
+    assert text == "busy Sun 2026-11-15 00:00 → Tue 2026-11-17 00:00 (tentative)"
+
+
+def test_a_block_ending_exactly_at_midnight_counts_as_one_day() -> None:
+    text = _busy_message(_block("2026-11-16T09:00:00-05:00", "2026-11-17T00:00:00-05:00", "busy"))
+
+    assert text == "busy 09:00-00:00 (busy)"
