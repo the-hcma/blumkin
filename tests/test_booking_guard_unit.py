@@ -768,7 +768,7 @@ def test_check_uses_the_duration_and_rejects_a_date_only_start_and_a_missing_zon
     report = _check(_provider([_item()]), "2026-11-10T10:00", duration="2h")
     assert report["slot"]["end"].startswith("2026-11-10T12:00")
 
-    with pytest.raises(ValueError, match="date"):
+    with pytest.raises(ValueError, match="needs a time"):
         _check(_provider([_item()]), "2026-11-10")
     with pytest.raises(ValueError, match="no time zone"):
         asyncio.run(
@@ -908,3 +908,19 @@ def test_check_human_output_strips_terminal_control_characters_but_json_is_untou
 
     assert "\x1b" not in text and "\x07" not in text
     assert any("\x1b" in w for w in report["warnings"])  # the JSON payload is left as it is
+
+
+def test_check_rejects_a_zero_length_duration_before_asking_freebusy() -> None:
+    provider = _provider([_item()])
+
+    with pytest.raises(ValueError, match="duration must be positive"):
+        _check(provider, "2026-11-10T10:00", duration="0m")
+
+    provider.calendar_freebusy.assert_not_awaited()
+
+
+def test_check_asks_for_a_timed_start_and_never_suggests_all_day() -> None:
+    with pytest.raises(ValueError) as caught:
+        _check(_provider([_item()]), "2026-11-10")
+
+    assert "all-day" not in str(caught.value)

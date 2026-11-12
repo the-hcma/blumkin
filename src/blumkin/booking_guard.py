@@ -374,9 +374,12 @@ async def _slot(
         return None  # no zone to read the slot in: the provider refuses the call itself
     zone = ZoneInfo(zone_name)
     if skill_id == "calendar.check":
-        reject_date_only_start(kwargs["start_raw"])
+        if "T" not in kwargs["start_raw"].strip():  # `calendar check` has no --all-day
+            raise ValueError("--start needs a time (e.g. 2026-12-24T09:00), not a date alone")
         start = parse_local_datetime(kwargs["start_raw"], zone)
         length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
+        if length <= timedelta(0):
+            raise ValueError("--duration must be positive")
         own = {config.email.lower()} if config.email else set()
         guests = [str(e) for e in kwargs.get("with_emails") or [] if str(e).lower() not in own]
         end = (start.astimezone(UTC) + length).astimezone(zone)
