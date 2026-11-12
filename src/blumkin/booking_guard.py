@@ -89,6 +89,7 @@ def schedule_findings(
     *,
     who: str,
     own_slot: tuple[datetime, datetime] | None = None,
+    own_oof_events: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Finding], list[str], set[str]]:
     """What one person's schedule says about the slot: findings, warnings, checks made.
 
@@ -97,6 +98,8 @@ def schedule_findings(
     is the event's current start and end when it is being moved: the organizer's own busy time
     is ignored for the organizer and for people already on the event (they accepted it, so it
     shows as their busy time); pass None for a newly invited person, whose busy time is real.
+    `own_oof_events` are the out-of-office events behind an `oof` block on your own schedule
+    (None when they could not be read), which tell your own time off from a colleague's.
     """
     label = "you" if who == "you" else who
     if item is None:
@@ -127,7 +130,7 @@ def schedule_findings(
         warnings.append(f"freebusy returned nothing usable for {label}: availability not checked")
     else:
         checked.add("busy")
-        found, notes = _busy_findings(start, end, busy or [], label, own_slot)
+        found, notes = _busy_findings(start, end, busy or [], label, own_slot, own_oof_events)
         findings.extend(found)
         warnings.extend(notes)
     return findings, warnings, checked
@@ -191,6 +194,14 @@ async def assess_slot(
             blocking.append(failure)
         else:
             by_address = {str(item.get("schedule") or "").lower(): item for item in items}
+            own_oof: list[dict[str, Any]] | None = None
+            if organizer and _has_own_oof(by_address.get(organizer.lower()), start, end):
+                own_oof = await _oof_events(
+                    provider,
+                    start,
+                    end,
+                    kwargs.get("event_id") if skill_id == "calendar.update" else None,
+                )
             for who, address in people:
                 more, notes, done = schedule_findings(
                     start,
@@ -198,6 +209,7 @@ async def assess_slot(
                     by_address.get(address.lower()),
                     who=who,
                     own_slot=own_slot if who == "you" or address.lower() in on_event else None,
+                    own_oof_events=own_oof if who == "you" else None,
                 )
                 findings.extend(more)
                 warnings.extend(notes)
@@ -278,18 +290,21 @@ def _busy_findings(
     busy: list[dict[str, Any]],
     who: str,
     own_slot: tuple[datetime, datetime] | None,
+    own_oof_events: list[dict[str, Any]] | None = None,
 ) -> tuple[list[Finding], list[str]]:
     """The busy blocks that overlap the slot, as findings, plus notes for what is not counted.
 
-    An `oof` block on your own schedule is a note, not a conflict: free/busy cannot say whose
-    time off it is, and an accepted all-day OOO event from a colleague must not stop you from
-    booking (issue #726), so the note asks the agent to tell the user in case it is your own. It
-    reaches the agent before a proposal with `calendar check`, and with the result of a create or
-    update.
-    On an invitee's schedule it stays a conflict, because it is that person who is out.
+    An `oof` block on your own schedule is a conflict only when it is your own time off. An
+    accepted all-day OOO event from a colleague also marks you `oof` and must not stop you from
+    booking (issues #726, #727), so `own_oof_events`, the out-of-office events behind the block,
+    decide: one you organized, or none at all, is your own time off (a conflict); events that are
+    all organized by someone else are a note. When the events could not be read (None) it stays
+    a note that asks the agent to tell the user. On an invitee's schedule an `oof` block is
+    always a conflict, because it is that person who is out.
     """
     findings: list[Finding] = []
     notes: list[str] = []
+    own_oof_texts: list[str] = []
     own_seen = False
     for slot in busy:
         status = str(slot.get("status") or "busy").lower()
@@ -308,13 +323,15 @@ def _busy_findings(
             shown = (begins.astimezone(local), ends.astimezone(local))
             text = _busy_text(shown[0], shown[1], status)
             if status == "oof" and who == "you":
-                notes.append(
-                    f"your calendar marks you {text}: not counted as a conflict (an accepted "
-                    "OOO event from someone else does this); if it is your own time off, "
-                    "tell the user"
-                )
+                own_oof_texts.append(text)  # decided below, once all of them are known
                 continue
             findings.append(Finding("busy", text, who))
+    owner = _oof_owner(own_oof_events, len(own_oof_texts))
+    for text in own_oof_texts:
+        if owner == "mine":
+            findings.append(Finding("busy", text, who))
+        else:
+            notes.append(_oof_note(text, owner))
     return findings, notes
 
 
@@ -338,6 +355,17 @@ def _days(start: datetime, end: datetime) -> list[date]:
     """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
     last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
     return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
+
+
+def _has_own_oof(item: dict[str, Any] | None, start: datetime, end: datetime) -> bool:
+    """Whether a schedule has an `oof` block that overlaps the slot."""
+    for slot in (item or {}).get("busy") or []:
+        if str(slot.get("status") or "").lower() != "oof":
+            continue
+        begins, ends = _parse_instant(slot.get("start")), _parse_instant(slot.get("end"))
+        if begins is not None and ends is not None and begins < end and ends > start:
+            return True
+    return False
 
 
 def _hours_findings(
@@ -408,6 +436,65 @@ def _needs_slot(config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]) ->
     if skill_id == "calendar.create":
         return not kwargs.get("all_day") and bool(kwargs.get("start_raw"))
     return True
+
+
+async def _oof_events(
+    provider: Any, start: datetime, end: datetime, moved_event_id: str | None = None
+) -> list[dict[str, Any]] | None:
+    """The out-of-office events on your calendar during the slot, or None when unreadable.
+
+    A view that is cut short (`complete` false) or a provider that cannot list events cannot say
+    that nothing explains a block, so it answers None, never an empty list. The event being
+    moved (or its series, for a recurring one) is left out: its own block is already exempt, and
+    it must not vouch for another one.
+    """
+    try:
+        view = await provider.calendar_view(start=start, end=end)
+    except Exception:  # noqa: BLE001 - unreadable events leave the block a note, not a conflict
+        return None
+    if not isinstance(view, dict) or not view.get("complete", True):
+        return None
+    return [
+        event
+        for event in view.get("items") or []
+        if str(event.get("show_as") or "").lower() == "oof"
+        and not (
+            moved_event_id and moved_event_id in (event.get("id"), event.get("series_master_id"))
+        )
+    ]
+
+
+def _oof_note(text: str, owner: str) -> str:
+    """The note for an `oof` block on your schedule that is not counted as a conflict."""
+    if owner == "other":
+        why = "every event behind it is organized by someone else, so it is a colleague's time off"
+    else:
+        why = (
+            "the events behind it could not be read or do not say who organized them, "
+            "so it may be a colleague's accepted OOO"
+        )
+    return (
+        f"your calendar marks you {text}: not counted as a conflict ({why}); "
+        "if it is your own time off, tell the user"
+    )
+
+
+def _oof_owner(events: list[dict[str, Any]] | None, blocks: int) -> str:
+    """Whose time off the `oof` blocks on your schedule are: `mine`, `other` or `unknown`.
+
+    `mine` when you organized one of the events behind them, or there are more blocks than events
+    (some block is unexplained, perhaps from a calendar the view did not list: the safe reading,
+    since blocks cannot be matched to events by their clock times), `other` when every event is
+    organized by someone else and each block has one, `unknown` when the events could not be read
+    or one of them does not say who organized it.
+    """
+    if events is None:
+        return "unknown"
+    if blocks > len(events) or any(event.get("is_organizer") for event in events):
+        return "mine"
+    if any(event.get("is_organizer") is None for event in events):
+        return "unknown"  # an event that does not say who organized it proves nothing
+    return "other"
 
 
 async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str], bool]:

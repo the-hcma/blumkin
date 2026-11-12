@@ -1230,3 +1230,253 @@ def test_a_call_with_a_slot_still_looks_up_the_organizer_once() -> None:
     _check(provider, "2026-11-10T10:00")
 
     organizer.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------- whose OOO (#727)
+
+
+def _oof_block() -> dict[str, Any]:
+    return _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")
+
+
+def _oof_event(*, mine: bool, show_as: str = "oof") -> dict[str, Any]:
+    return {"id": "e1", "is_organizer": mine, "show_as": show_as}
+
+
+def _with_events(*events: dict[str, Any], complete: bool = True) -> Any:
+    view = AsyncMock(return_value={"complete": complete, "items": list(events)})
+    return _provider([_item(busy=[_oof_block()])], calendar_view=view)
+
+
+def test_an_out_of_office_event_organized_by_someone_else_is_a_note() -> None:
+    provider = _with_events(_oof_event(mine=False))
+
+    report = _check(provider, "2026-11-16T14:00")
+
+    assert report["ok"] is True and report["findings"] == []
+    assert any("organized by someone else" in w for w in report["warnings"])
+    start = provider.calendar_view.await_args.kwargs["start"]
+    assert start.isoformat().startswith("2026-11-16T14:00")  # the slot window, not the block
+
+
+def test_an_out_of_office_event_you_organized_is_your_own_time_off_and_a_conflict() -> None:
+    report = _check(_with_events(_oof_event(mine=True)), "2026-11-16T14:00")
+
+    assert report["ok"] is False
+    assert [(f["check"], f["who"]) for f in report["findings"]] == [("busy", "you")]
+    assert report["findings"][0]["message"].startswith("out of office Mon 2026-11-16 03:00")
+
+
+def test_one_of_your_own_events_among_a_colleagues_makes_it_a_conflict() -> None:
+    provider = _with_events(_oof_event(mine=False), _oof_event(mine=True))
+
+    assert _check(provider, "2026-11-16T14:00")["ok"] is False
+
+
+def test_an_out_of_office_block_no_event_explains_is_treated_as_yours() -> None:
+    # The block may come from a calendar the view did not list: the safe reading is a conflict.
+    provider = _with_events(_oof_event(mine=True, show_as="busy"))  # not an out-of-office event
+
+    report = _check(provider, "2026-11-16T14:00")
+
+    assert report["ok"] is False and [f["check"] for f in report["findings"]] == ["busy"]
+
+
+def test_unreadable_or_incomplete_events_leave_the_block_a_note() -> None:
+    failing = _provider(
+        [_item(busy=[_oof_block()])], calendar_view=AsyncMock(side_effect=RuntimeError("down"))
+    )
+
+    for provider in (failing, _with_events(_oof_event(mine=True), complete=False)):
+        report = _check(provider, "2026-11-16T14:00")
+
+        assert report["ok"] is True and report["findings"] == []
+        assert any("could not be read" in w for w in report["warnings"])
+
+
+def test_the_events_are_only_read_when_your_schedule_has_an_out_of_office_block() -> None:
+    view = AsyncMock(return_value={"complete": True, "items": []})
+    provider = _provider([_item()], calendar_view=view)
+
+    _check(provider, "2026-11-10T10:00")
+
+    view.assert_not_awaited()
+
+
+def test_an_invitees_out_of_office_block_is_still_a_conflict_without_reading_events() -> None:
+    view = AsyncMock(return_value={"complete": True, "items": []})
+    provider = _provider(
+        [_item(), _item("ana@example.com", busy=[_oof_block()])], calendar_view=view
+    )
+
+    report = _check(provider, "2026-11-16T14:00", with_emails=["ana@example.com"])
+
+    assert [(f["check"], f["who"]) for f in report["findings"]] == [("busy", "ana@example.com")]
+    view.assert_not_awaited()
+
+
+def test_the_guard_blocks_a_booking_in_your_own_time_off_and_allows_a_colleagues() -> None:
+    with pytest.raises(BookingGuardError) as caught:
+        _create(_with_events(_oof_event(mine=True)), "2026-11-16T15:00")
+
+    assert [f.check for f in caught.value.findings] == ["busy"]
+    colleague = _with_events(_oof_event(mine=False))
+    payload = _create(colleague, "2026-11-16T15:00")
+
+    colleague.calendar_create.assert_awaited_once()
+    assert any("organized by someone else" in w for w in payload["booking_checks"]["warnings"])
+
+
+def test_the_event_payload_carries_the_availability_marking() -> None:
+    from zoneinfo import ZoneInfo
+
+    from blumkin.skills.calendar import _event_to_dict
+
+    def event(**extra: Any) -> Any:
+        return SimpleNamespace(
+            end=None, id="e", is_all_day=True, is_organizer=False, location=None,
+            online_meeting=None, organizer=None, response_status=None, start=None,
+            subject="OOO", **extra,
+        )  # fmt: skip
+
+    tz = ZoneInfo("UTC")
+    assert _event_to_dict(event(show_as=SimpleNamespace(value="oof")), tz)["show_as"] == "oof"
+    assert _event_to_dict(event(), tz)["show_as"] is None
+
+
+def test_the_event_being_moved_does_not_vouch_for_a_colleagues_out_of_office_block() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")  # id evt-1
+    blocks = [
+        _block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "oof"),  # the moved event
+        _block("2026-11-10T03:00:00-05:00", "2026-11-12T03:00:00-05:00", "oof"),  # a colleague's
+    ]
+    view = AsyncMock(
+        return_value={
+            "complete": True,
+            "items": [
+                {"id": "evt-1", "is_organizer": True, "show_as": "oof"},
+                {"id": "colleague", "is_organizer": False, "show_as": "oof"},
+            ],
+        }
+    )
+    provider = _provider(
+        [_item(busy=blocks)], calendar_get=AsyncMock(return_value=event), calendar_view=view
+    )
+
+    report = _update(provider, start_raw="2026-11-10T10:15")
+
+    assert report is not None  # not refused: the colleague's block stays a note
+    assert any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_calendar_view_asks_graph_for_the_availability_marking() -> None:
+    """The ownership check reads `show_as`: if it left the select list, every OOO looked yours."""
+    from unittest.mock import patch
+
+    from blumkin.skills.calendar import calendar_view
+
+    seen: dict[str, Any] = {}
+
+    class Builder:
+        async def get(self, request_config: Any) -> Any:
+            seen["select"] = list(request_config.query_parameters.select)
+            return SimpleNamespace(value=[], odata_next_link=None)
+
+    async def fake_builder(client: Any, calendar: Any) -> Any:
+        return Builder()
+
+    with (
+        patch("blumkin.skills.calendar.create_graph_client", return_value=object()),
+        patch("blumkin.skills.calendar._graph_calendar_view_builder", fake_builder),
+    ):
+        asyncio.run(
+            calendar_view(
+                start=datetime(2026, 11, 16, tzinfo=_NY),
+                end=datetime(2026, 11, 17, tzinfo=_NY),
+                config=_config(),
+            )
+        )
+
+    assert {"seriesMasterId", "showAs"} <= set(seen["select"])
+
+
+def test_two_out_of_office_blocks_with_one_explaining_event_are_treated_as_yours() -> None:
+    blocks = [
+        _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof"),
+        _block("2026-11-16T13:00:00-05:00", "2026-11-16T17:00:00-05:00", "oof"),
+    ]
+    view = AsyncMock(
+        return_value={
+            "complete": True,
+            "items": [{"id": "c1", "is_organizer": False, "show_as": "oof"}],
+        }
+    )
+    provider = _provider([_item(busy=blocks)], calendar_view=view)
+
+    report = _check(provider, "2026-11-16T14:00")
+
+    assert report["ok"] is False  # one block has no event behind it: the safe reading
+    assert [f["check"] for f in report["findings"]] == ["busy", "busy"]
+
+
+def test_two_out_of_office_blocks_each_with_a_colleagues_event_are_notes() -> None:
+    blocks = [
+        _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof"),
+        _block("2026-11-16T13:00:00-05:00", "2026-11-16T17:00:00-05:00", "oof"),
+    ]
+    items = [{"id": f"c{i}", "is_organizer": False, "show_as": "oof"} for i in (1, 2)]
+    view = AsyncMock(return_value={"complete": True, "items": items})
+    provider = _provider([_item(busy=blocks)], calendar_view=view)
+
+    report = _check(provider, "2026-11-16T14:00")
+
+    assert report["ok"] is True and report["findings"] == []
+
+
+def test_moving_a_recurring_series_leaves_its_occurrences_out_of_the_evidence() -> None:
+    event = _event("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00")
+    blocks = [
+        _block("2026-11-10T10:00:00-05:00", "2026-11-10T10:30:00-05:00", "oof"),
+        _block("2026-11-10T03:00:00-05:00", "2026-11-12T03:00:00-05:00", "oof"),
+    ]
+    items = [  # the occurrence of the series being moved, and a colleague's event
+        {"id": "occ-1", "series_master_id": "evt-1", "is_organizer": True, "show_as": "oof"},
+        {"id": "colleague", "is_organizer": False, "show_as": "oof"},
+    ]
+    view = AsyncMock(return_value={"complete": True, "items": items})
+    provider = _provider(
+        [_item(busy=blocks)], calendar_get=AsyncMock(return_value=event), calendar_view=view
+    )
+
+    report = _update(provider, start_raw="2026-11-10T10:15")
+
+    assert report is not None and any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_an_event_that_does_not_say_who_organized_it_leaves_the_block_a_note_not_a_colleagues() -> (
+    None
+):
+    event = {"id": "e1", "is_organizer": None, "show_as": "oof"}
+
+    report = _check(_with_events(event), "2026-11-16T14:00")
+
+    assert report["ok"] is True and report["findings"] == []
+    assert any("do not say who organized them" in w for w in report["warnings"])
+    assert not any("organized by someone else" in w for w in report["warnings"])
+
+
+def test_a_missing_is_organizer_stays_unknown_in_the_event_payload() -> None:
+    from zoneinfo import ZoneInfo
+
+    from blumkin.skills.calendar import _event_to_dict
+
+    def event(is_organizer: bool | None) -> Any:
+        return SimpleNamespace(
+            end=None, id="e", is_all_day=False, is_organizer=is_organizer, location=None,
+            online_meeting=None, organizer=None, response_status=None, start=None, subject="x",
+        )  # fmt: skip
+
+    tz = ZoneInfo("UTC")
+    assert _event_to_dict(event(None), tz)["is_organizer"] is None
+    assert _event_to_dict(event(True), tz)["is_organizer"] is True
+    assert _event_to_dict(event(False), tz)["is_organizer"] is False
