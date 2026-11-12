@@ -1013,3 +1013,36 @@ def test_check_stays_ok_when_only_your_own_out_of_office_note_is_present() -> No
 
     assert report["ok"] is True and report["findings"] == []
     assert any("out of office" in w for w in report["warnings"])
+
+
+def test_the_guard_lets_you_book_over_your_own_oof_note_but_blocks_an_invitees() -> None:
+    event = _event("2026-11-16T14:00:00-05:00", "2026-11-16T14:30:00-05:00")
+    oof = [_block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")]
+    with_guest = _provider(
+        [_item(busy=oof), _item("ana@example.com", busy=oof)],
+        calendar_get=AsyncMock(return_value=event),
+    )
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(with_guest, with_emails=["ana@example.com"])
+
+    assert [(f.check, f.who) for f in caught.value.findings] == [("busy", "ana@example.com")]
+
+    alone = _provider([_item(busy=oof)], calendar_get=AsyncMock(return_value=event))
+    report = _update(alone, start_raw="2026-11-16T15:00")
+
+    assert report is not None
+    assert any("tell the user before booking" in w for w in report["warnings"])
+
+
+def test_check_human_output_shows_your_out_of_office_note_as_a_warning() -> None:
+    from blumkin.skills.calendar import format_slot_check_human
+
+    oof = _block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")
+
+    text = "\n".join(
+        format_slot_check_human(_check(_provider([_item(busy=[oof])]), "2026-11-16T14:00"))
+    )
+
+    assert "OK to propose" in text
+    assert "warning: your calendar marks you out of office Mon 2026-11-16 03:00" in text

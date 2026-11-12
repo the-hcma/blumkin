@@ -280,8 +280,9 @@ def _busy_findings(
 ) -> tuple[list[Finding], list[str]]:
     """The busy blocks that overlap the slot, as findings, plus notes for what is not counted.
 
-    An `oof` block on your own schedule is a note, not a conflict: it is usually someone else's
-    all-day OOO event that you accepted, and that must not stop you from booking (issue #726).
+    An `oof` block on your own schedule is a note, not a conflict: free/busy cannot say whose
+    time off it is, and an accepted all-day OOO event from a colleague must not stop you from
+    booking (issue #726), so the note asks the agent to tell the user in case it is your own.
     On an invitee's schedule it stays a conflict, because it is that person who is out.
     """
     findings: list[Finding] = []
@@ -305,8 +306,9 @@ def _busy_findings(
             text = _busy_text(shown[0], shown[1], status)
             if status == "oof" and who == "you":
                 notes.append(
-                    f"your calendar marks you {text}: not counted as a conflict "
-                    "(an accepted OOO event from someone else does this)"
+                    f"your calendar marks you {text}: not counted as a conflict (an accepted "
+                    "OOO event from someone else does this); if it is your own time off, "
+                    "tell the user before booking"
                 )
                 continue
             findings.append(Finding("busy", text, who))
