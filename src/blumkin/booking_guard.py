@@ -257,12 +257,6 @@ async def slot_report(
     }
 
 
-def _days(start: datetime, end: datetime) -> list[date]:
-    """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
-    last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
-    return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
-
-
 async def _availability(
     provider: Any, addresses: list[str], start: datetime, end: datetime
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -338,6 +332,12 @@ def _busy_text(begins: datetime, ends: datetime, status: str) -> str:
     return f"out of office {span}" if status == "oof" else f"busy {span} ({status})"
 
 
+def _days(start: datetime, end: datetime) -> list[date]:
+    """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
+    last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
+    return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
+
+
 def _hours_findings(
     start: datetime, end: datetime, hours: dict[str, Any] | None, who: str
 ) -> tuple[list[Finding], str | None]:
@@ -373,6 +373,21 @@ def _hours_findings(
             )
         )
     return findings, None
+
+
+def _is_event_itself(
+    begins: datetime,
+    ends: datetime,
+    old: tuple[datetime, datetime],
+    new: tuple[datetime, datetime],
+) -> bool:
+    """Whether a busy block is the event's own: its old slot, or that slot clipped to the new one.
+
+    Microsoft reports the whole old slot; Google clips a busy block to the window asked about,
+    so a move that partly overlaps the old slot shows only the overlap.
+    """
+    pairs = (old, (max(old[0], new[0]), min(old[1], new[1])))
+    return any(_same(begins, a) and _same(ends, b) for a, b in pairs)
 
 
 async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str], bool]:
@@ -421,21 +436,6 @@ def _parse_instant(raw: Any) -> datetime | None:
     except ValueError:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-
-
-def _is_event_itself(
-    begins: datetime,
-    ends: datetime,
-    old: tuple[datetime, datetime],
-    new: tuple[datetime, datetime],
-) -> bool:
-    """Whether a busy block is the event's own: its old slot, or that slot clipped to the new one.
-
-    Microsoft reports the whole old slot; Google clips a busy block to the window asked about,
-    so a move that partly overlaps the old slot shows only the overlap.
-    """
-    pairs = (old, (max(old[0], new[0]), min(old[1], new[1])))
-    return any(_same(begins, a) and _same(ends, b) for a, b in pairs)
 
 
 def _same(left: datetime, right: datetime) -> bool:

@@ -1174,20 +1174,18 @@ def test_a_profile_email_that_is_not_the_signed_in_account_is_still_checked_as_a
 
 
 def test_on_google_a_guest_listed_by_the_profile_label_is_checked_not_skipped() -> None:
-    busy = _busy_block()
+    # `_config()` labels the profile `me@example.com`; Google answers with the `primary` alias.
     provider = _provider(
-        [_item("primary"), _item("label@example.com", busy=busy), _item("ana@example.com")],
+        [_item("primary"), _item("me@example.com", busy=_busy_block()), _item("ana@example.com")],
         calendar_organizer=AsyncMock(return_value="primary"),
     )
 
-    report = _check(
-        provider, "2026-11-10T10:00", with_emails=["label@example.com", "ana@example.com"]
-    )
+    report = _check(provider, "2026-11-10T10:00", with_emails=["me@example.com", "ana@example.com"])
 
     asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
-    assert asked == ["primary", "label@example.com", "ana@example.com"]
+    assert asked == ["primary", "me@example.com", "ana@example.com"]
     assert [(f["check"], f["who"]) for f in report["findings"]] == [
-        ("busy", "label@example.com")
+        ("busy", "me@example.com")
     ]  # the busy guest is found, the free primary calendar does not mask it
 
 
