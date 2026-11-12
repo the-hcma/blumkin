@@ -330,8 +330,12 @@ def _busy_findings(
         ):
             own_seen = True  # the event being moved is not its own conflict, but only one block is
             continue
-        if any(_same(begins, a) and _same(ends, b) for a, b in moved_spans):
-            continue  # another occurrence of the series being moved: the move itself
+        match = next(
+            (i for i, (a, b) in enumerate(moved_spans) if _same(begins, a) and _same(ends, b)), None
+        )
+        if match is not None:
+            del moved_spans[match]  # another occurrence of the series being moved: the move itself
+            continue  # each occurrence explains one block, so a coincident event still counts
         if begins < end and ends > start:
             local = start.tzinfo
             shown = (begins.astimezone(local), ends.astimezone(local))

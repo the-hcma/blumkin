@@ -1538,3 +1538,23 @@ def test_an_out_of_office_block_that_is_not_an_occurrence_of_the_series_still_co
         _update(_series_move_provider([other_you]), start_raw="2026-11-10T10:15")
 
     assert [f.check for f in caught.value.findings] == ["busy"]
+
+
+def test_another_event_with_the_same_span_as_an_occurrence_still_counts() -> None:
+    provider = _series_move_provider()
+    busy = provider.calendar_freebusy.return_value["items"][0]["busy"]
+    busy.append(_block("2026-11-10T10:30:00-05:00", "2026-11-10T11:00:00-05:00", "busy"))
+
+    with pytest.raises(BookingGuardError) as caught:
+        _update(provider, start_raw="2026-11-10T10:15")
+
+    # the occurrence explains one block, so the meeting at the same time is still a conflict
+    assert [f.message for f in caught.value.findings] == ["busy 10:30-11:00 (busy)"]
+
+
+def test_moving_a_single_occurrence_onto_a_sibling_is_still_a_conflict() -> None:
+    # Moving occ-1 by its own id: its sibling occ-2 is another event of yours, not the move.
+    with pytest.raises(BookingGuardError) as caught:
+        _update(_series_move_provider(), event_id="occ-1", start_raw="2026-11-10T10:15")
+
+    assert [f.check for f in caught.value.findings] == ["busy"]
