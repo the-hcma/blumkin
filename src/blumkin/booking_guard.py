@@ -161,6 +161,8 @@ async def assess_slot(
     provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
 ) -> Assessment | None:
     """Run every check on the slot a call books or is asked about; None when it has no slot."""
+    if not _needs_slot(config, skill_id, kwargs):
+        return None  # no meeting time to check: nothing to look up either
     organizer, notes_about_you, verified = await _organizer(provider, config)
     # Who is "you" among the guests: the resolved organizer and nothing else. The `primary` alias
     # carries no address and the label is not verified, so a guest listed by that address is
@@ -388,6 +390,24 @@ def _is_event_itself(
     """
     pairs = (old, (max(old[0], new[0]), min(old[1], new[1])))
     return any(_same(begins, a) and _same(ends, b) for a, b in pairs)
+
+
+def _needs_slot(config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]) -> bool:
+    """Whether the call can have a meeting slot to check, from its arguments alone.
+
+    `_slot` makes the final call (an update's stored event can turn out to be all-day), but these
+    cases need no provider call at all, so they must not trigger one, such as the organizer lookup.
+    """
+    if not (kwargs.get("tz_name") or config.default_tz):
+        return False  # no zone to read the slot in
+    if skill_id == "calendar.update":
+        changes_time = any(kwargs.get(key) for key in ("start_raw", "end_raw", "duration")) or (
+            kwargs.get("all_day") is False
+        )
+        return not kwargs.get("all_day") and bool(changes_time or kwargs.get("with_emails"))
+    if skill_id == "calendar.create":
+        return not kwargs.get("all_day") and bool(kwargs.get("start_raw"))
+    return True
 
 
 async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str], bool]:

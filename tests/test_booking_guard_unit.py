@@ -1202,3 +1202,31 @@ def test_microsoft_organizer_lookup_failure_raises_and_never_returns_the_label()
     with patch("blumkin.skills.calendar.create_graph_client", return_value=client):
         with pytest.raises(AuthRequiredError):
             asyncio.run(calendar_organizer(config=_config()))
+
+
+def test_a_call_with_no_meeting_slot_never_looks_up_the_organizer() -> None:
+    organizer = AsyncMock(return_value="real@example.com")
+    provider = _provider(calendar_organizer=organizer, calendar_get=AsyncMock())
+
+    all_day = asyncio.run(
+        run_skill(
+            "calendar.create",
+            {"subject": "OOO", "start": "2026-11-16", "all_day": True, "tz": "America/New_York"},
+            config=_config(),
+            provider=provider,
+        )
+    )
+    metadata_only = _update(provider, subject="New title")
+
+    assert metadata_only is None and "booking_checks" not in all_day
+    organizer.assert_not_awaited()
+    provider.calendar_freebusy.assert_not_awaited()
+
+
+def test_a_call_with_a_slot_still_looks_up_the_organizer_once() -> None:
+    organizer = AsyncMock(return_value="real@example.com")
+    provider = _provider([_item("real@example.com")], calendar_organizer=organizer)
+
+    _check(provider, "2026-11-10T10:00")
+
+    organizer.assert_awaited_once()
