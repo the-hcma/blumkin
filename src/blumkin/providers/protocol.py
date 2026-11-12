@@ -43,6 +43,15 @@ class WorkspaceProvider(Protocol):
         self, *, event_id: str, calendar: str | None = None
     ) -> dict[str, Any]: ...
 
+    async def calendar_check(
+        self,
+        *,
+        start_raw: str,
+        duration: str | None = None,
+        with_emails: Sequence[str] = (),
+        tz_name: str | None = None,
+    ) -> dict[str, Any]: ...
+
     async def calendar_decline(
         self,
         *,

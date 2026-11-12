@@ -41,6 +41,22 @@ _SAME_SLOT = timedelta(minutes=1)
 
 
 @dataclass(frozen=True, slots=True)
+class Assessment:
+    """What the checks found for one slot: its bounds, findings, warnings and the checks run.
+
+    `blocking_warnings` are the warnings that mean someone's busy time was not read (they are
+    also in `warnings`); a warning that only says working hours are unknown is not one of them.
+    """
+
+    blocking_warnings: list[str]
+    checked: tuple[str, ...]
+    end: datetime
+    findings: list[Finding]
+    start: datetime
+    warnings: list[str]
+
+
+@dataclass(frozen=True, slots=True)
 class Finding:
     """One reason a slot should not be booked, named by the check that found it."""
 
@@ -139,6 +155,49 @@ def slot_findings(start: datetime, end: datetime, prefs: PreferencesConfig) -> l
     return findings
 
 
+async def assess_slot(
+    provider: Any, config: BlumkinConfig, skill_id: str, kwargs: dict[str, Any]
+) -> Assessment | None:
+    """Run every check on the slot a call books or is asked about; None when it has no slot."""
+    slot = await _slot(provider, config, skill_id, kwargs)
+    if slot is None:
+        return None
+    start, end, invitees, own_slot, on_event = slot
+    findings = slot_findings(start, end, config.preferences)
+    checked: set[str] = {"weekend", "holiday"}
+    if config.preferences.booking_exclusions:
+        checked.add("exclusion")
+    warnings: list[str] = []
+    blocking: list[str] = []
+    people: list[tuple[str, str]] = [("you", config.email)] if config.email else []
+    people += [(email, email) for email in invitees]
+    if not config.email:
+        gap = "your own address is not in the config: your hours and busy time not checked"
+        warnings.append(gap)
+        blocking.append(gap)
+    if people:
+        items, failure = await _availability(provider, [addr for _who, addr in people], start, end)
+        if failure:
+            warnings.append(failure)
+            blocking.append(failure)
+        else:
+            by_address = {str(item.get("schedule") or "").lower(): item for item in items}
+            for who, address in people:
+                more, notes, done = schedule_findings(
+                    start,
+                    end,
+                    by_address.get(address.lower()),
+                    who=who,
+                    own_slot=own_slot if who == "you" or address.lower() in on_event else None,
+                )
+                findings.extend(more)
+                warnings.extend(notes)
+                if "busy" not in done:  # their busy time was not read: do not call them free
+                    blocking.extend(notes)
+                checked |= done
+    return Assessment(blocking, tuple(sorted(checked)), end, findings, start, warnings)
+
+
 async def check_booking(
     provider: Any,
     config: BlumkinConfig,
@@ -153,45 +212,41 @@ async def check_booking(
     allowed by `--allow`.
     """
     allowed = allowed_checks(arguments.get("allow"))
-    slot = await _slot(provider, config, skill_id, kwargs)
-    if slot is None:
+    assessment = await assess_slot(provider, config, skill_id, kwargs)
+    if assessment is None:
         return None
-    start, end, invitees, own_slot, on_event = slot
-    findings = slot_findings(start, end, config.preferences)
-    checked: set[str] = {"weekend", "holiday"}
-    if config.preferences.booking_exclusions:
-        checked.add("exclusion")
-    warnings: list[str] = []
-    people: list[tuple[str, str]] = [("you", config.email)] if config.email else []
-    people += [(email, email) for email in invitees]
-    if not config.email:
-        warnings.append(
-            "your own address is not in the config: your hours and busy time not checked"
-        )
-    if people:
-        items, failure = await _availability(provider, [addr for _who, addr in people], start, end)
-        if failure:
-            warnings.append(failure)
-        else:
-            by_address = {str(item.get("schedule") or "").lower(): item for item in items}
-            for who, address in people:
-                more, notes, done = schedule_findings(
-                    start,
-                    end,
-                    by_address.get(address.lower()),
-                    who=who,
-                    own_slot=own_slot if who == "you" or address.lower() in on_event else None,
-                )
-                findings.extend(more)
-                warnings.extend(notes)
-                checked |= done
-    blocking = [finding for finding in findings if finding.check not in allowed]
+    blocking = [finding for finding in assessment.findings if finding.check not in allowed]
     if blocking:
-        raise BookingGuardError(blocking, warnings=warnings)
+        raise BookingGuardError(blocking, warnings=assessment.warnings)
     return {
-        "allowed": [finding.text() for finding in findings],
-        "checked": sorted(checked),
-        "warnings": warnings,
+        "allowed": [finding.text() for finding in assessment.findings],
+        "checked": list(assessment.checked),
+        "warnings": assessment.warnings,
+    }
+
+
+async def slot_report(
+    provider: Any, config: BlumkinConfig, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """`calendar check`: every finding and warning for a slot, books nothing, never refuses.
+
+    An agent runs it for each time it is about to propose in a mail or chat message (issue #720).
+    """
+    assessment = await assess_slot(provider, config, "calendar.check", kwargs)
+    if assessment is None:
+        raise ValueError("no time zone to read the slot in: pass --tz or set default_tz")
+    return {
+        "checked": list(assessment.checked),
+        "findings": [
+            {"check": f.check, "message": f.message, "who": f.who} for f in assessment.findings
+        ],
+        "ok": not assessment.findings and not assessment.blocking_warnings,
+        "slot": {
+            "end": assessment.end.isoformat(),
+            "start": assessment.start.isoformat(),
+            "timezone": str(assessment.start.tzinfo),
+        },
+        "warnings": assessment.warnings,
     }
 
 
@@ -318,6 +373,22 @@ async def _slot(
     if not zone_name:
         return None  # no zone to read the slot in: the provider refuses the call itself
     zone = ZoneInfo(zone_name)
+    if skill_id == "calendar.check":
+        try:
+            reject_date_only_start(kwargs["start_raw"])  # the rule create and update use
+        except ValueError:
+            # `calendar check` has no --all-day, so the shared advice would not help.
+            raise ValueError(
+                "--start needs a time (e.g. 2026-12-24T09:00), not a date alone"
+            ) from None
+        start = parse_local_datetime(kwargs["start_raw"], zone)
+        length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
+        if length <= timedelta(0):
+            raise ValueError("--duration must be positive")
+        own = {config.email.lower()} if config.email else set()
+        guests = [str(e) for e in kwargs.get("with_emails") or [] if str(e).lower() not in own]
+        end = (start.astimezone(UTC) + length).astimezone(zone)
+        return start, end, list(dict.fromkeys(guests)), None, frozenset()
     if skill_id == "calendar.create":
         if kwargs.get("all_day") or not kwargs.get("start_raw"):
             return None

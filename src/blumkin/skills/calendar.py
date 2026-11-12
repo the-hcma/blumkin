@@ -436,6 +436,20 @@ def format_recurrence(recurrence: dict[str, Any]) -> str:
     return text
 
 
+def format_slot_check_human(payload: dict[str, Any]) -> list[str]:
+    """Human output; guest addresses and server error text are untrusted, so they are sanitized."""
+    slot = payload["slot"]
+    verdict = "OK to propose" if payload["ok"] else "NOT clear to propose"
+    lines = [f"{slot['start']} → {slot['end']} ({slot['timezone']}): {verdict}"]
+    for finding in payload["findings"]:
+        who = "" if finding["who"] == "you" else f"{sanitize_terminal(str(finding['who']))}: "
+        lines.append(f"  {finding['check']}: {who}{sanitize_terminal(str(finding['message']))}")
+    for warning in payload["warnings"]:
+        lines.append(f"  not checked: {sanitize_terminal(str(warning))}")
+    lines.append(f"  checks run: {', '.join(payload['checked'])}")
+    return lines
+
+
 def format_suggest_human(payload: dict[str, Any]) -> list[str]:
     duration = payload.get("duration_minutes")
     window = payload.get("window") or "all day"

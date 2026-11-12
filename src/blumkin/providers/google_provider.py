@@ -80,6 +80,27 @@ class GoogleWorkspaceProvider:
             event_id=event_id, calendar=calendar, config=self._config
         )
 
+    async def calendar_check(
+        self,
+        *,
+        start_raw: str,
+        duration: str | None = None,
+        with_emails: Sequence[str] = (),
+        tz_name: str | None = None,
+    ) -> dict[str, Any]:
+        from blumkin.booking_guard import slot_report
+
+        return await slot_report(
+            self,
+            self._config,
+            {
+                "duration": duration,
+                "start_raw": start_raw,
+                "tz_name": tz_name,
+                "with_emails": list(with_emails),
+            },
+        )
+
     async def calendar_decline(
         self,
         *,
