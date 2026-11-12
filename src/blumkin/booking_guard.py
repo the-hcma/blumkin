@@ -162,11 +162,10 @@ async def assess_slot(
 ) -> Assessment | None:
     """Run every check on the slot a call books or is asked about; None when it has no slot."""
     organizer, notes_about_you, verified = await _organizer(provider, config)
-    # Who is "you" among the guests: the resolved organizer. The `primary` alias carries no
-    # address, so there the profile label is the best guess; otherwise the label stays a guest.
-    own = frozenset(
-        a.lower() for a in (organizer, config.email if organizer == "primary" else None) if a
-    ) | {"primary"}
+    # Who is "you" among the guests: the resolved organizer and nothing else. The `primary` alias
+    # carries no address and the label is not verified, so a guest listed by that address is
+    # checked: a guest checked twice is better than one never checked.
+    own = frozenset(a.lower() for a in (organizer, "primary") if a)
     slot = await _slot(provider, config, skill_id, kwargs, own)
     if slot is None:
         return None
@@ -262,44 +261,6 @@ def _days(start: datetime, end: datetime) -> list[date]:
     """Every calendar day the slot touches (an end exactly at midnight does not touch its day)."""
     last = (end - timedelta(microseconds=1)).date() if end > start else start.date()
     return [start.date() + timedelta(days=n) for n in range((last - start.date()).days + 1)]
-
-
-async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str], bool]:
-    """The signed-in organizer's address, notes about how it was found, and whether it is verified.
-
-    The profile's `email` is an onboarding label that can differ from the account actually
-    signed in (issue #725), so the provider's own answer wins (the primary mailbox on Microsoft,
-    the `primary` alias on Google). A provider with no answer falls back to the label as before.
-    A lookup that fails or answers nothing also falls back to the label, but says so and is not
-    verified: the label may be another account, so the result must not be read as complete.
-    """
-    label = config.email or None
-    resolve = getattr(provider, "calendar_organizer", None)
-    if resolve is None:
-        return label, [], True
-    try:
-        resolved = await resolve()
-    except Exception:  # noqa: BLE001 - the label is the fallback, and the failure is reported
-        resolved = None
-    if not isinstance(resolved, str) or not resolved.strip():
-        if label:
-            return (
-                label,
-                [f"could not resolve the signed-in account: checked the profile email {label}"],
-                False,
-            )
-        return None, [], False
-    resolved = resolved.strip()
-    if label and resolved.lower() not in {"primary", label.lower()}:
-        return (
-            resolved,
-            [
-                f"the profile email {label} is not the signed-in account {resolved}: "
-                f"checked {resolved}"
-            ],
-            True,
-        )
-    return resolved, [], True
 
 
 async def _availability(
@@ -412,6 +373,44 @@ def _hours_findings(
             )
         )
     return findings, None
+
+
+async def _organizer(provider: Any, config: BlumkinConfig) -> tuple[str | None, list[str], bool]:
+    """The signed-in organizer's address, notes about how it was found, and whether it is verified.
+
+    The profile's `email` is an onboarding label that can differ from the account actually
+    signed in (issue #725), so the provider's own answer wins (the primary mailbox on Microsoft,
+    the `primary` alias on Google). A provider with no answer falls back to the label as before.
+    A lookup that fails or answers nothing also falls back to the label, but says so and is not
+    verified: the label may be another account, so the result must not be read as complete.
+    """
+    label = config.email or None
+    resolve = getattr(provider, "calendar_organizer", None)
+    if resolve is None:
+        return label, [], True
+    try:
+        resolved = await resolve()
+    except Exception:  # noqa: BLE001 - the label is the fallback, and the failure is reported
+        resolved = None
+    if not isinstance(resolved, str) or not resolved.strip():
+        if label:
+            return (
+                label,
+                [f"could not resolve the signed-in account: checked the profile email {label}"],
+                False,
+            )
+        return None, [], False
+    resolved = resolved.strip()
+    if label and resolved.lower() not in {"primary", label.lower()}:
+        return (
+            resolved,
+            [
+                f"the profile email {label} is not the signed-in account {resolved}: "
+                f"checked {resolved}"
+            ],
+            True,
+        )
+    return resolved, [], True
 
 
 def _parse_instant(raw: Any) -> datetime | None:

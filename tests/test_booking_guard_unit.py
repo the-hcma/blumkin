@@ -1173,16 +1173,22 @@ def test_a_profile_email_that_is_not_the_signed_in_account_is_still_checked_as_a
     assert asked == ["real@example.com", "me@example.com"]  # the label is someone else here
 
 
-def test_on_google_the_label_stands_in_for_the_primary_alias_when_deduplicating_guests() -> None:
+def test_on_google_a_guest_listed_by_the_profile_label_is_checked_not_skipped() -> None:
+    busy = _busy_block()
     provider = _provider(
-        [_item("primary"), _item("ana@example.com")],
+        [_item("primary"), _item("label@example.com", busy=busy), _item("ana@example.com")],
         calendar_organizer=AsyncMock(return_value="primary"),
     )
 
-    _check(provider, "2026-11-10T10:00", with_emails=["ME@example.com", "ana@example.com"])
+    report = _check(
+        provider, "2026-11-10T10:00", with_emails=["label@example.com", "ana@example.com"]
+    )
 
     asked = provider.calendar_freebusy.await_args.kwargs["with_emails"]
-    assert asked == ["primary", "ana@example.com"]
+    assert asked == ["primary", "label@example.com", "ana@example.com"]
+    assert [(f["check"], f["who"]) for f in report["findings"]] == [
+        ("busy", "label@example.com")
+    ]  # the busy guest is found, the free primary calendar does not mask it
 
 
 def test_microsoft_organizer_lookup_failure_raises_and_never_returns_the_label() -> None:
