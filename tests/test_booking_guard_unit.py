@@ -1046,3 +1046,16 @@ def test_check_human_output_shows_your_out_of_office_note_as_a_warning() -> None
 
     assert "OK to propose" in text
     assert "warning: your calendar marks you out of office Mon 2026-11-16 03:00" in text
+
+
+def test_create_books_over_your_own_oof_note_and_the_result_carries_the_warning() -> None:
+    oof = [_block("2026-11-16T03:00:00-05:00", "2026-11-19T03:00:00-05:00", "oof")]
+    provider = _provider([_item(busy=oof)])
+
+    payload = _create(provider, "2026-11-16T15:00")
+
+    provider.calendar_create.assert_awaited_once()
+    warnings = payload["booking_checks"]["warnings"]
+    assert any(
+        "out of office Mon 2026-11-16 03:00" in w and w.endswith("tell the user") for w in warnings
+    )
