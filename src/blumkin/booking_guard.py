@@ -374,8 +374,13 @@ async def _slot(
         return None  # no zone to read the slot in: the provider refuses the call itself
     zone = ZoneInfo(zone_name)
     if skill_id == "calendar.check":
-        if "T" not in kwargs["start_raw"].strip():  # `calendar check` has no --all-day
-            raise ValueError("--start needs a time (e.g. 2026-12-24T09:00), not a date alone")
+        try:
+            reject_date_only_start(kwargs["start_raw"])  # the rule create and update use
+        except ValueError:
+            # `calendar check` has no --all-day, so the shared advice would not help.
+            raise ValueError(
+                "--start needs a time (e.g. 2026-12-24T09:00), not a date alone"
+            ) from None
         start = parse_local_datetime(kwargs["start_raw"], zone)
         length = parse_duration(kwargs.get("duration") or _DEFAULT_DURATION)
         if length <= timedelta(0):
