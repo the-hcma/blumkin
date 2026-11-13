@@ -20,7 +20,7 @@ from typing import Any, cast
 import pytest
 from click.testing import CliRunner
 
-from blumkin.browser.cdp import attach
+from blumkin.browser.cdp import BrowserActionError, attach
 from blumkin.browser.discovery import (
     BrowserKind,
     BrowserNotFoundError,
@@ -361,7 +361,9 @@ def _goto_after_aborted_navigation(driver: Any, url: str) -> None:
     time.sleep(0.5)
     try:
         driver.goto(url)
-    except Exception:  # noqa: BLE001 - the interrupted navigation surfaces as a driver error
+    except BrowserActionError as exc:
+        if "chrome-error://" not in str(exc):
+            raise
         time.sleep(1)
         driver.goto(url)
 

@@ -300,16 +300,18 @@ class _Page:
 
 
 class _CdpSession:
-    def __init__(self, context: _Context) -> None:
+    def __init__(self, context: _Context, name: str) -> None:
         self._context = context
+        self._name = name
 
     def send(self, method: str) -> None:
-        self._context.events.append(f"cdp:{method}")
-        if self._context.stop_error is not None:
-            raise self._context.stop_error
+        self._context.events.append(f"cdp:{self._name}:{method}")
+        error = self._context.stop_errors.get(self._name)
+        if error is not None:
+            raise error
 
     def detach(self) -> None:
-        self._context.events.append("cdp:detach")
+        self._context.events.append(f"cdp:{self._name}:detach")
 
 
 class _Context:
@@ -318,11 +320,11 @@ class _Context:
         self.routes: list[Any] = []
         self.unrouted: list[Any] = []
         self.events: list[str] = []
-        self.stop_error: Exception | None = None
+        self.stop_errors: dict[str, Exception] = {}
         page.context = self
 
     def new_cdp_session(self, page: Any) -> _CdpSession:
-        return _CdpSession(self)
+        return _CdpSession(self, getattr(page, "name", "page"))
 
     def route(self, pattern: str, handler: Any) -> None:
         self.routes.append((pattern, handler))
@@ -852,37 +854,118 @@ def test_the_safety_net_is_installed_once_and_released_on_detach() -> None:
     assert context.routes[0][0] == "**/*"
     driver.close()
     assert context.unrouted == [context.routes[0]]
-    # The swallowed post is cancelled before the route goes, or the browser would send it.
-    assert context.events == ["cdp:Page.stopLoading", "cdp:detach", "unroute"]
 
 
-def test_a_cancel_that_fails_still_removes_the_net_and_disconnects() -> None:
+def _swallow_a_post(driver: Any, page: Any) -> None:
+    """Send a form post from `page` through the installed net, as the browser would."""
+    from types import SimpleNamespace
+
+    request = SimpleNamespace(
+        method="POST",
+        url="https://erp.example.com/x",
+        headers={},
+        frame=SimpleNamespace(page=page, parent_frame=None),
+        is_navigation_request=lambda: True,
+    )
+    driver._net_handler(SimpleNamespace(request=request, fulfill=lambda **_: None))
+
+
+def _named_page(name: str) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(name=name, context=None)
+
+
+def test_a_swallowed_post_is_cancelled_before_the_route_goes() -> None:
     pw, driver = _driver()
     driver.block_form_submission()
     context = pw.browser.contexts[0]
-    context.stop_error = PlaywrightError("page is gone")
+    page = _named_page("a")
+    _swallow_a_post(driver, page)
     driver.close()
-    assert context.events == ["cdp:Page.stopLoading", "unroute"]
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "unroute",
+    ]
+
+
+def test_the_driven_page_is_cancelled_even_when_the_net_never_saw_its_post() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    driver.close()
+    assert context.events == ["cdp:page:Page.stopLoading", "cdp:page:detach", "unroute"]
+
+
+def test_a_tab_that_swallowed_nothing_is_left_alone_on_detach() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.pages.append(_named_page("other"))
+    _swallow_a_post(driver, _named_page("a"))
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "unroute",
+    ]
+    assert not any("other" in event for event in context.events)
+
+
+def test_a_read_does_not_mark_a_page_for_cancelling() -> None:
+    from types import SimpleNamespace
+
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    request = SimpleNamespace(
+        method="GET",
+        url="https://erp.example.com/x",
+        headers={},
+        frame=SimpleNamespace(page=_named_page("a"), parent_frame=None),
+        is_navigation_request=lambda: True,
+    )
+    driver._net_handler(SimpleNamespace(request=request, continue_=lambda: None))
+    driver.close()
+    assert context.events == ["cdp:page:Page.stopLoading", "cdp:page:detach", "unroute"]
+
+
+def test_a_cancel_that_fails_on_one_page_still_stops_the_rest_and_detaches() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.stop_errors["a"] = PlaywrightError("page is gone")
+    _swallow_a_post(driver, _named_page("a"))
+    _swallow_a_post(driver, _named_page("b"))
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "cdp:b:Page.stopLoading",
+        "cdp:b:detach",
+        "unroute",
+    ]
     assert pw.browser.close_calls == 1 and pw.stopped == 1
 
 
-def test_a_context_whose_pages_cannot_be_listed_still_closes() -> None:
+def test_a_cancel_that_hits_its_deadline_is_skipped_like_any_other_failure() -> None:
+    from blumkin.browser.cdp import BrowserActionError
+
     pw, driver = _driver()
     driver.block_form_submission()
     context = pw.browser.contexts[0]
-
-    class _Unlistable(_Context):
-        @property
-        def pages(self) -> list[Any]:
-            raise PlaywrightError("page is gone")
-
-        @pages.setter
-        def pages(self, value: list[Any]) -> None:
-            pass
-
-    context.__class__ = _Unlistable
+    context.stop_errors["a"] = BrowserActionError("page did not answer in time")
+    _swallow_a_post(driver, _named_page("a"))
+    _swallow_a_post(driver, _named_page("b"))
     driver.close()
-    assert context.events == ["unroute"]
+    assert context.events[-3:] == ["cdp:b:Page.stopLoading", "cdp:b:detach", "unroute"]
     assert pw.browser.close_calls == 1 and pw.stopped == 1
 
 

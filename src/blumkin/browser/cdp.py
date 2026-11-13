@@ -550,11 +550,16 @@ class PlaywrightDriver:
         self._net_handler: Any = None
         self._uploading = False
         self._upload_posts = 0
-        self._lenient_net = _navigation_net(
-            page,
-            lambda: self._uploading and self._upload_posts < _UPLOAD_POSTS_MAX,
-            self._count_upload_post,
+        self._swallowed_pages: list[Any] = []
+        self._lenient_net = _remembering_writes(
+            _navigation_net(
+                page,
+                lambda: self._uploading and self._upload_posts < _UPLOAD_POSTS_MAX,
+                self._count_upload_post,
+            ),
+            self._swallowed_pages,
         )
+        self._strict_net = _remembering_writes(_abort_every_write, self._swallowed_pages)
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -598,26 +603,27 @@ class PlaywrightDriver:
                 self._playwright.stop()
 
     def _cancel_pending_navigations(self) -> None:
-        """Stop loading on every page so a request the net swallowed is never released.
+        """Stop loading on the page this driver drives and on any page the net saw a write on.
 
-        It goes through the DevTools protocol, not a script in the page: a page can replace
+        A post that is still on its way to the net has not been recorded yet, which is why the
+        driven page is always included. The user's other tabs keep whatever they are loading. It
+        goes through the DevTools protocol, not a script in the page, because a page can replace
         `window.stop`. Each page gets its own deadline, so a stalled tab cannot hold up the
-        detach, and a page that cannot be reached is skipped (best effort, nothing to raise on
-        the way out).
+        detach, and a page that cannot be reached is skipped while the rest are still stopped
+        (best effort: there is nothing to raise on the way out).
         """
-        try:
-            pages = list(self._context.pages)
-        except _playwright_error():
-            return
-        for page in pages:
+        for page in [self._page, *(p for p in self._swallowed_pages if p is not self._page)]:
+            session = None
             try:
                 with _deadline(self._timeout_s, "stop a page's pending navigation"):
                     session = self._context.new_cdp_session(page)
                     session.send("Page.stopLoading")
-                    with contextlib.suppress(_playwright_error()):
-                        session.detach()
             except _playwright_error(), BrowserActionError:
                 continue
+            finally:
+                if session is not None:
+                    with contextlib.suppress(_playwright_error(), BrowserActionError):
+                        session.detach()
 
     def aria_snapshot(self) -> str:
         """The page as a Playwright ARIA snapshot: roles and accessible names, no field values."""
@@ -644,8 +650,8 @@ class PlaywrightDriver:
         request, so a net registered after the host route would run first and skip it.
         """
         self._require_open()
-        handler = _abort_every_write if background_writes else self._lenient_net
-        if self._net_handler is handler or self._net_handler is _abort_every_write:
+        handler = self._strict_net if background_writes else self._lenient_net
+        if self._net_handler is handler or self._net_handler is self._strict_net:
             return
         previous = self._net_handler
         try:
@@ -3467,6 +3473,23 @@ def _abort_non_get_navigation(route: Any) -> None:
         route.fulfill(status=204)
     else:
         route.continue_()
+
+
+def _remembering_writes(handler: Callable[[Any], None], pages: list[Any]) -> Callable[[Any], None]:
+    """Wrap a net so the page of every write it sees is noted, for the cancel at detach."""
+
+    def wrapped(route: Any) -> None:
+        try:
+            request = route.request
+            if request.method not in _READ_METHODS:
+                page = request.frame.page
+                if page not in pages:
+                    pages.append(page)
+        except AttributeError, _playwright_error():
+            pass
+        handler(route)
+
+    return wrapped
 
 
 def _sign_in_handler(
