@@ -1041,6 +1041,44 @@ def test_a_page_that_writes_again_after_it_was_stopped_is_stopped_again() -> Non
     assert context.events[-1] == "unroute"
 
 
+def test_a_page_that_keeps_writing_is_stopped_a_bounded_number_of_times() -> None:
+    from blumkin.browser.cdp import _CANCEL_PASSES_MAX
+
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    busy = _named_page("busy")
+    _swallow_a_post(driver, busy)
+    _swallow_a_post(driver, _named_page("calm"))
+    original_send = _CdpSession.send
+
+    def send(self: _CdpSession, method: str) -> None:
+        original_send(self, method)
+        if self._name == "busy":
+            _swallow_a_post(driver, busy)  # a poll that posts during every stop
+
+    _CdpSession.send = send  # type: ignore[method-assign]
+    try:
+        driver.close()
+    finally:
+        _CdpSession.send = original_send  # type: ignore[method-assign]
+    stops = [e for e in context.events if e.endswith("Page.stopLoading")]
+    assert stops.count("cdp:busy:Page.stopLoading") == _CANCEL_PASSES_MAX
+    assert stops.count("cdp:calm:Page.stopLoading") == 1
+    assert stops.count("cdp:page:Page.stopLoading") == 1
+    assert context.events[-1] == "unroute"
+    assert pw.browser.close_calls == 1 and pw.stopped == 1
+
+
+def test_the_navigation_route_is_removed_before_the_cancel_reads_the_counts() -> None:
+    pw, driver = _driver()
+    driver.restrict_navigation(lambda host: True)
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    driver.close()
+    assert context.events == ["unroute", "cdp:page:Page.stopLoading", "cdp:page:detach", "unroute"]
+
+
 def test_a_page_that_wrote_through_the_strict_net_is_cancelled_too() -> None:
     pw, driver = _driver()
     driver.block_form_submission(background_writes=True)

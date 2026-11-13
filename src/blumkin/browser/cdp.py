@@ -585,15 +585,16 @@ class PlaywrightDriver:
             if self._existing_frames is not None:
                 with contextlib.suppress(Exception):
                     self._existing_frames.close()
+            if self._navigation_handler is not None:
+                # Before the cancel: this call waits on the browser, and a write that reaches
+                # the net meanwhile must be counted before the cancel reads the counts.
+                with contextlib.suppress(_playwright_error()):
+                    self._context.unroute("**/*", self._navigation_handler)
             if self._net_handler is not None:
                 # A swallowed form post stays pending in the page, and the browser sends it as
                 # soon as the route is removed (seen on Chrome and Edge, whatever the answer).
                 # Cancel it while the net still holds it.
                 self._cancel_pending_navigations()
-            if self._navigation_handler is not None:
-                with contextlib.suppress(_playwright_error()):
-                    self._context.unroute("**/*", self._navigation_handler)
-            if self._net_handler is not None:
                 with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._net_handler)
             with contextlib.suppress(_playwright_error()):
@@ -613,18 +614,23 @@ class PlaywrightDriver:
         (best effort: there is nothing to raise on the way out).
         """
         done: dict[Any, int] = {}
+        passes: dict[Any, int] = {}
         while True:
             # A write that reaches the net while pages are being stopped, from a new page or
             # from one already stopped, makes that page pending again: the writes seen per page
-            # are compared after every page, before the net is removed.
+            # are compared after every page, before the net is removed. A page that keeps
+            # writing is stopped at most `_CANCEL_PASSES_MAX` times, and the page stopped the
+            # fewest times goes first, so one busy page cannot starve the others or the detach.
             pending = [
                 p
                 for p in dict.fromkeys([self._page, *self._swallowed_pages])
-                if p not in done or done[p] != self._swallowed_pages.get(p, 0)
+                if (p not in done or done[p] != self._swallowed_pages.get(p, 0))
+                and passes.get(p, 0) < _CANCEL_PASSES_MAX
             ]
             if not pending:
                 return
-            page = pending[0]
+            page = min(pending, key=lambda p: passes.get(p, 0))
+            passes[page] = passes.get(page, 0) + 1
             done[page] = self._swallowed_pages.get(page, 0)
             session = None
             try:
@@ -3191,6 +3197,8 @@ _UPLOAD_POST_GRACE_MS = 2000
 #: Most file posts one `upload` lets through: Oracle ADF sends two, so a few more is slack, not
 #: an open door for a page that keeps posting.
 _UPLOAD_POSTS_MAX = 4
+#: How many times the detach stops one page: its first pass and the re-stops after later writes.
+_CANCEL_PASSES_MAX = 3
 _CELL_OPTION_POLL_MS = 500
 _CELL_OPTION_POLLS = 16
 
