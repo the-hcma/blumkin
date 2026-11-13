@@ -30,6 +30,16 @@ home_dir="$temp_root/home"
 
 mkdir -p "$build_dir" "$outside_dir" "$home_dir"
 
+# Building the agent leaves `rust-agent/target/` in a development tree, and an sdist must not
+# carry it (issue #737). A CI checkout is clean, so plant a sentinel there: the check after the
+# build then proves the exclusion without needing a compiled agent. `target_dir_existed` keeps
+# the cleanup from removing a directory that was already there.
+sentinel="${repo_root}/rust-agent/target/.sdist-exclude-sentinel"
+target_dir_existed=0
+[[ -d "${repo_root}/rust-agent/target" ]] && target_dir_existed=1
+mkdir -p "$(dirname "$sentinel")"
+: >"$sentinel"
+
 embed_build_metadata="${repo_root}/scripts/embed_build_metadata"
 readonly embed_build_metadata
 
@@ -42,6 +52,10 @@ restore_build_metadata() {
 }
 cleanup() {
   restore_build_metadata
+  rm -f "$sentinel"
+  if [[ "$target_dir_existed" == 0 ]]; then
+    rmdir "$(dirname "$sentinel")" 2>/dev/null || true
+  fi
   rm -rf "$temp_root"
 }
 trap cleanup EXIT
@@ -69,6 +83,14 @@ if [[ ! -f "$wheel_path" ]]; then
 fi
 if [[ ! -f "$sdist_path" ]]; then
   echo "No sdist produced under $build_dir" >&2
+  exit 1
+fi
+
+sdist_members="$temp_root/sdist.list"
+tar --list --gzip --file "$sdist_path" >"$sdist_members"
+if grep --fixed-strings --quiet "rust-agent/target/" "$sdist_members"; then
+  echo "The sdist contains rust-agent/target/ build output (issue #737):" >&2
+  grep --fixed-strings "rust-agent/target/" "$sdist_members" | head -5 >&2
   exit 1
 fi
 
