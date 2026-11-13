@@ -550,7 +550,7 @@ class PlaywrightDriver:
         self._net_handler: Any = None
         self._uploading = False
         self._upload_posts = 0
-        self._swallowed_pages: list[Any] = []
+        self._swallowed_pages: dict[Any, int] = {}
         self._lenient_net = _remembering_writes(
             _navigation_net(
                 page,
@@ -612,15 +612,20 @@ class PlaywrightDriver:
         detach, and a page that cannot be reached is skipped while the rest are still stopped
         (best effort: there is nothing to raise on the way out).
         """
-        done: list[Any] = []
+        done: dict[Any, int] = {}
         while True:
-            # A write that reaches the net while a page is being stopped joins the list, so the
-            # list is read again after every page, before the net is removed.
-            pending = [p for p in [self._page, *self._swallowed_pages] if p not in done]
+            # A write that reaches the net while pages are being stopped, from a new page or
+            # from one already stopped, makes that page pending again: the writes seen per page
+            # are compared after every page, before the net is removed.
+            pending = [
+                p
+                for p in dict.fromkeys([self._page, *self._swallowed_pages])
+                if p not in done or done[p] != self._swallowed_pages.get(p, 0)
+            ]
             if not pending:
                 return
             page = pending[0]
-            done.append(page)
+            done[page] = self._swallowed_pages.get(page, 0)
             session = None
             try:
                 with _deadline(self._timeout_s, "stop a page's pending navigation"):
@@ -3485,16 +3490,17 @@ def _abort_non_get_navigation(route: Any) -> None:
         route.continue_()
 
 
-def _remembering_writes(handler: Callable[[Any], None], pages: list[Any]) -> Callable[[Any], None]:
-    """Wrap a net so the page of every write it sees is noted, for the cancel at detach."""
+def _remembering_writes(
+    handler: Callable[[Any], None], pages: dict[Any, int]
+) -> Callable[[Any], None]:
+    """Wrap a net so the page of every write it sees is counted, for the cancel at detach."""
 
     def wrapped(route: Any) -> None:
         try:
             request = route.request
             if request.method not in _READ_METHODS:
                 page = request.frame.page
-                if page not in pages:
-                    pages.append(page)
+                pages[page] = pages.get(page, 0) + 1
         except AttributeError, _playwright_error():
             pass
         handler(route)

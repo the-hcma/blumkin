@@ -881,10 +881,16 @@ def _swallow_a_post(driver: Any, page: Any) -> None:
     driver._net_handler(SimpleNamespace(request=request, fulfill=lambda **_: None))
 
 
-def _named_page(name: str) -> Any:
-    from types import SimpleNamespace
+class _NamedPage:
+    """A page with identity hashing, like Playwright's (a SimpleNamespace is unhashable)."""
 
-    return SimpleNamespace(name=name, context=None)
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.context = None
+
+
+def _named_page(name: str) -> Any:
+    return _NamedPage(name)
 
 
 def test_a_swallowed_post_is_cancelled_before_the_route_goes() -> None:
@@ -1007,6 +1013,32 @@ def test_a_page_that_writes_while_the_others_are_stopped_is_stopped_too() -> Non
         "cdp:late:detach",
         "unroute",
     ]
+
+
+def test_a_page_that_writes_again_after_it_was_stopped_is_stopped_again() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    first = _named_page("first")
+    _swallow_a_post(driver, first)
+    # While the first page is being stopped, it submits a second post: it must be stopped again.
+    original_send = _CdpSession.send
+    state = {"fired": False}
+
+    def send(self: _CdpSession, method: str) -> None:
+        original_send(self, method)
+        if self._name == "first" and not state["fired"]:
+            state["fired"] = True
+            _swallow_a_post(driver, first)
+
+    _CdpSession.send = send  # type: ignore[method-assign]
+    try:
+        driver.close()
+    finally:
+        _CdpSession.send = original_send  # type: ignore[method-assign]
+    stops = [e for e in context.events if e == "cdp:first:Page.stopLoading"]
+    assert len(stops) == 2
+    assert context.events[-1] == "unroute"
 
 
 def test_a_page_that_wrote_through_the_strict_net_is_cancelled_too() -> None:

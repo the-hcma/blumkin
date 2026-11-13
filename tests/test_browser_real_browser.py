@@ -58,6 +58,13 @@ _SUBMIT_FORM = b"""<!doctype html><title>Report</title>
 </form>"""
 
 
+_POPUP_FORM = b"""<!doctype html><title>Popup</title>
+<form action="/submit" method="post" target="_blank"><input name="a" value="x"></form>
+<button type="button" id="open">Open</button>
+<script>
+document.getElementById('open').addEventListener('click', () => document.forms[0].submit());
+</script>"""
+
 _BYPASS_FORM = b"""<!doctype html><title>Bypass</title>
 <form action="/submit" method="post">
 <label for="amount">Amount</label><input id="amount" name="amount">
@@ -189,6 +196,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pages = {
             "/background": _BACKGROUND_FORM,
             "/bypass": _BYPASS_FORM,
+            "/popup": _POPUP_FORM,
             "/drift-a": _drift_page(),
             "/drift-b": _drift_page(button="Add row"),
             "/drift-c": _drift_page(extra='<label for="c">Cost center</label><input id="c">'),
@@ -338,6 +346,28 @@ def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
         assert _wait_for(lambda: _Handler.posts == ["/submit"])
         time.sleep(1)
         assert _Handler.posts == ["/submit"]
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_a_form_that_posts_into_a_new_window_is_not_released_at_detach(
+    tmp_path: Path, form_url: str
+) -> None:
+    """A `target="_blank"` post never reaches the net's handler, so the cancel must cover it."""
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    browser = _installed_browser()
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    try:
+        driver = GuardedDriver(attach(profile), GuardPolicy(allowed_controls=frozenset({"Open"})))
+        driver.goto(form_url + "popup")
+        driver.click("Open")
+        driver.read_text()
+        assert _Handler.posts == []
+        driver.close()
+        time.sleep(2.5)
+        assert _Handler.posts == []
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
 
