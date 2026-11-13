@@ -86,17 +86,19 @@ def test_live_outlook_signature_probe_round_trips() -> None:
 
 def test_live_silent_refresh_after_forced_access_token_expiry() -> None:
     """Expire cached access token; next Graph call must refresh without a browser."""
+    # Agent mode is checked first: `_live_ready()` reads the token bundle, which on a cold agent
+    # cache can raise the Touch ID prompt this skip exists to avoid.
+    cfg = load_config()
+    if secret_store._agent_enabled(cfg):
+        pytest.skip(
+            "agent mode is on (the default on macOS, token_reverify_after = 24h): reads go through "
+            "the Touch-ID-gated blumkin-agent cache, which a write leaves alone, so a forced "
+            'expiry is never read back (issue #736); set token_reverify_after = "never" to run this'
+        )
     if not _live_ready():
         pytest.skip(
             "Set BLUMKIN_LIVE=1 and configure ~/.config/blumkin "
             "(config.toml + token cache + auth record + refresh token)"
-        )
-    cfg = load_config()
-    if secret_store._agent_enabled(cfg):
-        pytest.skip(
-            "agent mode is on (token_reverify_after is set): reads go through the Touch-ID-gated "
-            "blumkin-agent cache, which a write leaves alone, so a forced expiry is never read "
-            "back (issue #736); run this with token_reverify_after unset"
         )
     backup = read_secret_text(cfg, "token_cache")
     assert backup is not None

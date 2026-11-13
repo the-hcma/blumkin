@@ -49,9 +49,9 @@ def _live_ready() -> bool:
 
 
 _AGENT_SKIP = (
-    "agent mode is on (token_reverify_after is set): reads go through the Touch-ID-gated "
-    "blumkin-agent cache, which a write leaves alone, so a forced expiry is never read back "
-    "(issue #736); run this with token_reverify_after unset"
+    "agent mode is on (the default on macOS, token_reverify_after = 24h): reads go through the "
+    "Touch-ID-gated blumkin-agent cache, which a write leaves alone, so a forced expiry is never "
+    'read back (issue #736); set token_reverify_after = "never" to run this'
 )
 
 _SKIP = (
@@ -85,11 +85,12 @@ def test_live_google_silent_refresh_after_forced_expiry() -> None:
     the OS keychain and unlinks the legacy file on first read (issue #287
     review, mirroring ``test_live_reads.py``'s equivalent fix).
     """
-    if not _live_ready():
-        pytest.skip(_SKIP)
+    # Agent mode first: `_live_ready()` reads the token, which can raise a Touch ID prompt.
     cfg = load_config()
     if _agent_mode_on(cfg):
         pytest.skip(_AGENT_SKIP)
+    if not _live_ready():
+        pytest.skip(_SKIP)
     backup = read_secret_text(cfg, "google_token")
     assert backup is not None
     try:
