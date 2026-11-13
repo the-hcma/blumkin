@@ -1068,9 +1068,10 @@ A parameter is NAME:KIND with KIND one of date, file, text, or NAME:choice=A|B|C
 action, then its control when it acts on one (click, press, fill, select, upload, verify), then
 key=value words (page, bind, expect, expect_heading, starts_on, instruction, row, column, value,
 role, match, nth; quote a value with spaces in the shell's own way). `nth=N` (1-based, in DOM
-order) says which of several same-named controls a click, press, fill, select, upload or verify
-step means; the step is refused with the real count when the page has fewer (a verify step
-reports it as missing). An upload step on a control the model records as a button (the trigger
+order) says which of several same-named controls a click, press, fill, select, upload, verify or
+pick step means (on a pick step, which of several identical rows; not with match=prefix); the
+step is refused with the real count when the page has fewer (a verify step reports it as
+missing). An upload step on a control the model records as a button (the trigger
 of a file input, such as Oracle's `File Name`) matches the input by that whole name, since the
 hidden text boxes beside the input only contain it; several elements with that whole name are
 refused with their count. A step that says `nth=N` counts every substring match instead, as it

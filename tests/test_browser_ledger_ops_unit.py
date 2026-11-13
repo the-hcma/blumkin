@@ -1130,9 +1130,30 @@ def test_a_pick_step_passes_its_role_and_prefix_match_to_the_pick(
                  role="gridcell", match="prefix"), {"name": "blumkin-probe"})  # fmt: skip
 
     assert seen == [
-        {"prefix": False, "role": "row"},
-        {"prefix": True, "role": "gridcell"},
+        {"nth": None, "prefix": False, "role": "row"},
+        {"nth": None, "prefix": True, "role": "gridcell"},
     ]
+
+
+def test_a_pick_step_with_nth_says_which_of_two_identical_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    seen: list[dict[str, Any]] = []
+
+    def fake_pick(config: Any, task: str, text: str, **kwargs: Any) -> dict:
+        seen.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(actions, "pick_task", fake_pick)
+    run = ledger_ops._default_run_step("expense-report")
+
+    run(FlowStep(action="pick", control=None, expect=None, page=None, value="Task A", nth=1), {})
+
+    assert seen == [{"nth": 1, "prefix": False, "role": "row"}]
 
 
 def test_a_bound_pick_text_with_a_backslash_never_appears_in_any_form(

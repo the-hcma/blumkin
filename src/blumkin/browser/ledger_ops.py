@@ -682,6 +682,7 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
                     config,
                     task,
                     chosen,
+                    nth=step.nth,
                     prefix=step.match == "prefix",
                     role=step.role or "row",
                 )
