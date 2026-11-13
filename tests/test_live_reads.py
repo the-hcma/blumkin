@@ -8,7 +8,12 @@ import os
 
 import pytest
 
-from blumkin.auth import reload_token_cache_from_disk, save_token_cache, status_dict
+from blumkin.auth import (
+    client_id_available,
+    reload_token_cache_from_disk,
+    save_token_cache,
+    status_dict,
+)
 from blumkin.config import load_config
 from blumkin.providers.kind import ProviderKind
 from blumkin.providers.microsoft_mail_probe import probe_outlook_signature
@@ -25,7 +30,7 @@ def _live_ready() -> bool:
     cfg = load_config()
     status = status_dict(cfg)
     return bool(
-        status["client_id_configured"]
+        (status["client_id_configured"] or client_id_available(cfg))
         and status["token_cache"]
         and status["auth_record"]
         and status["refresh_token_present"]

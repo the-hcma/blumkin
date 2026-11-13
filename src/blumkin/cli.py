@@ -1212,8 +1212,9 @@ def _auth_status_next_steps(status: dict[str, Any]) -> list[str]:
     steps: list[str] = []
     if not status.get("client_id_configured"):
         steps.append(
-            "client_id missing in config.toml — run: blumkin auth setup (or "
-            "blumkin doctor, which also checks the OS keychain for a vaulted client_id)"
+            "client_id missing in config.toml (`auth status` does not read the OS keychain, "
+            "where it may be vaulted: `blumkin doctor` checks it) — run: blumkin auth setup "
+            "if it is not vaulted either"
         )
     if not status.get("token_cache") or not status.get("auth_record"):
         steps.append("no token cache / auth record yet — run: blumkin auth login")
