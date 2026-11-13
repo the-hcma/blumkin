@@ -102,6 +102,11 @@ Repository = "https://github.com/the-hcma/blumkin"
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"
 
+[tool.hatch.build.targets.sdist]
+# Building the agent leaves `rust-agent/target/` (git-ignored cargo output, tens of MB) in the
+# tree, and hatchling would pack it into the sdist (issue #737). Only the sources belong there.
+exclude = ["rust-agent/target"]
+
 [tool.hatch.build.targets.wheel]
 # `blumkin/agent/bin/` only exists after `hatch_build.py`'s cargo build runs
 # (on macOS with a Rust toolchain); on other platforms/without cargo the
