@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from blumkin import secret_store
 from blumkin.config import load_config
 from blumkin.providers import get_provider
 from blumkin.providers.google_auth import status_dict
@@ -29,6 +30,10 @@ from blumkin.secret_store import write_text as write_secret_text
 # ``live`` too, so CI's ``-m 'not live'`` deselects these without touching the
 # shared ``.github/ci`` gate; the operator narrows to ``-m live_google``.
 pytestmark = [pytest.mark.live, pytest.mark.live_google]
+
+
+def _agent_mode_on(cfg) -> bool:
+    return secret_store._agent_enabled(cfg)
 
 
 def _live_ready() -> bool:
@@ -42,6 +47,12 @@ def _live_ready() -> bool:
         status["client_id_configured"] and status["token_cache"] and status["refresh_token_present"]
     )
 
+
+_AGENT_SKIP = (
+    "agent mode is on (token_reverify_after is set): reads go through the Touch-ID-gated "
+    "blumkin-agent cache, which a write leaves alone, so a forced expiry is never read back "
+    "(issue #736); run this with token_reverify_after unset"
+)
 
 _SKIP = (
     "Set BLUMKIN_LIVE_GOOGLE=1 and select a logged-in Google profile "
@@ -77,6 +88,8 @@ def test_live_google_silent_refresh_after_forced_expiry() -> None:
     if not _live_ready():
         pytest.skip(_SKIP)
     cfg = load_config()
+    if _agent_mode_on(cfg):
+        pytest.skip(_AGENT_SKIP)
     backup = read_secret_text(cfg, "google_token")
     assert backup is not None
     try:

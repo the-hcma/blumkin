@@ -8,6 +8,7 @@ import os
 
 import pytest
 
+from blumkin import secret_store
 from blumkin.auth import (
     client_id_available,
     reload_token_cache_from_disk,
@@ -91,6 +92,12 @@ def test_live_silent_refresh_after_forced_access_token_expiry() -> None:
             "(config.toml + token cache + auth record + refresh token)"
         )
     cfg = load_config()
+    if secret_store._agent_enabled(cfg):
+        pytest.skip(
+            "agent mode is on (token_reverify_after is set): reads go through the Touch-ID-gated "
+            "blumkin-agent cache, which a write leaves alone, so a forced expiry is never read "
+            "back (issue #736); run this with token_reverify_after unset"
+        )
     backup = read_secret_text(cfg, "token_cache")
     assert backup is not None
     try:
