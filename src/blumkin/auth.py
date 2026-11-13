@@ -157,6 +157,17 @@ def _active_client_id_for_entries(cfg: BlumkinConfig, entry_client_ids: set[Any]
     return toml_client_id
 
 
+def client_id_available(cfg: BlumkinConfig) -> bool:
+    """Whether a Microsoft client id exists anywhere the runtime looks: keychain, then config.
+
+    Unlike `status_dict`'s `client_id_configured`, which deliberately reads `config.toml` only so
+    that `auth status` touches the keychain once (issue #368), this resolves the id the way
+    sign-in does, so a vaulted id counts (issue #735). It reads the keychain: for tests and
+    tooling that gate on a working profile, not for `auth status`.
+    """
+    return bool(_resolved_client_id(cfg))
+
+
 def create_credential(
     config: BlumkinConfig | None = None,
     *,
