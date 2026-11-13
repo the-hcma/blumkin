@@ -580,6 +580,11 @@ class PlaywrightDriver:
             if self._existing_frames is not None:
                 with contextlib.suppress(Exception):
                     self._existing_frames.close()
+            if self._net_handler is not None:
+                # A swallowed form post stays pending in the page, and the browser sends it as
+                # soon as the route is removed (seen on Chrome and Edge, whatever the answer).
+                # Cancel it while the net still holds it.
+                self._cancel_pending_navigations()
             if self._navigation_handler is not None:
                 with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._navigation_handler)
@@ -591,6 +596,22 @@ class PlaywrightDriver:
         finally:
             with contextlib.suppress(_playwright_error()):
                 self._playwright.stop()
+
+    def _cancel_pending_navigations(self) -> None:
+        """Stop loading on every page so a request the net swallowed is never released."""
+        try:
+            pages = list(self._context.pages)
+        except _playwright_error():
+            return
+        for page in pages:
+            try:
+                page.evaluate("window.stop()")
+                continue
+            except _playwright_error():
+                pass
+            with contextlib.suppress(_playwright_error()):
+                session = self._context.new_cdp_session(page)
+                session.send("Page.stopLoading")
 
     def aria_snapshot(self) -> str:
         """The page as a Playwright ARIA snapshot: roles and accessible names, no field values."""

@@ -246,6 +246,9 @@ class _Page:
 
     def evaluate(self, script: str, arg: Any = None) -> Any:
         self.calls.append(("evaluate", arg))
+        if script == "window.stop()":
+            self.calls.append(("stop-loading",))
+            return None
         assert isinstance(arg, dict) and "click" in arg, "only the click pass uses evaluate"
         self.calls.append(("tile-click", tuple(arg["names"])))
         return [self.click_outcome, None, 1, []]
@@ -833,12 +836,15 @@ def test_the_safety_net_is_installed_once_and_released_on_detach() -> None:
     assert context.routes[0][0] == "**/*"
     driver.close()
     assert context.unrouted == [context.routes[0]]
+    # The swallowed post is cancelled before the route goes, or the browser would send it.
+    assert ("stop-loading",) in pw.page.calls
 
 
 def test_a_driver_that_never_installed_the_net_does_not_unroute_on_close() -> None:
     pw, driver = _driver()
     driver.close()
     assert pw.browser.contexts[0].unrouted == []
+    assert ("stop-loading",) not in pw.page.calls
 
 
 def test_checked_click_vets_the_element_it_then_clicks() -> None:

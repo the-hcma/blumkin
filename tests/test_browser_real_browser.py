@@ -321,6 +321,11 @@ def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
         assert _Handler.posts == []
         driver.close()
 
+        # Detaching must not release the swallowed post (#738: the browser sent it about a
+        # second after the route went away), so wait past that before looking.
+        time.sleep(2.5)
+        assert _Handler.posts == []
+
         # Detached, the swallowed submit left the user's page in place and nothing blocks
         # the user's own final click.
         raw = attach(profile)
@@ -329,6 +334,8 @@ def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
         raw.checked_click("Go now", "button", lambda info: None)
         raw.close()
         assert _wait_for(lambda: _Handler.posts == ["/submit"])
+        time.sleep(1)
+        assert _Handler.posts == ["/submit"]
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
 
@@ -341,6 +348,20 @@ def _installed_browser() -> ResolvedBrowser:
         except BrowserNotFoundError:
             continue
     pytest.skip("no Chrome, Edge or Chromium installed")
+
+
+def _goto_after_aborted_navigation(driver: Any, url: str) -> None:
+    """Open a page right after a navigation was aborted.
+
+    Chromium 157 turns an aborted navigation into a `chrome-error://` page a moment later, and a
+    `goto` issued in that window is reported as interrupted by it. Let it settle, then retry once.
+    """
+    time.sleep(0.5)
+    try:
+        driver.goto(url)
+    except Exception:  # noqa: BLE001 - the interrupted navigation surfaces as a driver error
+        time.sleep(1)
+        driver.goto(url)
 
 
 def _wait_for(condition: Callable[[], bool], *, timeout_s: float = 10.0) -> bool:
@@ -530,7 +551,7 @@ def test_exploration_reads_a_real_page_inspects_without_clicking_and_stays_on_th
         # A redirect from an allowed host to another one is not intercepted (the browser follows
         # it inside its network stack), so the other host does see that GET. It is detected as
         # soon as the click settles, and the command says the click happened.
-        raw.goto(form_url + "explore")
+        _goto_after_aborted_navigation(raw, form_url + "explore")
         with pytest.raises(ExploreRefusedError, match="click happened"):
             explorer.click("link", "Redirecting")
         assert _Handler.posts == []
