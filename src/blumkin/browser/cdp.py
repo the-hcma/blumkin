@@ -428,6 +428,9 @@ _MAX_INSPECT_CLASSES = 30
 _MAX_READ_BACK = 100_000
 #: Most resources `list_requests` returns (the newest ones).
 _MAX_REQUESTS = 200
+
+#: How many times a key press is tried afresh when the page re-renders the field under it.
+_STALE_HANDLE_RETRIES = 2
 #: Shortest and longest `watch_requests` waits, in seconds.
 MIN_WATCH_S = 0.1
 MAX_WATCH_S = 120.0
@@ -1001,17 +1004,27 @@ class PlaywrightDriver:
         """Press `key` in the field `label` names, after `vet` has seen that same element.
 
         One handle is inspected and pressed, so a re-render between the check and the key
-        cannot put the key into a different element (which `--nth` makes likelier).
+        cannot put the key into a different element (which `--nth` makes likelier). When the
+        page re-renders the field after the handle was taken (Oracle does after a fill or a
+        Tab) the handle is detached; the field is then found again, vetted again and pressed,
+        a bounded number of times, so each key still goes to the element that was vetted.
         """
         self._require_open()
         target = target or FieldTarget()
         try:
             scope = self._scope(target)
-            locator = self._field(scope, label, target, prefer_visible=True)
-            handle = locator.element_handle(timeout=self._timeout_ms)
-            vet(self._describe(handle))
-            self._still_allowed(scope, target)
-            handle.press(key, timeout=self._timeout_ms)
+            for attempt in range(_STALE_HANDLE_RETRIES + 1):
+                locator = self._field(scope, label, target, prefer_visible=True)
+                handle = locator.element_handle(timeout=self._timeout_ms)
+                vet(self._describe(handle))
+                self._still_allowed(scope, target)
+                try:
+                    handle.press(key, timeout=self._timeout_ms)
+                except _playwright_error() as exc:
+                    if attempt < _STALE_HANDLE_RETRIES and _is_detached(exc):
+                        continue
+                    raise
+                return
         except _playwright_error() as exc:
             raise self._action_error(f"press {key!r} in the field labelled {label!r}", exc) from exc
 
@@ -3395,6 +3408,11 @@ def _navigation_net(
         _abort_non_get_navigation(route)
 
     return handler
+
+
+def _is_detached(exc: Exception) -> bool:
+    """Whether Playwright says the element left the DOM (the page re-rendered it)."""
+    return "not attached to the DOM" in str(exc)
 
 
 def _is_frame_post_to_page_host(request: Any, page: Any) -> bool:
