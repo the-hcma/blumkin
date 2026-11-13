@@ -70,6 +70,8 @@ _BYPASS_FORM = b"""<!doctype html><title>Bypass</title>
 <a href="javascript:document.forms[0].submit()">Continue</a>
 <script>
 document.getElementById('tidy').addEventListener('click', () => document.forms[0].submit());
+// A page can replace `window.stop`; cancelling a swallowed post must not rely on it.
+window.stop = () => {};
 </script>"""
 
 

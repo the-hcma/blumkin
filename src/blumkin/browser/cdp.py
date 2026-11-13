@@ -598,20 +598,26 @@ class PlaywrightDriver:
                 self._playwright.stop()
 
     def _cancel_pending_navigations(self) -> None:
-        """Stop loading on every page so a request the net swallowed is never released."""
+        """Stop loading on every page so a request the net swallowed is never released.
+
+        It goes through the DevTools protocol, not a script in the page: a page can replace
+        `window.stop`. Each page gets its own deadline, so a stalled tab cannot hold up the
+        detach, and a page that cannot be reached is skipped (best effort, nothing to raise on
+        the way out).
+        """
         try:
             pages = list(self._context.pages)
         except _playwright_error():
             return
         for page in pages:
             try:
-                page.evaluate("window.stop()")
+                with _deadline(self._timeout_s, "stop a page's pending navigation"):
+                    session = self._context.new_cdp_session(page)
+                    session.send("Page.stopLoading")
+                    with contextlib.suppress(_playwright_error()):
+                        session.detach()
+            except _playwright_error(), BrowserActionError:
                 continue
-            except _playwright_error():
-                pass
-            with contextlib.suppress(_playwright_error()):
-                session = self._context.new_cdp_session(page)
-                session.send("Page.stopLoading")
 
     def aria_snapshot(self) -> str:
         """The page as a Playwright ARIA snapshot: roles and accessible names, no field values."""

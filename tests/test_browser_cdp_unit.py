@@ -246,9 +246,6 @@ class _Page:
 
     def evaluate(self, script: str, arg: Any = None) -> Any:
         self.calls.append(("evaluate", arg))
-        if script == "window.stop()":
-            self.calls.append(("stop-loading",))
-            return None
         assert isinstance(arg, dict) and "click" in arg, "only the click pass uses evaluate"
         self.calls.append(("tile-click", tuple(arg["names"])))
         return [self.click_outcome, None, 1, []]
@@ -302,17 +299,36 @@ class _Page:
         return self._title
 
 
+class _CdpSession:
+    def __init__(self, context: _Context) -> None:
+        self._context = context
+
+    def send(self, method: str) -> None:
+        self._context.events.append(f"cdp:{method}")
+        if self._context.stop_error is not None:
+            raise self._context.stop_error
+
+    def detach(self) -> None:
+        self._context.events.append("cdp:detach")
+
+
 class _Context:
     def __init__(self, page: _Page) -> None:
         self.pages = [page]
         self.routes: list[Any] = []
         self.unrouted: list[Any] = []
+        self.events: list[str] = []
+        self.stop_error: Exception | None = None
         page.context = self
+
+    def new_cdp_session(self, page: Any) -> _CdpSession:
+        return _CdpSession(self)
 
     def route(self, pattern: str, handler: Any) -> None:
         self.routes.append((pattern, handler))
 
     def unroute(self, pattern: str, handler: Any) -> None:
+        self.events.append("unroute")
         self.unrouted.append((pattern, handler))
 
 
@@ -837,14 +853,44 @@ def test_the_safety_net_is_installed_once_and_released_on_detach() -> None:
     driver.close()
     assert context.unrouted == [context.routes[0]]
     # The swallowed post is cancelled before the route goes, or the browser would send it.
-    assert ("stop-loading",) in pw.page.calls
+    assert context.events == ["cdp:Page.stopLoading", "cdp:detach", "unroute"]
+
+
+def test_a_cancel_that_fails_still_removes_the_net_and_disconnects() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.stop_error = PlaywrightError("page is gone")
+    driver.close()
+    assert context.events == ["cdp:Page.stopLoading", "unroute"]
+    assert pw.browser.close_calls == 1 and pw.stopped == 1
+
+
+def test_a_context_whose_pages_cannot_be_listed_still_closes() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+
+    class _Unlistable(_Context):
+        @property
+        def pages(self) -> list[Any]:
+            raise PlaywrightError("page is gone")
+
+        @pages.setter
+        def pages(self, value: list[Any]) -> None:
+            pass
+
+    context.__class__ = _Unlistable
+    driver.close()
+    assert context.events == ["unroute"]
+    assert pw.browser.close_calls == 1 and pw.stopped == 1
 
 
 def test_a_driver_that_never_installed_the_net_does_not_unroute_on_close() -> None:
     pw, driver = _driver()
     driver.close()
     assert pw.browser.contexts[0].unrouted == []
-    assert ("stop-loading",) not in pw.page.calls
+    assert pw.browser.contexts[0].events == []
 
 
 def test_checked_click_vets_the_element_it_then_clicks() -> None:
