@@ -63,7 +63,7 @@ def test_no_client_id_anywhere_is_not_available(
     assert client_id_available(cfg) is False
 
 
-def test_a_client_id_in_config_toml_counts_without_touching_the_keychain(
+def test_a_client_id_in_config_toml_counts_when_the_keychain_has_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _profile(tmp_path, monkeypatch, client_id="from-config")
