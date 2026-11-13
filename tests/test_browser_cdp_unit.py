@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import threading
+import time
 import urllib.error
 from collections.abc import Iterator
 from pathlib import Path
@@ -306,6 +307,8 @@ class _CdpSession:
 
     def send(self, method: str) -> None:
         self._context.events.append(f"cdp:{self._name}:{method}")
+        if self._name in self._context.stalled:
+            time.sleep(10)  # a renderer that never answers; the per-page deadline ends this
         error = self._context.stop_errors.get(self._name)
         if error is not None:
             raise error
@@ -321,6 +324,7 @@ class _Context:
         self.unrouted: list[Any] = []
         self.events: list[str] = []
         self.stop_errors: dict[str, Exception] = {}
+        self.stalled: set[str] = set()
         page.context = self
 
     def new_cdp_session(self, page: Any) -> _CdpSession:
@@ -955,18 +959,36 @@ def test_a_cancel_that_fails_on_one_page_still_stops_the_rest_and_detaches() -> 
     assert pw.browser.close_calls == 1 and pw.stopped == 1
 
 
-def test_a_cancel_that_hits_its_deadline_is_skipped_like_any_other_failure() -> None:
-    from blumkin.browser.cdp import BrowserActionError
-
-    pw, driver = _driver()
+def test_a_stalled_page_is_cut_off_by_its_deadline_and_the_rest_are_still_stopped() -> None:
+    pw, driver = _driver(timeout_s=1.0)
     driver.block_form_submission()
     context = pw.browser.contexts[0]
-    context.stop_errors["a"] = BrowserActionError("page did not answer in time")
+    context.stalled.add("a")
     _swallow_a_post(driver, _named_page("a"))
     _swallow_a_post(driver, _named_page("b"))
+    started = time.monotonic()
     driver.close()
+    assert time.monotonic() - started < 6
     assert context.events[-3:] == ["cdp:b:Page.stopLoading", "cdp:b:detach", "unroute"]
     assert pw.browser.close_calls == 1 and pw.stopped == 1
+
+
+def test_a_page_that_wrote_through_the_strict_net_is_cancelled_too() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission(background_writes=True)
+    driver.block_form_submission()  # the lenient request must not replace the strict net
+    context = pw.browser.contexts[0]
+    assert len(context.routes) == 1
+    page = _named_page("a")
+    _swallow_a_post(driver, page)
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "unroute",
+    ]
 
 
 def test_a_driver_that_never_installed_the_net_does_not_unroute_on_close() -> None:
