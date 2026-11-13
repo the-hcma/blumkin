@@ -20,7 +20,7 @@ from typing import Any, cast
 import pytest
 from click.testing import CliRunner
 
-from blumkin.browser.cdp import attach
+from blumkin.browser.cdp import BrowserActionError, attach
 from blumkin.browser.discovery import (
     BrowserKind,
     BrowserNotFoundError,
@@ -58,6 +58,13 @@ _SUBMIT_FORM = b"""<!doctype html><title>Report</title>
 </form>"""
 
 
+_POPUP_FORM = b"""<!doctype html><title>Popup</title>
+<form action="/submit" method="post" target="_blank"><input name="a" value="x"></form>
+<button type="button" id="open">Open</button>
+<script>
+document.getElementById('open').addEventListener('click', () => document.forms[0].submit());
+</script>"""
+
 _BYPASS_FORM = b"""<!doctype html><title>Bypass</title>
 <form action="/submit" method="post">
 <label for="amount">Amount</label><input id="amount" name="amount">
@@ -70,6 +77,8 @@ _BYPASS_FORM = b"""<!doctype html><title>Bypass</title>
 <a href="javascript:document.forms[0].submit()">Continue</a>
 <script>
 document.getElementById('tidy').addEventListener('click', () => document.forms[0].submit());
+// A page can replace `window.stop`; cancelling a swallowed post must not rely on it.
+window.stop = () => {};
 </script>"""
 
 
@@ -187,6 +196,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pages = {
             "/background": _BACKGROUND_FORM,
             "/bypass": _BYPASS_FORM,
+            "/popup": _POPUP_FORM,
             "/drift-a": _drift_page(),
             "/drift-b": _drift_page(button="Add row"),
             "/drift-c": _drift_page(extra='<label for="c">Cost center</label><input id="c">'),
@@ -321,6 +331,11 @@ def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
         assert _Handler.posts == []
         driver.close()
 
+        # Detaching must not release the swallowed post (#738: the browser sent it about a
+        # second after the route went away), so wait past that before looking.
+        time.sleep(2.5)
+        assert _Handler.posts == []
+
         # Detached, the swallowed submit left the user's page in place and nothing blocks
         # the user's own final click.
         raw = attach(profile)
@@ -329,6 +344,30 @@ def test_the_guard_stops_the_known_bypasses_and_the_net_is_gone_after_detaching(
         raw.checked_click("Go now", "button", lambda info: None)
         raw.close()
         assert _wait_for(lambda: _Handler.posts == ["/submit"])
+        time.sleep(1)
+        assert _Handler.posts == ["/submit"]
+    finally:
+        os.kill(result.session.pid, signal.SIGTERM)
+
+
+def test_a_form_that_posts_into_a_new_window_is_not_released_at_detach(
+    tmp_path: Path, form_url: str
+) -> None:
+    """A `target="_blank"` post never reaches the net's handler, so the cancel must cover it."""
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        pytest.skip("set BLUMKIN_BROWSER_TESTS=1 to run real-browser tests")
+    browser = _installed_browser()
+    profile = create_profile(tmp_path, "expense-report")
+    result = launch(profile, browser, extra_args=("--headless=new", "--no-sandbox"))
+    try:
+        driver = GuardedDriver(attach(profile), GuardPolicy(allowed_controls=frozenset({"Open"})))
+        driver.goto(form_url + "popup")
+        driver.click("Open")
+        driver.read_text()
+        assert _Handler.posts == []
+        driver.close()
+        time.sleep(2.5)
+        assert _Handler.posts == []
     finally:
         os.kill(result.session.pid, signal.SIGTERM)
 
@@ -341,6 +380,22 @@ def _installed_browser() -> ResolvedBrowser:
         except BrowserNotFoundError:
             continue
     pytest.skip("no Chrome, Edge or Chromium installed")
+
+
+def _goto_after_aborted_navigation(driver: Any, url: str) -> None:
+    """Open a page right after a navigation was aborted.
+
+    Chromium 157 turns an aborted navigation into a `chrome-error://` page a moment later, and a
+    `goto` issued in that window is reported as interrupted by it. Let it settle, then retry once.
+    """
+    time.sleep(0.5)
+    try:
+        driver.goto(url)
+    except BrowserActionError as exc:
+        if "chrome-error://" not in str(exc):
+            raise
+        time.sleep(1)
+        driver.goto(url)
 
 
 def _wait_for(condition: Callable[[], bool], *, timeout_s: float = 10.0) -> bool:
@@ -530,7 +585,7 @@ def test_exploration_reads_a_real_page_inspects_without_clicking_and_stays_on_th
         # A redirect from an allowed host to another one is not intercepted (the browser follows
         # it inside its network stack), so the other host does see that GET. It is detected as
         # soon as the click settles, and the command says the click happened.
-        raw.goto(form_url + "explore")
+        _goto_after_aborted_navigation(raw, form_url + "explore")
         with pytest.raises(ExploreRefusedError, match="click happened"):
             explorer.click("link", "Redirecting")
         assert _Handler.posts == []

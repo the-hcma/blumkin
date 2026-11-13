@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import threading
+import time
 import urllib.error
 from collections.abc import Iterator
 from pathlib import Path
@@ -299,17 +300,48 @@ class _Page:
         return self._title
 
 
+class _CdpSession:
+    def __init__(self, context: _Context, name: str) -> None:
+        self._context = context
+        self._name = name
+
+    def send(self, method: str) -> None:
+        self._context.events.append(f"cdp:{self._name}:{method}")
+        if self._context.during_send is not None:
+            callback, self._context.during_send = self._context.during_send, None
+            callback()
+        if self._name in self._context.stalled:
+            time.sleep(10)  # a renderer that never answers; the per-page deadline ends this
+        error = self._context.stop_errors.get(self._name)
+        if error is not None:
+            raise error
+
+    def detach(self) -> None:
+        self._context.events.append(f"cdp:{self._name}:detach")
+        if self._name in self._context.stalled_detach:
+            time.sleep(10)  # a connection that stalls on teardown too
+
+
 class _Context:
     def __init__(self, page: _Page) -> None:
         self.pages = [page]
         self.routes: list[Any] = []
         self.unrouted: list[Any] = []
+        self.events: list[str] = []
+        self.stop_errors: dict[str, Exception] = {}
+        self.stalled: set[str] = set()
+        self.stalled_detach: set[str] = set()
+        self.during_send: Any = None
         page.context = self
+
+    def new_cdp_session(self, page: Any) -> _CdpSession:
+        return _CdpSession(self, getattr(page, "name", "page"))
 
     def route(self, pattern: str, handler: Any) -> None:
         self.routes.append((pattern, handler))
 
     def unroute(self, pattern: str, handler: Any) -> None:
+        self.events.append("unroute")
         self.unrouted.append((pattern, handler))
 
 
@@ -835,10 +867,241 @@ def test_the_safety_net_is_installed_once_and_released_on_detach() -> None:
     assert context.unrouted == [context.routes[0]]
 
 
+def _swallow_a_post(driver: Any, page: Any) -> None:
+    """Send a form post from `page` through the installed net, as the browser would."""
+    from types import SimpleNamespace
+
+    request = SimpleNamespace(
+        method="POST",
+        url="https://erp.example.com/x",
+        headers={},
+        frame=SimpleNamespace(page=page, parent_frame=None),
+        is_navigation_request=lambda: True,
+    )
+    driver._net_handler(SimpleNamespace(request=request, fulfill=lambda **_: None))
+
+
+class _NamedPage:
+    """A page with identity hashing, like Playwright's (a SimpleNamespace is unhashable)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.context = None
+
+
+def _named_page(name: str) -> Any:
+    return _NamedPage(name)
+
+
+def test_a_swallowed_post_is_cancelled_before_the_route_goes() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    page = _named_page("a")
+    _swallow_a_post(driver, page)
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "unroute",
+    ]
+
+
+def test_the_driven_page_is_cancelled_even_when_the_net_never_saw_its_post() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    driver.close()
+    assert context.events == ["cdp:page:Page.stopLoading", "cdp:page:detach", "unroute"]
+
+
+def test_a_tab_that_swallowed_nothing_is_left_alone_on_detach() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.pages.append(_named_page("other"))
+    _swallow_a_post(driver, _named_page("a"))
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "unroute",
+    ]
+    assert not any("other" in event for event in context.events)
+
+
+def test_a_read_does_not_mark_a_page_for_cancelling() -> None:
+    from types import SimpleNamespace
+
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    request = SimpleNamespace(
+        method="GET",
+        url="https://erp.example.com/x",
+        headers={},
+        frame=SimpleNamespace(page=_named_page("a"), parent_frame=None),
+        is_navigation_request=lambda: True,
+    )
+    driver._net_handler(SimpleNamespace(request=request, continue_=lambda: None))
+    driver.close()
+    assert context.events == ["cdp:page:Page.stopLoading", "cdp:page:detach", "unroute"]
+
+
+def test_a_cancel_that_fails_on_one_page_still_stops_the_rest_and_detaches() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.stop_errors["a"] = PlaywrightError("page is gone")
+    _swallow_a_post(driver, _named_page("a"))
+    _swallow_a_post(driver, _named_page("b"))
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "cdp:b:Page.stopLoading",
+        "cdp:b:detach",
+        "unroute",
+    ]
+    assert pw.browser.close_calls == 1 and pw.stopped == 1
+
+
+def test_a_stalled_page_is_cut_off_by_its_deadline_and_the_rest_are_still_stopped() -> None:
+    pw, driver = _driver(timeout_s=1.0)
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.stalled.add("a")
+    _swallow_a_post(driver, _named_page("a"))
+    _swallow_a_post(driver, _named_page("b"))
+    started = time.monotonic()
+    driver.close()
+    assert time.monotonic() - started < 6
+    assert context.events[-3:] == ["cdp:b:Page.stopLoading", "cdp:b:detach", "unroute"]
+    assert pw.browser.close_calls == 1 and pw.stopped == 1
+
+
+def test_a_stalled_detach_is_cut_off_and_the_rest_are_still_stopped() -> None:
+    pw, driver = _driver(timeout_s=1.0)
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.stalled_detach.add("a")
+    _swallow_a_post(driver, _named_page("a"))
+    _swallow_a_post(driver, _named_page("b"))
+    started = time.monotonic()
+    driver.close()
+    assert time.monotonic() - started < 6
+    assert context.events[-3:] == ["cdp:b:Page.stopLoading", "cdp:b:detach", "unroute"]
+    assert pw.browser.close_calls == 1 and pw.stopped == 1
+
+
+def test_a_page_that_writes_while_the_others_are_stopped_is_stopped_too() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    context.during_send = lambda: _swallow_a_post(driver, _named_page("late"))
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:late:Page.stopLoading",
+        "cdp:late:detach",
+        "unroute",
+    ]
+
+
+def test_a_page_that_writes_again_after_it_was_stopped_is_stopped_again() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    first = _named_page("first")
+    _swallow_a_post(driver, first)
+    # While the first page is being stopped, it submits a second post: it must be stopped again.
+    original_send = _CdpSession.send
+    state = {"fired": False}
+
+    def send(self: _CdpSession, method: str) -> None:
+        original_send(self, method)
+        if self._name == "first" and not state["fired"]:
+            state["fired"] = True
+            _swallow_a_post(driver, first)
+
+    _CdpSession.send = send  # type: ignore[method-assign]
+    try:
+        driver.close()
+    finally:
+        _CdpSession.send = original_send  # type: ignore[method-assign]
+    stops = [e for e in context.events if e == "cdp:first:Page.stopLoading"]
+    assert len(stops) == 2
+    assert context.events[-1] == "unroute"
+
+
+def test_a_page_that_keeps_writing_is_stopped_a_bounded_number_of_times() -> None:
+    from blumkin.browser.cdp import _CANCEL_PASSES_MAX
+
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    busy = _named_page("busy")
+    _swallow_a_post(driver, busy)
+    _swallow_a_post(driver, _named_page("calm"))
+    original_send = _CdpSession.send
+
+    def send(self: _CdpSession, method: str) -> None:
+        original_send(self, method)
+        if self._name == "busy":
+            _swallow_a_post(driver, busy)  # a poll that posts during every stop
+
+    _CdpSession.send = send  # type: ignore[method-assign]
+    try:
+        driver.close()
+    finally:
+        _CdpSession.send = original_send  # type: ignore[method-assign]
+    stops = [e for e in context.events if e.endswith("Page.stopLoading")]
+    assert stops.count("cdp:busy:Page.stopLoading") == _CANCEL_PASSES_MAX
+    assert stops.count("cdp:calm:Page.stopLoading") == 1
+    assert stops.count("cdp:page:Page.stopLoading") == 1
+    assert context.events[-1] == "unroute"
+    assert pw.browser.close_calls == 1 and pw.stopped == 1
+
+
+def test_the_navigation_route_is_removed_before_the_cancel_reads_the_counts() -> None:
+    pw, driver = _driver()
+    driver.restrict_navigation(lambda host: True)
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    driver.close()
+    assert context.events == ["unroute", "cdp:page:Page.stopLoading", "cdp:page:detach", "unroute"]
+
+
+def test_a_page_that_wrote_through_the_strict_net_is_cancelled_too() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission(background_writes=True)
+    driver.block_form_submission()  # the lenient request must not replace the strict net
+    context = pw.browser.contexts[0]
+    assert len(context.routes) == 1
+    page = _named_page("a")
+    _swallow_a_post(driver, page)
+    driver.close()
+    assert context.events == [
+        "cdp:page:Page.stopLoading",
+        "cdp:page:detach",
+        "cdp:a:Page.stopLoading",
+        "cdp:a:detach",
+        "unroute",
+    ]
+
+
 def test_a_driver_that_never_installed_the_net_does_not_unroute_on_close() -> None:
     pw, driver = _driver()
     driver.close()
     assert pw.browser.contexts[0].unrouted == []
+    assert pw.browser.contexts[0].events == []
 
 
 def test_checked_click_vets_the_element_it_then_clicks() -> None:

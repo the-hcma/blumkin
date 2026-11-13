@@ -550,11 +550,16 @@ class PlaywrightDriver:
         self._net_handler: Any = None
         self._uploading = False
         self._upload_posts = 0
-        self._lenient_net = _navigation_net(
-            page,
-            lambda: self._uploading and self._upload_posts < _UPLOAD_POSTS_MAX,
-            self._count_upload_post,
+        self._swallowed_pages: dict[Any, int] = {}
+        self._lenient_net = _remembering_writes(
+            _navigation_net(
+                page,
+                lambda: self._uploading and self._upload_posts < _UPLOAD_POSTS_MAX,
+                self._count_upload_post,
+            ),
+            self._swallowed_pages,
         )
+        self._strict_net = _remembering_writes(_abort_every_write, self._swallowed_pages)
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -581,9 +586,15 @@ class PlaywrightDriver:
                 with contextlib.suppress(Exception):
                     self._existing_frames.close()
             if self._navigation_handler is not None:
+                # Before the cancel: this call waits on the browser, and a write that reaches
+                # the net meanwhile must be counted before the cancel reads the counts.
                 with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._navigation_handler)
             if self._net_handler is not None:
+                # A swallowed form post stays pending in the page, and the browser sends it as
+                # soon as the route is removed (seen on Chrome and Edge, whatever the answer).
+                # Cancel it while the net still holds it.
+                self._cancel_pending_navigations()
                 with contextlib.suppress(_playwright_error()):
                     self._context.unroute("**/*", self._net_handler)
             with contextlib.suppress(_playwright_error()):
@@ -591,6 +602,49 @@ class PlaywrightDriver:
         finally:
             with contextlib.suppress(_playwright_error()):
                 self._playwright.stop()
+
+    def _cancel_pending_navigations(self) -> None:
+        """Stop loading on the page this driver drives and on any page the net saw a write on.
+
+        A post that is still on its way to the net has not been recorded yet, which is why the
+        driven page is always included. The user's other tabs keep whatever they are loading. It
+        goes through the DevTools protocol, not a script in the page, because a page can replace
+        `window.stop`. Each page gets its own deadline, so a stalled tab cannot hold up the
+        detach, and a page that cannot be reached is skipped while the rest are still stopped
+        (best effort: there is nothing to raise on the way out).
+        """
+        done: dict[Any, int] = {}
+        passes: dict[Any, int] = {}
+        while True:
+            # A write that reaches the net while pages are being stopped, from a new page or
+            # from one already stopped, makes that page pending again: the writes seen per page
+            # are compared after every page, before the net is removed. A page that keeps
+            # writing is stopped at most `_CANCEL_PASSES_MAX` times, and the page stopped the
+            # fewest times goes first, so one busy page cannot starve the others or the detach.
+            pending = [
+                p
+                for p in dict.fromkeys([self._page, *self._swallowed_pages])
+                if (p not in done or done[p] != self._swallowed_pages.get(p, 0))
+                and passes.get(p, 0) < _CANCEL_PASSES_MAX
+            ]
+            if not pending:
+                return
+            page = min(pending, key=lambda p: passes.get(p, 0))
+            passes[page] = passes.get(page, 0) + 1
+            done[page] = self._swallowed_pages.get(page, 0)
+            session = None
+            try:
+                with _deadline(self._timeout_s, "stop a page's pending navigation"):
+                    session = self._context.new_cdp_session(page)
+                    session.send("Page.stopLoading")
+            except _playwright_error(), BrowserActionError:
+                pass
+            if session is not None:
+                try:
+                    with _deadline(self._timeout_s, "detach a page's session"):
+                        session.detach()
+                except _playwright_error(), BrowserActionError:
+                    pass
 
     def aria_snapshot(self) -> str:
         """The page as a Playwright ARIA snapshot: roles and accessible names, no field values."""
@@ -617,8 +671,8 @@ class PlaywrightDriver:
         request, so a net registered after the host route would run first and skip it.
         """
         self._require_open()
-        handler = _abort_every_write if background_writes else self._lenient_net
-        if self._net_handler is handler or self._net_handler is _abort_every_write:
+        handler = self._strict_net if background_writes else self._lenient_net
+        if self._net_handler is handler or self._net_handler is self._strict_net:
             return
         previous = self._net_handler
         try:
@@ -3143,6 +3197,8 @@ _UPLOAD_POST_GRACE_MS = 2000
 #: Most file posts one `upload` lets through: Oracle ADF sends two, so a few more is slack, not
 #: an open door for a page that keeps posting.
 _UPLOAD_POSTS_MAX = 4
+#: How many times the detach stops one page: its first pass and the re-stops after later writes.
+_CANCEL_PASSES_MAX = 3
 _CELL_OPTION_POLL_MS = 500
 _CELL_OPTION_POLLS = 16
 
@@ -3440,6 +3496,24 @@ def _abort_non_get_navigation(route: Any) -> None:
         route.fulfill(status=204)
     else:
         route.continue_()
+
+
+def _remembering_writes(
+    handler: Callable[[Any], None], pages: dict[Any, int]
+) -> Callable[[Any], None]:
+    """Wrap a net so the page of every write it sees is counted, for the cancel at detach."""
+
+    def wrapped(route: Any) -> None:
+        try:
+            request = route.request
+            if request.method not in _READ_METHODS:
+                page = request.frame.page
+                pages[page] = pages.get(page, 0) + 1
+        except AttributeError, _playwright_error():
+            pass
+        handler(route)
+
+    return wrapped
 
 
 def _sign_in_handler(
