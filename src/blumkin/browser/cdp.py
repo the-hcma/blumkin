@@ -612,18 +612,28 @@ class PlaywrightDriver:
         detach, and a page that cannot be reached is skipped while the rest are still stopped
         (best effort: there is nothing to raise on the way out).
         """
-        for page in [self._page, *(p for p in self._swallowed_pages if p is not self._page)]:
+        done: list[Any] = []
+        while True:
+            # A write that reaches the net while a page is being stopped joins the list, so the
+            # list is read again after every page, before the net is removed.
+            pending = [p for p in [self._page, *self._swallowed_pages] if p not in done]
+            if not pending:
+                return
+            page = pending[0]
+            done.append(page)
             session = None
             try:
                 with _deadline(self._timeout_s, "stop a page's pending navigation"):
                     session = self._context.new_cdp_session(page)
                     session.send("Page.stopLoading")
             except _playwright_error(), BrowserActionError:
-                continue
-            finally:
-                if session is not None:
-                    with contextlib.suppress(_playwright_error(), BrowserActionError):
+                pass
+            if session is not None:
+                try:
+                    with _deadline(self._timeout_s, "detach a page's session"):
                         session.detach()
+                except _playwright_error(), BrowserActionError:
+                    pass
 
     def aria_snapshot(self) -> str:
         """The page as a Playwright ARIA snapshot: roles and accessible names, no field values."""
