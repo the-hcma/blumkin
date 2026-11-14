@@ -22,6 +22,15 @@ on:
           tagged.
         type: boolean
         default: false
+      expected_sha:
+        description: >-
+          Commit of main you inspected before forcing a publish. The build
+          stops when main is at another commit, so a commit that merges
+          between your check and the dispatch is never built and uploaded
+          under the tagged version. Leave empty outside a forced publish.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -255,6 +264,18 @@ jobs:
           version: latest
 
       - uses: the-hcma/repository-helpers/actions/setup-tmp-layout@bfee0e1f2d682e83c6207a0d6a0f7feefa576fd8
+
+      # Before anything is built: a forced publish builds whatever main is at when the run
+      # starts, which can be newer than the commit that was inspected.
+      - name: Check main is the inspected commit
+        if: github.event.inputs.expected_sha != ''
+        env:
+          EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
+        run: |
+          if [[ "${GITHUB_SHA}" != "${EXPECTED_SHA}" ]]; then
+            echo "ERROR: main is at ${GITHUB_SHA}, not the inspected ${EXPECTED_SHA}" >&2
+            exit 1
+          fi
 
       - name: Set up Python 3.14
         run: uv python install 3.14
