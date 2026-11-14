@@ -6,7 +6,7 @@ Read [`AGENTS.md`](AGENTS.md) first - it is the contract for humans and agents a
 
 ## Review model
 
-Every change to `main` goes through a pull request. No direct pushes, no force pushes, and a PR must be up to date with `main` before it merges.
+Every change to `main` goes through a pull request. No direct pushes to `main`, no force pushes to `main` (a branch you own, such as the release branch of [`docs/RELEASING.md`](docs/RELEASING.md), may be force-pushed), and a PR must be up to date with `main` before it merges.
 
 - **Required status checks must be green** — `Scaffold checks`, `Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`, `Shellcheck`, `Rust lint & test (blumkin-agent)` (see the table below). This is the hard merge gate; `enforce_admins` is off so a green run is the only thing routinely bypassed.
 - **Agent review runs on every PR head.** `mergestorm-vortex` reviews each push; [`.agents/rules/pr-ship-and-review.md`](.agents/rules/pr-ship-and-review.md) requires an on-thread human reply before any review thread is resolved. Threads are addressed before merge.

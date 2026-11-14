@@ -44,7 +44,7 @@ working_days_only = true
 default_hours = 8.0
 ```
 
-If every command instead fails with `named [profiles.*] layout cannot mix top-level flat keys (loop)` although the file is valid TOML, your blumkin build predates support for `[loop]` and `[cron]` next to named profiles (release 1.13.0 and older are such builds): check `blumkin --version`. `blumkin upgrade` fixes it, because release 1.14.0 and newer accept those tables; to try changes that are not released yet, run the checkout with the dev launcher (`scripts/dev/blumkin`, see the `blumkin-dev` skill).
+If every command instead fails with `named [profiles.*] layout cannot mix top-level flat keys (loop)` although the file is valid TOML, your blumkin build predates support for `[loop]` and `[cron]` next to named profiles (release 1.13.0 and older are such builds): check `blumkin --version`. `blumkin upgrade` fixes it once it can move you to release 1.14.0 or newer, which accept those tables; until it can, and to try changes that are not released yet, run the checkout with the dev launcher (`scripts/dev/blumkin`, see the `blumkin-dev` skill).
 
 Mail triggers (`kind = "loop"`) require an `allowlist`. Spoof resistance uses the first `Authentication-Results` header (SPF + DKIM + DMARC pass) before enqueue. Cron triggers live under `[cron.<name>]` (not under `loop.triggers`).
 

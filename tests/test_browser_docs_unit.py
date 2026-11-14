@@ -346,7 +346,9 @@ def test_the_task_guide_explains_the_flat_keys_error_that_1_13_0_prints_for_brow
     assert "cannot mix top-level flat keys (browser)" in guide
     assert "release 1.13.0 and older are such builds" in guide
     assert "`blumkin --version`" in guide and "`blumkin upgrade`" in guide
-    assert "release 1.14.0 and newer accept those tables" in guide
+    # Stated so that it holds before and after 1.14.0 is on PyPI.
+    assert "once it can move you to release 1.14.0 or newer, which accept those tables" in guide
+    assert "until it can" in guide
     # The dev launcher stays the way to try what is not released yet.
     assert "dev launcher" in guide
     # The same applies to the loop and cron tables.
@@ -355,7 +357,10 @@ def test_the_task_guide_explains_the_flat_keys_error_that_1_13_0_prints_for_brow
     assert "cannot mix top-level flat keys (loop)" in loop_guide
     assert "`blumkin upgrade`" in loop_guide
     assert "release 1.13.0 and older are such builds" in loop_guide
-    assert "release 1.14.0 and newer accept those tables" in loop_guide
+    assert (
+        "once it can move you to release 1.14.0 or newer, which accept those tables" in loop_guide
+    )
+    assert "until it can" in loop_guide
     assert "dev launcher" in loop_guide
 
 
