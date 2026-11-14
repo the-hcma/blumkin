@@ -398,20 +398,43 @@ def _browser_options() -> dict[str, list[tuple[str, ...]]]:
 _SHARED_BROWSER_OPTIONS = frozenset({"--json"})
 
 
+# Commands the guide describes together in one paragraph (`fill`, `select` and `upload` share
+# `--frame`, `--host` and `--settle`), so their bare names in backticks count as a mention. Every
+# other command is found by its own `browser ...` words only: a bare `expect` or `check` would
+# also match the flow-step key or an unrelated sentence.
+_DESCRIBED_TOGETHER = frozenset(
+    {"click", "fill", "inspect", "options", "press", "select", "upload", "verify"}
+)
+
+
 def _text_about(paragraphs: list[str], command: str) -> str:
     """The paragraphs that discuss one command, by its `browser ...` words or its last two words.
 
-    A paragraph can describe several commands that share options (`fill`, `select` and `upload`
-    share `--frame` and `--host`), so a shared description counts for each of them, but a
-    paragraph about another command does not.
+    A paragraph can describe several commands that share options, so a shared description counts
+    for each of the commands in `_DESCRIBED_TOGETHER`, but a paragraph about another command does
+    not.
 
     `command` is the full path, for example `blumkin browser ledger record`.
     """
     words = command.split()
     own = " ".join(words[1:])  # browser ledger record
     tail = " ".join(words[-2:])  # ledger record
-    mentioned = (own, f"`{tail}", f"{tail} ", f"`{words[-1]}`")
+    mentioned = [own, f"`{tail}", f"{tail} "]
+    if len(words) == 3 and words[-1] in _DESCRIBED_TOGETHER:
+        mentioned.append(f"`{words[-1]}`")
     return " ".join(p for p in paragraphs if any(m in p for m in mentioned))
+
+
+def test_a_bare_command_word_does_not_pull_in_another_commands_paragraph() -> None:
+    """`ledger expect` is not the flow-step key `expect`, and `model check --version` is not its."""
+    model_paragraph = "A flow step `expect` waits; `blumkin browser model check TASK --version 2`."
+    ledger_paragraph = "`blumkin browser ledger expect TASK INSTANCE KIND ITEM`."
+    about = _text_about([model_paragraph, ledger_paragraph], "blumkin browser ledger expect")
+    assert ledger_paragraph in about
+    assert "--version" not in about
+    # A command that is described together with others still finds the shared paragraph.
+    shared = "`blumkin browser fill`, `select` and `upload` take `--frame N`."
+    assert "--frame" in _text_about([shared], "blumkin browser upload")
 
 
 def test_every_browser_option_is_described_in_the_guide_or_a_skill() -> None:
