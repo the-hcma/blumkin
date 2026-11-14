@@ -297,6 +297,19 @@ jobs:
           layout="$REPOSITORY_HELPERS_DIR/scripts/dev/with-tmp-layout"
           "$layout" uv -- uv build ${{ matrix.build_args }}
 
+      # A wheel with another tag would install on fewer Macs, or lack the universal2 agent
+      # binary, and a published PyPI file cannot be replaced: stop before anything is uploaded.
+      - name: Check the macOS wheel tag
+        if: matrix.os == 'macos-latest'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [[ "${#wheels[@]}" -ne 1 || "${wheels[0]}" != *-macosx_14_0_universal2.whl ]]; then
+            echo "ERROR: expected exactly one macosx_14_0_universal2 wheel in dist/, got: ${wheels[*]:-none}" >&2
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.os }}

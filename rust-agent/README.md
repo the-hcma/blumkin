@@ -28,4 +28,4 @@ Without `rustup` (e.g. a bare `brew install rust`), `hatch_build.py` falls back 
 
 ## Protocol parity
 
-There is no shared code between this crate and `blumkin.agent.protocol`/ `paths.py` - both independently implement the same newline-delimited JSON framing and `BLUMKIN_AGENT_RUNTIME_DIR`-aware socket path resolution. Changing the wire format (`PROTOCOL_VERSION`) or the runtime-directory layout requires updating both sides.
+There is no shared code between this crate and `blumkin.agent.protocol`/`paths.py` - both independently implement the same newline-delimited JSON framing and `BLUMKIN_AGENT_RUNTIME_DIR`-aware socket path resolution. Changing the wire format (`PROTOCOL_VERSION`) or the runtime-directory layout requires updating both sides.
