@@ -81,7 +81,7 @@ uv tool install -e .        # editable; `blumkin` now points at the checkout
 ### Run the checkout without installing (dev launcher)
 
 ```bash
-scripts/dev/blumkin --version       # blumkin 1.13.0+dev.<sha>.<date> (<commit>), -dirty when uncommitted
+scripts/dev/blumkin --version       # blumkin <version>+dev.<sha>.<date> (<commit>), -dirty when uncommitted
 scripts/dev/blumkin mail inbox      # the in-repo code against your real config
 ```
 
@@ -131,7 +131,7 @@ blumkin completion zsh > ~/.blumkin-complete.zsh
 echo 'source ~/.blumkin-complete.zsh' >> ~/.zshrc
 ```
 
-Open a new shell afterwards. The script calls back into `blumkin` for completions, so keep it on `PATH`. Besides commands and options, Tab completes values from your own files: waiting item ids for `blumkin loop finish`, trigger names for `loop pause`, `resume` and `run-once`, and template names for `tasks show`, `update` and `delete --name`. These read local files only and complete nothing when the config is missing or broken.
+Open a new shell afterwards. The script calls back into `blumkin` for completions, so keep it on `PATH`. Besides commands and options, Tab completes values from your own files: waiting item ids for `blumkin loop finish`, trigger names for `loop pause`, `resume` and `run-once` and template names for `tasks show`, `update` and `delete --name`. These read local files only and complete nothing when the config is missing or broken. `drive upload --mime-type` separately completes a built-in list of common MIME types, which needs no config.
 
 ## Config (`~/.config/blumkin/`)
 

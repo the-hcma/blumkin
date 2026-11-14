@@ -6,7 +6,7 @@ Read [`AGENTS.md`](AGENTS.md) first - it is the contract for humans and agents a
 
 ## Review model
 
-Every change to `main` goes through a pull request. No direct pushes, no force pushes, and a PR must be up to date with `main` before it merges.
+Every change to `main` goes through a pull request. No direct pushes to `main`, no force pushes to `main` (a branch you own, such as the release branch of [`docs/RELEASING.md`](docs/RELEASING.md), may be force-pushed), and a PR must be up to date with `main` before it merges.
 
 - **Required status checks must be green** — `Scaffold checks`, `Python lint & format checks`, `Pytest (hermetic)`, `Packaging smoke`, `Shellcheck`, `Rust lint & test (blumkin-agent)` (see the table below). This is the hard merge gate; `enforce_admins` is off so a green run is the only thing routinely bypassed.
 - **Agent review runs on every PR head.** `mergestorm-vortex` reviews each push; [`.agents/rules/pr-ship-and-review.md`](.agents/rules/pr-ship-and-review.md) requires an on-thread human reply before any review thread is resolved. Threads are addressed before merge.
@@ -36,6 +36,7 @@ The **required status checks** on `main` are `Scaffold checks`, `Python lint & f
 | `pyright` (basic) | Type errors, unresolved names, bad signatures - AST + type graph ([`[tool.pyright]`](pyproject.toml)) | [`.github/ci/python-static`](.github/ci/python-static) | `Python lint & format checks` - **yes** |
 | [`.github/ci/assert-uv-lock-version`](.github/ci/assert-uv-lock-version) | `uv.lock` project version drift vs [`pyproject.toml`](pyproject.toml) | [`.github/ci/python-static`](.github/ci/python-static) | `Python lint & format checks` - **yes** |
 | `pytest -m 'not live' -n auto` | Behaviour, offline/mocked (parallel via pytest-xdist) | [`.github/ci/pytest-hermetic`](.github/ci/pytest-hermetic) → [`ci.yml` `test`](.github/workflows/ci.yml) | `Pytest (hermetic)` - **yes** |
+| `BLUMKIN_BROWSER_TESTS=1 pytest` (real browser) | Safety-net and driver behaviour against a real Chrome, Edge or Chromium | [`.github/ci/browser-tests`](.github/ci/browser-tests) → [`browser-tests.yml`](.github/workflows/browser-tests.yml) (weekly and on demand) | no - not a status check |
 | [`test_packaging`](test_packaging) | Broken entry point / missing package data in the built wheel | [`ci.yml` `packaging`](.github/workflows/ci.yml) | `Packaging smoke` - **yes** |
 | `shellcheck -S info` | Shell script defects | [`.github/ci/shellcheck`](.github/ci/shellcheck) → [`ci.yml` `shellcheck`](.github/workflows/ci.yml) | `Shellcheck` - **yes** |
 | GitHub secret scanning + **push protection** | Recognised secrets | GitHub-native, on the repo | **blocks the `git push`** before the secret lands |

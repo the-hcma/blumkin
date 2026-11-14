@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import click
 import pytest
 from cli_doc_commands import command_lines, unknown_parts
 
@@ -316,7 +317,8 @@ def test_the_task_guide_and_help_explain_nth_for_a_legitimately_repeated_name() 
     guide = " ".join(_text("docs/browser-tasks.md").split())
     assert "`--nth N`" in guide
     assert "1-based" in guide and "DOM order" in guide
-    assert "`nth` is for `click` only" in guide or "`--nth` is for `click` only" in guide
+    assert "take `--nth` too, as described with each command" in guide
+    assert "`browser download` still refuses a repeated name" in guide
     # It narrows the lookup only; the policy and the per-element vetting are unchanged.
     assert "does not change what a task may click" in guide
     assert "refused with the real count" in guide
@@ -340,18 +342,119 @@ def test_the_task_guide_explains_how_to_close_a_task_browser() -> None:
 
 
 def test_the_task_guide_explains_the_flat_keys_error_that_1_13_0_prints_for_browser() -> None:
-    """Docs on `main` run ahead of a release: 1.13.0 rejects `[browser]` beside profiles (#575)."""
+    """1.13.0 and older reject `[browser]` beside profiles (#575); 1.14.0 and newer accept it."""
     guide = " ".join(_text("docs/browser-tasks.md").split())
     assert "cannot mix top-level flat keys (browser)" in guide
-    assert "1.13.0 is such a build" in guide
+    assert "release 1.13.0 and older are such builds" in guide
     assert "`blumkin --version`" in guide and "`blumkin upgrade`" in guide
-    # `upgrade` cannot help until a newer release exists; say what works before that.
-    assert "until a release newer than 1.13.0 is published" in guide
+    # Stated so that it holds before and after 1.14.0 is on PyPI.
+    assert "once it can move you to release 1.14.0 or newer, which accept those tables" in guide
+    assert "until it can" in guide
+    # The dev launcher stays the way to try what is not released yet.
     assert "dev launcher" in guide
     # The same applies to the loop and cron tables.
     assert "`[loop]` and `[cron]`" in guide
     loop_guide = " ".join(_text("docs/loop.md").split())
     assert "cannot mix top-level flat keys (loop)" in loop_guide
     assert "`blumkin upgrade`" in loop_guide
-    assert "until a release newer than 1.13.0 is published" in loop_guide
+    assert "release 1.13.0 and older are such builds" in loop_guide
+    assert (
+        "once it can move you to release 1.14.0 or newer, which accept those tables" in loop_guide
+    )
+    assert "until it can" in loop_guide
     assert "dev launcher" in loop_guide
+
+
+def _browser_options() -> dict[str, list[tuple[str, ...]]]:
+    """Every `blumkin browser ...` command with its options, each as all the names it answers to.
+
+    A `--raise / --no-raise` pair is one option with two names, so it counts as documented when
+    either name is.
+    """
+    found: dict[str, list[tuple[str, ...]]] = {}
+
+    def walk(command: click.Command, path: tuple[str, ...]) -> None:
+        if isinstance(command, click.Group):
+            context = click.Context(command, info_name=path[-1])
+            for name in command.list_commands(context):
+                sub = command.get_command(context, name)
+                if sub is not None and not sub.hidden:
+                    walk(sub, (*path, name))
+            return
+        options = [
+            tuple(n for n in (*param.opts, *param.secondary_opts) if n.startswith("--"))
+            for param in command.params
+            if isinstance(param, click.Option)
+        ]
+        found[" ".join(path)] = [names for names in options if names and names != ("--help",)]
+
+    browser = main.get_command(click.Context(main, info_name="blumkin"), "browser")
+    assert isinstance(browser, click.Group)
+    walk(browser, ("blumkin", "browser"))
+    return found
+
+
+# Options every command shares and the docs describe once, for all of them.
+_SHARED_BROWSER_OPTIONS = frozenset({"--json"})
+
+
+# Commands the guide describes together in one paragraph (`fill`, `select` and `upload` share
+# `--frame`, `--host` and `--settle`), so their bare names in backticks count as a mention. Every
+# other command is found by its own `browser ...` words only: a bare `expect` or `check` would
+# also match the flow-step key or an unrelated sentence.
+_DESCRIBED_TOGETHER = frozenset(
+    {"click", "fill", "inspect", "options", "press", "select", "upload", "verify"}
+)
+
+
+def _text_about(paragraphs: list[str], command: str) -> str:
+    """The paragraphs that discuss one command, by its `browser ...` words or its last two words.
+
+    A paragraph can describe several commands that share options, so a shared description counts
+    for each of the commands in `_DESCRIBED_TOGETHER`, but a paragraph about another command does
+    not.
+
+    `command` is the full path, for example `blumkin browser ledger record`.
+    """
+    words = command.split()
+    own = " ".join(words[1:])  # browser ledger record
+    tail = " ".join(words[-2:])  # ledger record
+    mentioned = [own, f"`{tail}", f"{tail} "]
+    if len(words) == 3 and words[-1] in _DESCRIBED_TOGETHER:
+        mentioned.append(f"`{words[-1]}`")
+    return " ".join(p for p in paragraphs if any(m in p for m in mentioned))
+
+
+def test_a_bare_command_word_does_not_pull_in_another_commands_paragraph() -> None:
+    """`ledger expect` is not the flow-step key `expect`, and `model check --version` is not its."""
+    model_paragraph = "A flow step `expect` waits; `blumkin browser model check TASK --version 2`."
+    ledger_paragraph = "`blumkin browser ledger expect TASK INSTANCE KIND ITEM`."
+    about = _text_about([model_paragraph, ledger_paragraph], "blumkin browser ledger expect")
+    assert ledger_paragraph in about
+    assert "--version" not in about
+    # A command that is described together with others still finds the shared paragraph.
+    shared = "`blumkin browser fill`, `select` and `upload` take `--frame N`."
+    assert "--frame" in _text_about([shared], "blumkin browser upload")
+
+
+def test_every_browser_option_is_described_in_the_guide_or_a_skill() -> None:
+    """A new `blumkin browser` option has to reach the docs, not only `--help` (release audit).
+
+    An option counts when it appears where its own command is discussed, so a name that several
+    commands reuse (`--version`, `--model-version`) cannot be satisfied by another command's text.
+    """
+    paragraphs = [
+        line
+        for relative in ("docs/browser-tasks.md", *(r for r in _DOCS if r.endswith("SKILL.md")))
+        for line in _text(relative).splitlines()
+        if line.strip()
+    ]
+    undocumented = []
+    for command, options in _browser_options().items():
+        about = _text_about(paragraphs, command)
+        for names in options:
+            if _SHARED_BROWSER_OPTIONS.intersection(names):
+                continue
+            if not any(re.search(re.escape(name) + r"(?![\w-])", about) for name in names):
+                undocumented.append(f"{command} {'/'.join(names)}")
+    assert undocumented == []
