@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.1](https://github.com/the-hcma/blumkin/compare/blumkin-v1.14.0...blumkin-v1.14.1) (2026-11-14)
+
+
+### Documentation
+
+* bring the guides, skills and release docs in line with the code before the 1.14.0 publish ([#752](https://github.com/the-hcma/blumkin/issues/752)) ([e711b50](https://github.com/the-hcma/blumkin/commit/e711b505252a9648258b6865515bf6adc97218b5))
+
 ## [1.14.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.13.0...blumkin-v1.14.0) (2026-11-14)
 
 
