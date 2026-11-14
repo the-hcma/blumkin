@@ -9,6 +9,7 @@ and refuses a wheel with any other tag; this pins what hatchling does with those
 from __future__ import annotations
 
 import importlib.util
+import platform
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,12 @@ def _hook_archflags() -> str:
 
 # What `sysconfig` reports on an Apple Silicon runner that runs a newer macOS than 14.
 _RUNNER_PLATFORM = "macosx_15_0_arm64"
+
+
+@pytest.fixture(autouse=True)
+def _apple_silicon_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """hatchling cuts the platform tag at the host's own `platform.machine()`: model the runner."""
+    monkeypatch.setattr(platform, "machine", lambda: "arm64")
 
 
 def test_the_pinned_deployment_target_names_the_universal2_wheel_for_macos_14(
