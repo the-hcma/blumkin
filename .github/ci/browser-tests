@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Real-browser tests (BLUMKIN_BROWSER_TESTS=1) against an installed Chrome, Edge or Chromium.
+# Not a gate on pull requests: run by .github/workflows/browser-tests.yml on a schedule and by
+# hand, so a browser update cannot silently break the safety-net tests (#738). Locally:
+#   bash .github/ci/browser-tests
+set -euo pipefail
+# Temp files and caches follow $TMPDIR/<project>/<branch>/<tool> (repository-helpers#832).
+# CI exports REPOSITORY_HELPERS_DIR through the setup-tmp-layout action; without a clone, run unchanged.
+layout_bin="${REPOSITORY_HELPERS_DIR:-$HOME/work/ai/repository-helpers}/scripts/dev/with-tmp-layout"
+if [[ -z "${CI_TMP_LAYOUT:-}" ]]; then
+  if [[ -x "$layout_bin" ]]; then
+    CI_TMP_LAYOUT=1 exec "$layout_bin" uv -- "$layout_bin" pytest -- bash "$0" "$@"
+  elif [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+    echo 'ERROR: with-tmp-layout missing; add the setup-tmp-layout action step before this one' >&2
+    exit 1
+  fi
+fi
+bash .github/ci/setup-python
+# The files that opt in, found by the variable they check, so a new one is picked up.
+mapfile -t browser_test_files < <(grep --files-with-matches BLUMKIN_BROWSER_TESTS tests/*.py | sort)
+if [[ "${#browser_test_files[@]}" -eq 0 ]]; then
+  echo 'ERROR: no real-browser test files found under tests/' >&2
+  exit 1
+fi
+# Single process: the tests start and stop real browsers and must not share a worker.
+BLUMKIN_BROWSER_TESTS=1 uv run pytest -n 0 -q "${browser_test_files[@]}"

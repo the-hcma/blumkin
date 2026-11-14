@@ -27,7 +27,14 @@ def _pick(html: str, email: str, *, url: str = "https://login.example.net/", **p
     args = {"blocked": [], "email": email, "hosts": ["login.example.net"], **policy}
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
-            executable_path=str(resolve_browser(None).path), headless=True, args=["--no-sandbox"]
+            executable_path=str(resolve_browser(None).path),
+            headless=True,
+            # Chrome upgrades an http address to https before the page runs (HTTPS upgrades,
+            # on by default since Chrome 154), which would hide the plain-http case below.
+            args=[
+                "--no-sandbox",
+                "--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable",
+            ],
         )
         try:
             page = browser.new_page()

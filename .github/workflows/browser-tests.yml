@@ -1,0 +1,35 @@
+name: Browser tests
+
+# The real-browser tests need an installed Chrome and never run on pull requests (see
+# CONTRIBUTING.md), so a Chrome or Playwright update could break the safety-net tests unseen
+# (#738). This runs them weekly and on demand. Not a required check on `main`.
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: browser-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  browser-tests:
+    name: Real-browser tests (Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: latest
+      - uses: the-hcma/repository-helpers/actions/setup-tmp-layout@bfee0e1f2d682e83c6207a0d6a0f7feefa576fd8
+      - name: Show the installed Chrome
+        run: google-chrome --version
+      - name: Real-browser tests
+        run: bash .github/ci/browser-tests

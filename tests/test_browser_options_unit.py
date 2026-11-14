@@ -277,9 +277,12 @@ def test_a_list_that_opens_part_way_down_is_read_from_the_top() -> None:
     with sync_playwright() as playwright:
         browser, page, driver = _driver_page(playwright, _PAGE)
         try:
+            # The list opens part way down. This runs inside the click, after the page's own
+            # handler has shown the list, so it does not depend on when a timer fires (headless
+            # Chrome 157 can run a `setTimeout(0)` after the driver has already looked).
             page.evaluate(
                 "document.getElementById('cb').addEventListener('click', () => "
-                "{ setTimeout(() => { document.getElementById('lb').scrollTop = 24 * 20; }, 0); })"
+                "{ document.getElementById('lb').scrollTop = 24 * 20; })"
             )
 
             listing = driver.list_options("Time Reporting Code")
