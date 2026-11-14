@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from browser_leaks import closing_leaked_drivers
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +151,13 @@ def _stub_agent_process_discovery(
 
     monkeypatch.setattr(agent_processes, "discover_agent_instances", lambda: [])
     monkeypatch.setattr(agent_processes, "mcp_serve_processes", lambda: [])
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_browser_drivers() -> Iterator[None]:
+    """Real-browser runs only: a failed test must not leave its Playwright session for the next."""
+    if os.environ.get("BLUMKIN_BROWSER_TESTS") != "1":
+        yield
+        return
+    with closing_leaked_drivers():
+        yield

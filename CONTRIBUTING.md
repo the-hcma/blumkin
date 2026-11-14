@@ -14,7 +14,7 @@ Every change to `main` goes through a pull request. No direct pushes, no force p
 
 ## Hermetic tests (parallel)
 
-CI and `pre-pr-checks` run the hermetic suite with pytest-xdist (`uv run pytest -m 'not live' -n auto -q`). Opt-in `browser` tests stay single-process and are not part of that run (`BLUMKIN_BROWSER_TESTS=1`).
+CI and `pre-pr-checks` run the hermetic suite with pytest-xdist (`uv run pytest -m 'not live' -n auto -q`). Opt-in `browser` tests stay single-process and are not part of that run (`BLUMKIN_BROWSER_TESTS=1`); the `Browser tests` workflow runs them against the runner's Chrome every Monday and on demand (`bash .github/ci/browser-tests` does the same locally), and a test that fails leaves no browser session behind for the next one to trip over.
 
 For a single-process debug run (useful when a failure looks worker-order dependent):
 
