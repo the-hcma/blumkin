@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "blumkin"
-version = "1.13.0"
+version = "1.14.0"
 description = "Microsoft 365 and Google Workspace skills CLI for calendar, mail, chat, and docs (delegated, as me)"
 readme = "README.md"
 license = "MIT"
