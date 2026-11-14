@@ -2,8 +2,11 @@
 
 A test that fails before it closes its driver leaves a Playwright sync session running, and the
 next test then fails with "Playwright Sync API inside the asyncio loop": one failure showed up
-as a dozen. `closing_leaked_drivers` records every `PlaywrightDriver` built inside it and closes
-the ones still open on the way out, newest first.
+as a dozen. `closing_leaked_drivers` records every `PlaywrightDriver` built inside it and calls
+`close()` on each on the way out, newest first. A driver the test already closed is a no-op
+(`close()` is idempotent), and one whose browser will not close still stops its Playwright
+session (`close()` does that in a `finally`); an error from either is swallowed so that the
+other drivers are still closed.
 """
 
 from __future__ import annotations

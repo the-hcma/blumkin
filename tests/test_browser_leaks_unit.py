@@ -62,10 +62,13 @@ def test_one_driver_that_cannot_close_does_not_keep_the_others_open() -> None:
             raise RuntimeError("connection lost")
 
     good_browser, good_playwright = _Browser(), _Playwright()
+    stuck_playwright = _Playwright()
     with closing_leaked_drivers():
         _driver(good_browser, good_playwright)
-        _driver(_Stuck(), _Playwright())
+        _driver(_Stuck(), stuck_playwright)
     assert good_browser.closed == 1 and good_playwright.stopped == 1
+    # The driver whose browser would not close still stops its Playwright session.
+    assert stuck_playwright.stopped == 1
 
 
 def test_the_driver_class_is_restored_afterwards() -> None:

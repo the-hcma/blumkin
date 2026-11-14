@@ -29,8 +29,8 @@ def _pick(html: str, email: str, *, url: str = "https://login.example.net/", **p
         browser = playwright.chromium.launch(
             executable_path=str(resolve_browser(None).path),
             headless=True,
-            # Chrome 157 upgrades an http address to https before the page runs (its HTTPS
-            # upgrades), which would hide the plain-http case below.
+            # Observed on Chrome 157: an http address is upgraded to https before the page runs
+            # (HTTPS upgrades), which would hide the plain-http case below.
             args=[
                 "--no-sandbox",
                 "--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable",
