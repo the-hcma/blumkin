@@ -226,20 +226,20 @@ jobs:
       ${{ needs.release-please.outputs.release_created == 'true' ||
       github.event.inputs.force_publish_pypi == 'true' }}
     # Two legs, one release: ubuntu-latest builds the sdist plus a
-    # `py3-none-any` wheel (everyone else); macos-14 builds a second,
+    # `py3-none-any` wheel (everyone else); macos-latest builds a second,
     # macOS-tagged wheel bundling the compiled `blumkin-agent` binary
     # (issue #328 - see hatch_build.py). `--wheel`/`--sdist` keep each leg
     # from re-uploading the identical sdist filename twice. Each leg only
     # builds; a single downstream `publish-pypi` job does the actual
     # upload, because `pypa/gh-action-pypi-publish` only runs on Linux
-    # runners (macos-14 can't call it directly - see #337 review).
+    # runners (macos-latest can't call it directly - see #337 review).
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             build_args: --sdist --wheel
-          - os: macos-14
+          - os: macos-latest
             build_args: --wheel
     runs-on: ${{ matrix.os }}
     permissions:
@@ -263,7 +263,7 @@ jobs:
       # a true universal2 blumkin-agent binary, not the native-arch-only
       # fallback it uses on a bare `brew install rust` dev machine.
       - name: Install Rust toolchain
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-latest'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
@@ -287,6 +287,12 @@ jobs:
         # leg, both jobs would try to build the identical
         # `blumkin-<version>.tar.gz` and the merged dist/ would collide
         # (see PR #331 review).
+        # The macOS wheel's platform tag follows the build runner's macOS version unless a
+        # deployment target is set, and `macos-latest` moves: pin 14.0 so the wheel stays
+        # `macosx_14_0_universal2`, as the macos-14 builds of 1.12.1 and 1.13.0 were, and keeps
+        # installing on the same Macs. The Linux leg ignores it.
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.os, 'macos') && '14.0' || '' }}
         run: |
           layout="$REPOSITORY_HELPERS_DIR/scripts/dev/with-tmp-layout"
           "$layout" uv -- uv build ${{ matrix.build_args }}
