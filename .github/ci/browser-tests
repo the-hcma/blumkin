@@ -16,8 +16,9 @@ if [[ -z "${CI_TMP_LAYOUT:-}" ]]; then
   fi
 fi
 bash .github/ci/setup-python
-# The files that opt in, found by the variable they check, so a new one is picked up.
-mapfile -t browser_test_files < <(grep --files-with-matches BLUMKIN_BROWSER_TESTS tests/*.py | sort)
+# The test files that opt in, found by the variable they check, so a new one is picked up
+# (conftest.py and other helpers mention it too and are not test files).
+mapfile -t browser_test_files < <(grep --files-with-matches BLUMKIN_BROWSER_TESTS tests/test_*.py | sort)
 if [[ "${#browser_test_files[@]}" -eq 0 ]]; then
   echo 'ERROR: no real-browser test files found under tests/' >&2
   exit 1
