@@ -1477,6 +1477,28 @@ def test_a_step_nth_round_trips_and_is_checked(tmp_path: Path) -> None:
     assert again is not None and again.flows == saved.flows
 
 
+def test_a_pick_step_carries_nth_for_two_identical_rows(tmp_path: Path) -> None:
+    payload = _with_pick(_payload(tmp_path), value="Task A", nth=1)
+    loaded = _load_payload(tmp_path, payload)
+    assert loaded is not None
+    assert loaded.flows[0].steps[-1].nth == 1
+    saved = save_model(default_store(tmp_path), loaded)
+    again = load_model(default_store(tmp_path), "expense-report")
+    assert again is not None and again.flows == saved.flows
+
+
+def test_a_prefix_pick_takes_no_nth(tmp_path: Path) -> None:
+    payload = _with_pick(_payload(tmp_path), value="Task", match="prefix", nth=1)
+    with pytest.raises(SiteModelError, match="prefix"):
+        _load_payload(tmp_path, payload)
+
+
+@pytest.mark.parametrize("nth", [0, 100, -1, "2", 1.5, True])
+def test_a_bad_pick_nth_is_refused(tmp_path: Path, nth: object) -> None:
+    with pytest.raises(SiteModelError, match="nth"):
+        _load_payload(tmp_path, _with_pick(_payload(tmp_path), value="Task A", nth=nth))
+
+
 @pytest.mark.parametrize("nth", [0, 100, -1, "2", 1.5, True])
 def test_a_bad_step_nth_is_refused(tmp_path: Path, nth: object) -> None:
     payload = _payload(tmp_path)

@@ -512,6 +512,11 @@ def test_a_pick_spec_can_name_a_role_and_a_prefix_match() -> None:
     assert (step.role, step.match, step.bind) == ("gridcell", "prefix", "name")
 
 
+def test_a_pick_spec_can_carry_nth_for_two_identical_rows() -> None:
+    flow = build_flow("lov", [], ["pick value='Task A' nth=1"])
+    assert flow.steps[0].nth == 1
+
+
 def test_pick_is_a_flow_action_that_takes_a_bind_or_a_value_and_no_control() -> None:
     flow = build_flow("lov", ["city:text"], ["pick bind=city", "pick value='Boston, MA'"])
 

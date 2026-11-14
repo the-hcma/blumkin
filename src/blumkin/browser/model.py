@@ -110,8 +110,9 @@ class FlowStep:
     #: matches (`exact`, the default, or `prefix`: the element's name starts with the text).
     match: str | None = None
     role: str | None = None
-    #: Which of several controls of one name a `click`, `press`, `fill`, `select`, `upload` or
-    #: `verify` step means: 1-based, in DOM order, as `--nth` is on the command line. The step
+    #: Which of several controls of one name a `click`, `press`, `fill`, `select`, `upload`,
+    #: `verify` or `pick` step means (a `pick` step: which of several identical rows, and never
+    #: with `match=prefix`): 1-based, in DOM order, as `--nth` is on the command line. The step
     #: is refused with the real count when the page has fewer; None means the name must be
     #: unique.
     nth: int | None = None
@@ -552,7 +553,7 @@ _MAX_PARAMS = 12
 _MAX_STEPS = 200
 _MAX_TEXT = 200
 #: The steps that can say which of several same-named controls they mean.
-_NTH_ACTIONS = frozenset({"click", "fill", "press", "select", "upload", "verify"})
+_NTH_ACTIONS = frozenset({"click", "fill", "pick", "press", "select", "upload", "verify"})
 _STORE_DIRNAME = "browser-models"
 _TIMESTAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 _DIGIT_RUN = re.compile(r"\d{6,}")
@@ -1150,6 +1151,10 @@ def _step(
         expect = _text(expect, f"{where}.expect", plain=True)
     match, pick_role = _pick_options(data, where, action)
     nth = _step_nth(data, where, action)
+    if nth is not None and action == "pick" and match == "prefix":
+        raise SiteModelError(
+            f"Expected {where}.nth not on a pick step with match=prefix, which takes no position"
+        )
     return FlowStep(
         action=action,
         bind=bind,
@@ -1175,8 +1180,8 @@ def _step_nth(data: Mapping[str, Any], where: str, action: str) -> int | None:
         return None
     if action not in _NTH_ACTIONS:
         raise SiteModelError(
-            f"Expected {where}.nth only on a click, fill, press, select, upload or verify step, "
-            f"got it on {action!r}"
+            f"Expected {where}.nth only on a click, fill, pick, press, select, upload or verify "
+            f"step, got it on {action!r}"
         )
     if not isinstance(nth, int) or isinstance(nth, bool) or not 1 <= nth <= _MAX_NTH:
         raise SiteModelError(
