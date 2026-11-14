@@ -394,16 +394,44 @@ def _browser_options() -> dict[str, list[tuple[str, ...]]]:
     return found
 
 
+# Options every command shares and the docs describe once, for all of them.
+_SHARED_BROWSER_OPTIONS = frozenset({"--json"})
+
+
+def _text_about(paragraphs: list[str], command: str) -> str:
+    """The paragraphs that discuss one command, by its `browser ...` words or its last two words.
+
+    A paragraph can describe several commands that share options (`fill`, `select` and `upload`
+    share `--frame` and `--host`), so a shared description counts for each of them, but a
+    paragraph about another command does not.
+
+    `command` is the full path, for example `blumkin browser ledger record`.
+    """
+    words = command.split()
+    own = " ".join(words[1:])  # browser ledger record
+    tail = " ".join(words[-2:])  # ledger record
+    mentioned = (own, f"`{tail}", f"{tail} ", f"`{words[-1]}`")
+    return " ".join(p for p in paragraphs if any(m in p for m in mentioned))
+
+
 def test_every_browser_option_is_described_in_the_guide_or_a_skill() -> None:
-    """A new `blumkin browser` option has to reach the docs, not only `--help` (release audit)."""
-    text = " ".join(
-        _text(relative)
+    """A new `blumkin browser` option has to reach the docs, not only `--help` (release audit).
+
+    An option counts when it appears where its own command is discussed, so a name that several
+    commands reuse (`--version`, `--model-version`) cannot be satisfied by another command's text.
+    """
+    paragraphs = [
+        line
         for relative in ("docs/browser-tasks.md", *(r for r in _DOCS if r.endswith("SKILL.md")))
-    )
-    undocumented = [
-        f"{command} {'/'.join(names)}"
-        for command, options in _browser_options().items()
-        for names in options
-        if not any(re.search(re.escape(name) + r"(?![\w-])", text) for name in names)
+        for line in _text(relative).splitlines()
+        if line.strip()
     ]
+    undocumented = []
+    for command, options in _browser_options().items():
+        about = _text_about(paragraphs, command)
+        for names in options:
+            if _SHARED_BROWSER_OPTIONS.intersection(names):
+                continue
+            if not any(re.search(re.escape(name) + r"(?![\w-])", about) for name in names):
+                undocumented.append(f"{command} {'/'.join(names)}")
     assert undocumented == []
