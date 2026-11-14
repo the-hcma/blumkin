@@ -18,7 +18,7 @@ The agent never needs `blumkin` installed. It runs the checkout through the laun
 scripts/dev/blumkin --version
 ```
 
-Expected: the first line looks like `blumkin 1.13.0+dev.<short sha>.<commit date> (<commit>)`, with `-dirty` after the date when the checkout has uncommitted or untracked changes. The second line, `running from ...`, points at the `.venv` inside the checkout.
+Expected: the first line looks like `blumkin <version>+dev.<short sha>.<commit date> (<commit>)`, with `-dirty` after the date when the checkout has uncommitted or untracked changes. The second line, `running from ...`, points at the `.venv` inside the checkout.
 
 - Report the first line to the user, so they know which code ran.
 - If the `+dev` marker is missing, an installed release answered and you are not running the checkout. **STOP: ask the user** instead of continuing.

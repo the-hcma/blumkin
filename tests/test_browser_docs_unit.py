@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import click
 import pytest
 from cli_doc_commands import command_lines, unknown_parts
 
@@ -340,18 +341,63 @@ def test_the_task_guide_explains_how_to_close_a_task_browser() -> None:
 
 
 def test_the_task_guide_explains_the_flat_keys_error_that_1_13_0_prints_for_browser() -> None:
-    """Docs on `main` run ahead of a release: 1.13.0 rejects `[browser]` beside profiles (#575)."""
+    """1.13.0 and older reject `[browser]` beside profiles (#575); 1.14.0 and newer accept it."""
     guide = " ".join(_text("docs/browser-tasks.md").split())
     assert "cannot mix top-level flat keys (browser)" in guide
-    assert "1.13.0 is such a build" in guide
+    assert "release 1.13.0 and older are such builds" in guide
     assert "`blumkin --version`" in guide and "`blumkin upgrade`" in guide
-    # `upgrade` cannot help until a newer release exists; say what works before that.
-    assert "until a release newer than 1.13.0 is published" in guide
+    assert "release 1.14.0 and newer accept those tables" in guide
+    # The dev launcher stays the way to try what is not released yet.
     assert "dev launcher" in guide
     # The same applies to the loop and cron tables.
     assert "`[loop]` and `[cron]`" in guide
     loop_guide = " ".join(_text("docs/loop.md").split())
     assert "cannot mix top-level flat keys (loop)" in loop_guide
     assert "`blumkin upgrade`" in loop_guide
-    assert "until a release newer than 1.13.0 is published" in loop_guide
+    assert "release 1.13.0 and older are such builds" in loop_guide
+    assert "release 1.14.0 and newer accept those tables" in loop_guide
     assert "dev launcher" in loop_guide
+
+
+def _browser_options() -> dict[str, list[tuple[str, ...]]]:
+    """Every `blumkin browser ...` command with its options, each as all the names it answers to.
+
+    A `--raise / --no-raise` pair is one option with two names, so it counts as documented when
+    either name is.
+    """
+    found: dict[str, list[tuple[str, ...]]] = {}
+
+    def walk(command: click.Command, path: tuple[str, ...]) -> None:
+        if isinstance(command, click.Group):
+            context = click.Context(command, info_name=path[-1])
+            for name in command.list_commands(context):
+                sub = command.get_command(context, name)
+                if sub is not None and not sub.hidden:
+                    walk(sub, (*path, name))
+            return
+        options = [
+            tuple(n for n in (*param.opts, *param.secondary_opts) if n.startswith("--"))
+            for param in command.params
+            if isinstance(param, click.Option)
+        ]
+        found[" ".join(path)] = [names for names in options if names and names != ("--help",)]
+
+    browser = main.get_command(click.Context(main, info_name="blumkin"), "browser")
+    assert isinstance(browser, click.Group)
+    walk(browser, ("blumkin", "browser"))
+    return found
+
+
+def test_every_browser_option_is_described_in_the_guide_or_a_skill() -> None:
+    """A new `blumkin browser` option has to reach the docs, not only `--help` (release audit)."""
+    text = " ".join(
+        _text(relative)
+        for relative in ("docs/browser-tasks.md", *(r for r in _DOCS if r.endswith("SKILL.md")))
+    )
+    undocumented = [
+        f"{command} {'/'.join(names)}"
+        for command, options in _browser_options().items()
+        for names in options
+        if not any(re.search(re.escape(name) + r"(?![\w-])", text) for name in names)
+    ]
+    assert undocumented == []
