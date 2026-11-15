@@ -4,7 +4,7 @@ Releases are automated with [Release Please](https://github.com/googleapis/relea
 
 ## Release flow
 
-1. Merge changes to `main` with [Conventional Commits](https://www.conventionalcommits.org/). `feat:` cuts a minor release, `fix:` a patch, and a `!` / `BREAKING CHANGE:` a major. The commit types that release are the visible changelog sections of the Python release type's own list (`CHANGELOG_SECTIONS` in Release Please's `strategies/python.js`, which differs from its generic defaults: there `docs` is hidden and `deps` is absent), and `release-please-config.json` does not override it: `feat`, `fix`, `perf`, `deps`, `revert` and `docs` (all but `feat` as a patch). `style`, `chore`, `refactor`, `test`, `build` and `ci` never release and stay out of the changelog. A `docs:` commit therefore asks for a patch release on its own (seen on 2026-11-14, when the docs-only commit of #752 made both the workflow's action and the `release-please` CLI propose a 1.14.1 release), and that is deliberate ([#755](https://github.com/the-hcma/blumkin/issues/755)): documentation changes are released and listed under Documentation. Until [#197](https://github.com/the-hcma/blumkin/issues/197) lands, a push to `main` with any releasing commit makes the `Release Please` job fail when it tries to open the PR, so open it by hand as described below. Use `ci:` or `chore:` for a change that must not release.
+1. Merge changes to `main` with [Conventional Commits](https://www.conventionalcommits.org/). `feat:` cuts a minor release, `fix:` a patch, and a `!` / `BREAKING CHANGE:` a major, whatever the type. Which other types release is listed in [Which commits release](#which-commits-release): a `docs:` commit asks for a patch release on its own, and that is deliberate ([#755](https://github.com/the-hcma/blumkin/issues/755)). Until [#197](https://github.com/the-hcma/blumkin/issues/197) lands, a push to `main` with any releasing commit makes the `Release Please` job fail when it tries to open the PR, so open it by hand as described below. Use `ci:` or `chore:`, without a breaking change, for a change that must not release.
 2. Release Please opens or updates its release PR with the next version, `CHANGELOG.md`, `pyproject.toml`, and `uv.lock`. Until the Conveyor App token of [#197](https://github.com/the-hcma/blumkin/issues/197) is wired in, the workflow cannot open that PR itself: open it by hand, see [Opening the release PR by hand](#opening-the-release-pr-by-hand).
 3. Review and merge the release PR.
 4. Release Please creates the version tag and GitHub release.
@@ -12,6 +12,27 @@ Releases are automated with [Release Please](https://github.com/googleapis/relea
 6. The job then embeds the build metadata, builds the wheel and sdist, publishes them to PyPI over OpenID Connect (no token), then runs `scripts/verify-pypi-release` — which polls PyPI for the new version, installs the real artifact into an isolated venv **and** via a real `pipx install` (its own venv layout and console-script shims), and asserts `blumkin --version` reports the released version and a known commit both ways. No manual `pipx install` check is needed to trust a release (issue #142).
 
 Release Please scans every commit since the previous tag. Keep squash-commit subjects conventional, and keep the repo's `squash_merge_commit_message` setting as `BLANK` so repeated PR-body commit lines do not become duplicate changelog entries.
+
+## Which commits release
+
+The commit types that release are the visible changelog sections of the Python release type's own list (`CHANGELOG_SECTIONS` in Release Please's `strategies/python.js`, which differs from its generic defaults: there `docs` is hidden and `deps` is absent), and `release-please-config.json` does not override it. A breaking change (`!` or a `BREAKING CHANGE:` footer) releases a major version for every type, hidden ones included. A `docs:` commit alone releases a patch; this was seen on 2026-11-14, when the docs-only commit of #752 made both the workflow's action and the `release-please` CLI propose a 1.14.1 release.
+
+| Type | Release |
+| --- | --- |
+| `feat` | minor |
+| `fix` | patch |
+| `perf` | patch |
+| `deps` | patch |
+| `revert` | patch |
+| `docs` | patch |
+| `style` | none unless breaking |
+| `chore` | none unless breaking |
+| `refactor` | none unless breaking |
+| `test` | none unless breaking |
+| `build` | none unless breaking |
+| `ci` | none unless breaking |
+
+The types that do not release stay out of the changelog.
 
 ## Opening the release PR by hand
 

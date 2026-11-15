@@ -75,14 +75,14 @@ def test_the_publish_job_runs_on_a_forced_publish_although_release_please_was_sk
     assert "if: ${{ !cancelled() && needs.build-dists.result == 'success' }}" in head
 
 
-def test_the_docs_name_the_commit_types_that_release_and_the_config_does_not_override_them() -> (
-    None
-):
-    """The docs describe the Python release type's own section list (#755), which only holds while
-    the config does not override it with `changelog-sections`; this pins the docs to that config,
-    and the list itself was checked in Release Please's source and in practice (a docs-only commit
-    made it propose a release), which a hermetic test cannot run."""
+def test_the_docs_table_lists_which_commit_types_release() -> None:
+    """The table describes the Python release type's own section list (#755), which only holds
+    while the config does not override it with `changelog-sections`. The table is parsed by type,
+    so rewording the prose around it does not matter; the list itself was checked in Release
+    Please's source and in practice (a docs-only commit made it propose a release), which a
+    hermetic test cannot run."""
     import json
+    import re
 
     config = json.loads((_ROOT / "release-please-config.json").read_text(encoding="utf-8"))
     assert "changelog-sections" not in config
@@ -91,10 +91,14 @@ def test_the_docs_name_the_commit_types_that_release_and_the_config_does_not_ove
     # The documented list is the Python release type's own: another type would use the generic
     # defaults (`docs` hidden, `deps` absent) and make the docs wrong.
     assert config["packages"]["."]["release-type"] == "python"
-    releasing = " ".join((_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8").split())
-    assert (
-        "`feat`, `fix`, `perf`, `deps`, `revert` and `docs` (all but `feat` as a patch)"
-        in releasing
-    )
-    assert "`style`, `chore`, `refactor`, `test`, `build` and `ci` never release" in releasing
-    assert "A `docs:` commit therefore asks for a patch release on its own" in releasing
+    releasing = (_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    section = releasing.split("## Which commits release", 1)[1].split("\n## ", 1)[0]
+    rows = dict(re.findall(r"^\| `([a-z]+)` \| ([^|]+?) \|$", section, re.MULTILINE))
+    releasing_types = {"feat": "minor"} | {
+        kind: "patch" for kind in ("fix", "perf", "deps", "revert", "docs")
+    }
+    quiet_types = {
+        kind: "none unless breaking"
+        for kind in ("style", "chore", "refactor", "test", "build", "ci")
+    }
+    assert rows == releasing_types | quiet_types
