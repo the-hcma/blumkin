@@ -179,8 +179,8 @@ Never invent a client id or call Graph or Google directly when a blumkin skill c
   meeting the organizer cancelled (`is_cancelled` in `calendar get`), on Microsoft and Google.
   Nothing is sent: the meeting is read first, and Microsoft would only answer a generic 400. In a
   `--today-pending` batch the cancelled meeting is listed under `skipped` and the others are
-  still answered. The entry stays on the attendee's calendar until it is removed in Outlook
-  (Remove from calendar); blumkin cannot clear it yet (#757).
+  still answered. The entry stays on the attendee's calendar until it is removed in the calendar app
+  (in Outlook: Remove from calendar); blumkin cannot clear it yet (#757).
 - Exit 1 (`transient_error`): a network/server hiccup talking to the auth
   provider, not a bad grant. Safe to retry the same command once.
 - **A command is missing, or the docs describe something the CLI lacks.** An installed blumkin can be older than the repository it is used next to. `blumkin --version` adds a `note:` line when the checkout has commands this build lacks, and `blumkin doctor --json` carries a `repository` block (`relation`, `behind_by`, `missing_commands`) whenever it finds a checkout, plus a warning when the checkout has commands this build lacks. Ask the user before upgrading: `blumkin upgrade` changes the installation (for a pipx or uv install it runs the package manager and upgrades it; `blumkin upgrade --yes` also runs the editable checkout steps), so get their approval first, then retry; if the command is still missing it may be unreleased, so tell the user to install the checkout (`uv tool install -e <path>`, or `pipx install --editable <path> --force` when blumkin was installed with pipx) instead of working around it. The check is offline and uses the checkout in the working directory or the one named by `BLUMKIN_REPOSITORY`.

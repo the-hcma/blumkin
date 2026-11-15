@@ -301,7 +301,7 @@ def test_cli_a_cancelled_meeting_is_event_cancelled_with_an_actionable_hint(
     payload = json.loads(result.stderr)
     assert payload["error"] == "event_cancelled"
     assert "cancelled" in payload["message"]
-    assert "is_cancelled" in payload["hint"] and "Outlook" in payload["hint"]
+    assert "is_cancelled" in payload["hint"] and "calendar app" in payload["hint"]
 
 
 # --------------------------------------------------------------------------- Google
@@ -400,6 +400,44 @@ def test_google_rsvp_refuses_a_cancelled_meeting_and_sends_nothing(
     with _google_patched(service), pytest.raises(CalendarEventCancelledError, match=phrase):
         asyncio.run(getattr(provider, f"calendar_{verb}")(event_id="evt-1"))
     service.events.return_value.patch.assert_not_called()
+
+
+def test_google_today_pending_skips_only_the_cancelled_meeting(tmp_path: Path) -> None:
+    """A Google batch reports a cancelled meeting under `skipped` and carries on (#757)."""
+    events = {
+        "a": {
+            "id": "a",
+            "status": "confirmed",
+            "attendees": [{"email": "me@e.com", "self": True, "responseStatus": "needsAction"}],
+        },
+        "b": {
+            "id": "b",
+            "status": "cancelled",
+            "attendees": [{"email": "me@e.com", "self": True, "responseStatus": "needsAction"}],
+        },
+    }
+    service = MagicMock()
+
+    def _get(*, calendarId, eventId):  # noqa: N803 - the Google client's keyword names
+        request = MagicMock()
+        request.execute.return_value = events[eventId]
+        return request
+
+    service.events.return_value.get.side_effect = _get
+    service.events.return_value.patch.return_value.execute.return_value = {"id": "a"}
+
+    async def _today(**_kwargs):
+        pending = {"is_organizer": False, "response": "ResponseType.NotResponded"}
+        return {"items": [{"id": "a", **pending}, {"id": "b", **pending}], "complete": True}
+
+    with _google_patched(service), patch(f"{_GOOGLE_CAL}.calendar_today", _today):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_accept(today_pending=True)
+        )
+    assert payload["accepted"] == ["a"]
+    assert [entry["id"] for entry in payload["skipped"]] == ["b"]
+    assert "cancelled" in payload["skipped"][0]["reason"]
+    assert service.events.return_value.patch.call_count == 1
 
 
 def test_google_a_live_meeting_is_still_answered(tmp_path: Path) -> None:
