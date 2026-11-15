@@ -45,3 +45,21 @@ def test_the_recovery_steps_pass_the_inspected_commit() -> None:
     releasing = (_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
     assert '-f expected_sha="$(git rev-parse origin/main)"' in releasing
     assert "git fetch origin" in releasing
+
+
+def test_a_forced_publish_skips_release_please_and_the_build_does_not_need_it_to_succeed() -> None:
+    """Release Please fails when it would have to open a PR (#197); that must not stop a forced
+    publish (#754)."""
+    release_please = _job("release-please")
+    head = release_please[: release_please.index("    steps:")]
+    assert "if: ${{ github.event.inputs.force_publish_pypi != 'true' }}" in head
+    build = _job("build-dists")
+    condition = build[build.index("    if: >-") : build.index("    # Two legs")]
+    assert "!cancelled()" in condition
+    assert "needs.release-please.outputs.release_created == 'true'" in condition
+    assert "github.event.inputs.force_publish_pypi == 'true'" in condition
+
+
+def test_the_release_docs_say_a_forced_publish_needs_no_release_pr() -> None:
+    releasing = (_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    assert "A forced publish skips the Release Please job" in releasing
