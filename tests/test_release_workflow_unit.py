@@ -73,3 +73,21 @@ def test_the_publish_job_runs_on_a_forced_publish_although_release_please_was_sk
     head = publish[: publish.index("    runs-on:")]
     assert "needs: build-dists" in head
     assert "if: ${{ !cancelled() && needs.build-dists.result == 'success' }}" in head
+
+
+def test_the_docs_name_the_commit_types_that_release_and_the_config_does_not_override_them() -> (
+    None
+):
+    """Which types release is Release Please's Python default (#755); a `changelog-sections`
+    override in the config would make the docs wrong."""
+    import json
+
+    config = json.loads((_ROOT / "release-please-config.json").read_text(encoding="utf-8"))
+    assert "changelog-sections" not in config
+    for package in config["packages"].values():
+        assert "changelog-sections" not in package
+    releasing = " ".join((_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8").split())
+    for released in ("`feat`", "`fix`", "`perf`", "`deps`", "`revert`", "`docs`"):
+        assert released in releasing
+    assert "`style`, `chore`, `refactor`, `test`, `build` and `ci` never release" in releasing
+    assert "A `docs:` commit therefore asks for a patch release on its own" in releasing

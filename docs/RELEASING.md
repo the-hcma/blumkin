@@ -4,7 +4,7 @@ Releases are automated with [Release Please](https://github.com/googleapis/relea
 
 ## Release flow
 
-1. Merge changes to `main` with [Conventional Commits](https://www.conventionalcommits.org/). `feat:` cuts a minor release, `fix:` a patch, and a `!` / `BREAKING CHANGE:` a major.
+1. Merge changes to `main` with [Conventional Commits](https://www.conventionalcommits.org/). `feat:` cuts a minor release, `fix:` a patch, and a `!` / `BREAKING CHANGE:` a major. The commit types that release are the visible changelog sections of Release Please's Python defaults, which `release-please-config.json` does not override: `feat`, `fix`, `perf`, `deps`, `revert` and `docs` (all but `feat` as a patch). `style`, `chore`, `refactor`, `test`, `build` and `ci` never release and stay out of the changelog. A `docs:` commit therefore asks for a patch release on its own, and that is deliberate ([#755](https://github.com/the-hcma/blumkin/issues/755)): documentation changes are released and listed under Documentation. Until [#197](https://github.com/the-hcma/blumkin/issues/197) lands, a push to `main` with any releasing commit makes the `Release Please` job fail when it tries to open the PR, so open it by hand as described below. Use `ci:` or `chore:` for a change that must not release.
 2. Release Please opens or updates its release PR with the next version, `CHANGELOG.md`, `pyproject.toml`, and `uv.lock`. Until the Conveyor App token of [#197](https://github.com/the-hcma/blumkin/issues/197) is wired in, the workflow cannot open that PR itself: open it by hand, see [Opening the release PR by hand](#opening-the-release-pr-by-hand).
 3. Review and merge the release PR.
 4. Release Please creates the version tag and GitHub release.
