@@ -88,8 +88,13 @@ def test_the_docs_name_the_commit_types_that_release_and_the_config_does_not_ove
     assert "changelog-sections" not in config
     for package in config["packages"].values():
         assert "changelog-sections" not in package
+    # The documented list is the Python release type's own: another type would use the generic
+    # defaults (`docs` hidden, `deps` absent) and make the docs wrong.
+    assert config["packages"]["."]["release-type"] == "python"
     releasing = " ".join((_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8").split())
-    for released in ("`feat`", "`fix`", "`perf`", "`deps`", "`revert`", "`docs`"):
-        assert released in releasing
+    assert (
+        "`feat`, `fix`, `perf`, `deps`, `revert` and `docs` (all but `feat` as a patch)"
+        in releasing
+    )
     assert "`style`, `chore`, `refactor`, `test`, `build` and `ci` never release" in releasing
     assert "A `docs:` commit therefore asks for a patch release on its own" in releasing
