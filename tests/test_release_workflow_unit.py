@@ -63,3 +63,13 @@ def test_a_forced_publish_skips_release_please_and_the_build_does_not_need_it_to
 def test_the_release_docs_say_a_forced_publish_needs_no_release_pr() -> None:
     releasing = (_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
     assert "A forced publish skips the Release Please job" in releasing
+
+
+def test_the_publish_job_runs_on_a_forced_publish_although_release_please_was_skipped() -> None:
+    """A skipped job anywhere in the needs chain skips a job whose `if` is implicit, even when
+    its direct dependency succeeded (shown with a probe workflow on GitHub, #754), so the publish
+    job must say so explicitly."""
+    publish = _job("publish-pypi")
+    head = publish[: publish.index("    runs-on:")]
+    assert "needs: build-dists" in head
+    assert "if: ${{ !cancelled() && needs.build-dists.result == 'success' }}" in head

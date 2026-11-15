@@ -347,8 +347,10 @@ jobs:
   publish-pypi:
     name: Publish PyPI
     needs: build-dists
-    # build-dists already re-evaluated the release_created/force_publish_pypi
-    # gate; needs: build-dists is enough here.
+    # build-dists already re-evaluated the release_created/force_publish_pypi gate. A status
+    # function is still needed: on a forced publish the Release Please job is skipped, and a
+    # skipped ancestor anywhere in the needs chain skips a job whose `if` is implicit (#754).
+    if: ${{ !cancelled() && needs.build-dists.result == 'success' }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
