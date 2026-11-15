@@ -45,3 +45,31 @@ def test_the_recovery_steps_pass_the_inspected_commit() -> None:
     releasing = (_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
     assert '-f expected_sha="$(git rev-parse origin/main)"' in releasing
     assert "git fetch origin" in releasing
+
+
+def test_a_forced_publish_skips_release_please_and_the_build_does_not_need_it_to_succeed() -> None:
+    """Release Please fails when it would have to open a PR (#197); that must not stop a forced
+    publish (#754)."""
+    release_please = _job("release-please")
+    head = release_please[: release_please.index("    steps:")]
+    assert "if: ${{ github.event.inputs.force_publish_pypi != 'true' }}" in head
+    build = _job("build-dists")
+    condition = build[build.index("    if: >-") : build.index("    # Two legs")]
+    assert "!cancelled()" in condition
+    assert "needs.release-please.outputs.release_created == 'true'" in condition
+    assert "github.event.inputs.force_publish_pypi == 'true'" in condition
+
+
+def test_the_release_docs_say_a_forced_publish_needs_no_release_pr() -> None:
+    releasing = (_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    assert "A forced publish skips the Release Please job" in releasing
+
+
+def test_the_publish_job_runs_on_a_forced_publish_although_release_please_was_skipped() -> None:
+    """A skipped job anywhere in the needs chain skips a job whose `if` is implicit, even when
+    its direct dependency succeeded (shown with a probe workflow on GitHub, #754), so the publish
+    job must say so explicitly."""
+    publish = _job("publish-pypi")
+    head = publish[: publish.index("    runs-on:")]
+    assert "needs: build-dists" in head
+    assert "if: ${{ !cancelled() && needs.build-dists.result == 'success' }}" in head

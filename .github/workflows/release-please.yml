@@ -38,6 +38,10 @@ permissions:
 jobs:
   release-please:
     name: Release Please
+    # A forced publish of an already merged and tagged release has nothing for Release Please
+    # to do, and this job fails whenever it would have to open a PR (the Actions token may not,
+    # see #197): skipping it keeps the forced build independent of it (#754).
+    if: ${{ github.event.inputs.force_publish_pypi != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -231,9 +235,12 @@ jobs:
   build-dists:
     name: Build distributions (${{ matrix.os }})
     needs: release-please
+    # `!cancelled()` lets a forced publish run although the Release Please job did not succeed or
+    # was skipped; without it a failed or skipped dependency skips this job too (#754). A normal
+    # release still needs `release_created`, which a job that did not run never reports.
     if: >-
-      ${{ needs.release-please.outputs.release_created == 'true' ||
-      github.event.inputs.force_publish_pypi == 'true' }}
+      ${{ !cancelled() && (needs.release-please.outputs.release_created == 'true' ||
+      github.event.inputs.force_publish_pypi == 'true') }}
     # Two legs, one release: ubuntu-latest builds the sdist plus a
     # `py3-none-any` wheel (everyone else); macos-latest builds a second,
     # macOS-tagged wheel bundling the compiled `blumkin-agent` binary
@@ -340,8 +347,10 @@ jobs:
   publish-pypi:
     name: Publish PyPI
     needs: build-dists
-    # build-dists already re-evaluated the release_created/force_publish_pypi
-    # gate; needs: build-dists is enough here.
+    # build-dists already re-evaluated the release_created/force_publish_pypi gate. A status
+    # function is still needed: on a forced publish the Release Please job is skipped, and a
+    # skipped ancestor anywhere in the needs chain skips a job whose `if` is implicit (#754).
+    if: ${{ !cancelled() && needs.build-dists.result == 'success' }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
