@@ -73,3 +73,32 @@ def test_the_publish_job_runs_on_a_forced_publish_although_release_please_was_sk
     head = publish[: publish.index("    runs-on:")]
     assert "needs: build-dists" in head
     assert "if: ${{ !cancelled() && needs.build-dists.result == 'success' }}" in head
+
+
+def test_the_docs_table_lists_which_commit_types_release() -> None:
+    """The table describes the Python release type's own section list (#755), which only holds
+    while the config does not override it with `changelog-sections`. The table is parsed by type,
+    so rewording the prose around it does not matter; the list itself was checked in Release
+    Please's source and in practice (a docs-only commit made it propose a release), which a
+    hermetic test cannot run."""
+    import json
+    import re
+
+    config = json.loads((_ROOT / "release-please-config.json").read_text(encoding="utf-8"))
+    assert "changelog-sections" not in config
+    for package in config["packages"].values():
+        assert "changelog-sections" not in package
+    # The documented list is the Python release type's own: another type would use the generic
+    # defaults (`docs` hidden, `deps` absent) and make the docs wrong.
+    assert config["packages"]["."]["release-type"] == "python"
+    releasing = (_ROOT / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    section = releasing.split("## Which commits release", 1)[1].split("\n## ", 1)[0]
+    rows = dict(re.findall(r"^\| `([a-z]+)` \| ([^|]+?) \|$", section, re.MULTILINE))
+    releasing_types = {"feat": "minor"} | {
+        kind: "patch" for kind in ("fix", "perf", "deps", "revert", "docs")
+    }
+    quiet_types = {
+        kind: "none unless breaking"
+        for kind in ("style", "chore", "refactor", "test", "build", "ci")
+    }
+    assert rows == releasing_types | quiet_types
