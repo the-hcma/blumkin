@@ -153,3 +153,11 @@ def test_transport_and_http_status_ladder() -> None:
     assert classify_exception(_FakeApiError(404)).exit_code == EXIT_NOT_FOUND
     fallback = classify_exception(_FakeApiError(500))
     assert (fallback.slug, fallback.exit_code) == ("graph_error", EXIT_OTHER)
+
+
+def test_a_cancelled_meeting_is_event_cancelled_not_a_graph_error() -> None:
+    from blumkin.skills.calendar import CalendarEventCancelledError
+
+    info = classify_exception(CalendarEventCancelledError("cannot accept a cancelled meeting: e"))
+    assert (info.slug, info.exit_code) == ("event_cancelled", EXIT_USAGE)
+    assert "cancelled" in info.message

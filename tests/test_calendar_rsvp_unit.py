@@ -20,7 +20,7 @@ from blumkin.providers.google import calendar as google_calendar
 from blumkin.providers.google_provider import GoogleWorkspaceProvider
 from blumkin.providers.kind import ProviderKind
 from blumkin.read_state import record_read
-from blumkin.skills.calendar import CalendarEventNotFoundError
+from blumkin.skills.calendar import CalendarEventCancelledError, CalendarEventNotFoundError
 from blumkin.skills.calendar_writes import (
     calendar_accept,
     calendar_decline,
@@ -37,6 +37,10 @@ _NY = "America/New_York"
 
 def _graph_client(monkeypatch, *, today_items=None, today_complete=True) -> MagicMock:
     client = MagicMock()
+    # The pre-check of #757 reads `isCancelled` before every RSVP: a live meeting by default.
+    client.me.events.by_event_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(id="evt", is_cancelled=False)
+    )
     for action in ("accept", "decline", "tentatively_accept"):
         getattr(client.me.events.by_event_id.return_value, action).post = AsyncMock(
             return_value=None
@@ -165,6 +169,9 @@ def test_cli_decline_bad_timezone_with_propose_is_usage_error(tmp_path, monkeypa
 def test_graph_decline_single_event_needs_no_timezone(monkeypatch) -> None:
     # No default_tz, no --tz: a single-event RSVP must not touch a clock.
     client = MagicMock()
+    client.me.events.by_event_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(id="evt-1", is_cancelled=False)
+    )
     client.me.events.by_event_id.return_value.decline.post = AsyncMock(return_value=None)
     monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -224,6 +231,77 @@ def test_graph_decline_today_pending_reports_skips(monkeypatch) -> None:
     payload = asyncio.run(calendar_decline(today_pending=True, tz_name=_NY))
     assert payload["declined"] == ["a"]
     assert payload["skipped"] == [{"id": "b", "reason": "gone"}]
+
+
+def _builder(*, cancelled: bool) -> MagicMock:
+    builder = MagicMock()
+    builder.get = AsyncMock(return_value=SimpleNamespace(id="evt", is_cancelled=cancelled))
+    for action in ("accept", "decline", "tentatively_accept"):
+        getattr(builder, action).post = AsyncMock(return_value=None)
+    return builder
+
+
+@pytest.mark.parametrize(
+    ("respond", "endpoint", "phrase"),
+    [
+        (calendar_accept, "accept", "cannot accept a meeting"),
+        (calendar_decline, "decline", "cannot decline a meeting"),
+        (calendar_tentative, "tentatively_accept", "cannot mark tentative a meeting"),
+    ],
+)
+def test_graph_rsvp_refuses_a_cancelled_meeting_and_sends_no_response(
+    monkeypatch, respond, endpoint, phrase
+) -> None:
+    """A cancelled meeting is refused before any response is sent (#757)."""
+    client = _graph_client(monkeypatch)
+    client.me.events.by_event_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(id="evt-1", is_cancelled=True)
+    )
+    with pytest.raises(CalendarEventCancelledError, match=f"{phrase} that was cancelled"):
+        asyncio.run(respond(event_id="evt-1", tz_name=_NY))
+    getattr(client.me.events.by_event_id.return_value, endpoint).post.assert_not_awaited()
+
+
+def test_graph_decline_today_pending_skips_only_the_cancelled_meeting(monkeypatch) -> None:
+    items = [
+        {"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"},
+        {"id": "b", "is_organizer": False, "response": "ResponseType.NotResponded"},
+    ]
+    client = _graph_client(monkeypatch, today_items=items)
+    builders = {"a": _builder(cancelled=False), "b": _builder(cancelled=True)}
+    client.me.events.by_event_id.side_effect = lambda event_id: builders[event_id]
+    payload = asyncio.run(calendar_decline(today_pending=True, tz_name=_NY))
+    assert payload["declined"] == ["a"]
+    assert [entry["id"] for entry in payload["skipped"]] == ["b"]
+    assert "cancelled" in payload["skipped"][0]["reason"]
+    builders["b"].decline.post.assert_not_awaited()
+
+
+@pytest.mark.parametrize("err", [_odata_error(404), _odata_error(400, "ErrorItemNotFound")])
+def test_graph_a_lookup_failure_in_the_pre_check_maps_not_found(monkeypatch, err) -> None:
+    client = _graph_client(monkeypatch)
+    client.me.events.by_event_id.return_value.get = AsyncMock(side_effect=err)
+    with pytest.raises(CalendarEventNotFoundError, match="event not found: evt-1"):
+        asyncio.run(calendar_decline(event_id="evt-1", tz_name=_NY))
+    client.me.events.by_event_id.return_value.decline.post.assert_not_awaited()
+
+
+def test_cli_a_cancelled_meeting_is_event_cancelled_with_an_actionable_hint(
+    tmp_path, monkeypatch
+) -> None:
+    async def _raise(**_kwargs):
+        raise CalendarEventCancelledError("cannot decline a meeting that was cancelled: e")
+
+    monkeypatch.setattr("blumkin.cli._workspace", lambda: SimpleNamespace(calendar_decline=_raise))
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc"\n')
+    record_read(load_config(), "e")
+    result = CliRunner().invoke(main, ["calendar", "decline", "--event-id", "e", "--yes", "--json"])
+    assert result.exit_code == EXIT_USAGE
+    payload = json.loads(result.stderr)
+    assert payload["error"] == "event_cancelled"
+    assert "cancelled" in payload["message"]
+    assert "is_cancelled" in payload["hint"] and "Outlook" in payload["hint"]
 
 
 # --------------------------------------------------------------------------- Google

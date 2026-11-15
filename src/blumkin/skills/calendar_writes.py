@@ -34,6 +34,9 @@ from msgraph.generated.users.item.events.item.cancel.cancel_post_request_body im
 from msgraph.generated.users.item.events.item.decline.decline_post_request_body import (
     DeclinePostRequestBody,
 )
+from msgraph.generated.users.item.events.item.event_item_request_builder import (
+    EventItemRequestBuilder,
+)
 from msgraph.generated.users.item.events.item.tentatively_accept.tentatively_accept_post_request_body import (  # noqa: E501
     TentativelyAcceptPostRequestBody,
 )
@@ -43,6 +46,7 @@ from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, is_id_lookup_failure, request_config
 from blumkin.output import emit_warning, sanitize_terminal
 from blumkin.skills.calendar import (
+    CalendarEventCancelledError,
     CalendarEventNotFoundError,
     _event_to_dict,
     _graph_events_builder,
@@ -924,10 +928,34 @@ async def _calendar_rsvp(
     return {key: done, "count": len(done), "skipped": skipped}
 
 
+async def _refuse_a_cancelled_meeting(builder: Any, event_id: str, action: str) -> None:
+    """Stop before an RSVP to a meeting the organizer cancelled (#757).
+
+    Graph rejects such a response with a generic 400 (`ErrorInvalidRequest`, "You can't respond
+    to a meeting that's been canceled"), whose only distinguishing signal is message text, so
+    the structured `isCancelled` field is read first and the refusal is explicit.
+    """
+    query = EventItemRequestBuilder.EventItemRequestBuilderGetQueryParameters(
+        select=["id", "isCancelled"]
+    )
+    try:
+        event = await builder.get(request_config(query))
+    except ODataError as exc:
+        if is_id_lookup_failure(exc):
+            raise CalendarEventNotFoundError(f"event not found: {event_id}") from exc
+        raise
+    if event is not None and getattr(event, "is_cancelled", False):
+        phrase = "mark tentative" if action == "tentative" else action
+        raise CalendarEventCancelledError(
+            f"cannot {phrase} a meeting that was cancelled: {event_id}"
+        )
+
+
 async def _graph_rsvp_one(
     client: Any, event_id: str, action: str, comment: str | None, proposed: TimeSlot | None
 ) -> None:
     builder = client.me.events.by_event_id(event_id)
+    await _refuse_a_cancelled_meeting(builder, event_id, action)
     if action == "accept":
         await builder.accept.post(AcceptPostRequestBody(comment=comment, send_response=True))
     elif action == "decline":

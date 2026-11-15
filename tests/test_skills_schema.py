@@ -466,6 +466,7 @@ _ERROR_KEYS = {"error", "message", "ok"}
 _ERROR_VALUES = {
     "auth_required",
     "booking_blocked",
+    "event_cancelled",
     "export_failed",
     "graph_error",
     "install_failed",

@@ -77,6 +77,10 @@ def test_reminder_minutes_before_start() -> None:
 
 def test_calendar_accept_by_event_id_mocked(monkeypatch) -> None:
     client = MagicMock()
+    # The pre-check of #757 reads `isCancelled` first: a live meeting.
+    client.me.events.by_event_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(id="evt", is_cancelled=False)
+    )
     client.me.events.by_event_id.return_value.accept.post = AsyncMock(return_value=None)
     monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)
     monkeypatch.setattr(
@@ -111,6 +115,10 @@ def test_calendar_accept_today_pending_mocked(monkeypatch) -> None:
         }
 
     client = MagicMock()
+    # The pre-check of #757 reads `isCancelled` first: a live meeting.
+    client.me.events.by_event_id.return_value.get = AsyncMock(
+        return_value=SimpleNamespace(id="evt", is_cancelled=False)
+    )
     client.me.events.by_event_id.return_value.accept.post = AsyncMock(return_value=None)
     monkeypatch.setattr("blumkin.skills.calendar_writes.calendar_today", fake_today)
     monkeypatch.setattr("blumkin.skills.calendar_writes.create_graph_client", lambda _cfg: client)

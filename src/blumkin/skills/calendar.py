@@ -32,6 +32,10 @@ class CalendarAmbiguousError(Exception):
     """More than one calendar matched the given name."""
 
 
+class CalendarEventCancelledError(Exception):
+    """The organizer cancelled the meeting, so there is nothing left to respond to (#757)."""
+
+
 class CalendarEventNotFoundError(Exception):
     """No event matched the given id."""
 
