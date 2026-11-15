@@ -176,8 +176,8 @@ Never invent a client id or call Graph or Google directly when a blumkin skill c
   carries `agent_instructions` telling you to re-run `calendar get`, show the
   user the event's current state, then retry. `--today-pending` is exempt.
 - Exit 2 (`event_cancelled`): `calendar accept`/`decline`/`tentative` was called on a
-  meeting the organizer cancelled (`is_cancelled` in `calendar get`). Nothing is sent: the
-  meeting is read first, and Microsoft would only answer a generic 400. In a
+  meeting the organizer cancelled (`is_cancelled` in `calendar get`), on Microsoft and Google.
+  Nothing is sent: the meeting is read first, and Microsoft would only answer a generic 400. In a
   `--today-pending` batch the cancelled meeting is listed under `skipped` and the others are
   still answered. The entry stays on the attendee's calendar until it is removed in Outlook
   (Remove from calendar); blumkin cannot clear it yet (#757).
@@ -304,7 +304,7 @@ Branch on the **exit code first** — it is the only signal present on every fai
 |------|---------------|---------|
 | 0 | — | Success |
 | 1 | `export_failed`, `graph_error`, `install_failed`, `secret_write_failed`, `timeout`, `transient_error`, `upgrade_failed` | `mail export` was refused or could not render the message (file already exists, no body, no browser installed, browser failed or timed out); unexpected Graph failure; `completion --install` could not write the script (directory at the path, unwritable dir); local secret cache/auth-record write failed (e.g. symlink at the path); Graph/token HTTP timed out; a transient network/server error talking to the auth provider (safe to retry, not a bad grant); or a `blumkin upgrade` step (pipx / uv tool / git pull / reinstall) could not run or exited non-zero |
-| 2 | `usage_error`, `booking_blocked`, `too_soon`, `stale_or_unread`, `event_cancelled`, or none | Bad arguments; **`wo1162425_scopes` switched off**; **an emit skill (`mail send-draft`, `chat send`, `chat edit`, `calendar update` adding/replacing attendees) called before its confirm cooldown elapsed** (`too_soon` - carries `agent_instructions` and `retry_after_seconds`; do not retry automatically, get real user confirmation first); **a single-`--event-id` `calendar accept`/`decline`/`tentative`/`cancel` called without a fresh `calendar get` first** (`stale_or_unread` - carries `agent_instructions`; re-run `calendar get`, show the user the current state, then retry); or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
+| 2 | `usage_error`, `booking_blocked`, `too_soon`, `stale_or_unread`, `event_cancelled`, or none | Bad arguments; **`wo1162425_scopes` switched off**; **an emit skill (`mail send-draft`, `chat send`, `chat edit`, `calendar update` adding/replacing attendees) called before its confirm cooldown elapsed** (`too_soon` - carries `agent_instructions` and `retry_after_seconds`; do not retry automatically, get real user confirmation first); **a single-`--event-id` `calendar accept`/`decline`/`tentative`/`cancel` called without a fresh `calendar get` first** (`stale_or_unread` - carries `agent_instructions`; re-run `calendar get`, show the user the current state, then retry); **`calendar accept`/`decline`/`tentative` on a meeting the organizer cancelled** (`event_cancelled` - nothing is sent, on Microsoft and Google; in a `--today-pending` batch the meeting is listed under `skipped`); or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
 | 3 | `auth_required` | Run `blumkin auth login` on this machine |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
 | 5 | `not_found` | The named thing does not exist |

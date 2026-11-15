@@ -22,6 +22,7 @@ from blumkin.providers.google_auth import (
 from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import (
     CalendarAmbiguousError,
+    CalendarEventCancelledError,
     CalendarEventNotFoundError,
     CalendarListTooLargeError,
     CalendarNotFoundError,
@@ -59,6 +60,7 @@ _RESPONSE_BY_GOOGLE_STATUS = {
 
 
 _RSVP_STATUS = {"accept": "accepted", "decline": "declined", "tentative": "tentative"}
+_RSVP_VERB = {"accepted": "accept", "declined": "decline", "tentative": "mark tentative"}
 
 
 async def calendar_accept(
@@ -712,6 +714,11 @@ def _rsvp_one(service: Any, event_id: str, status: str, comment: str | None = No
     changed.
     """
     event = execute(service.events().get(calendarId="primary", eventId=event_id))
+    if event.get("status") == "cancelled":
+        # Nothing is sent: the organizer cancelled it (#757), as on the Microsoft path.
+        raise CalendarEventCancelledError(
+            f"cannot {_RSVP_VERB[status]} a meeting that was cancelled: {event_id}"
+        )
     if event.get("attendeesOmitted"):
         # attendees is a full replace on PATCH, and Google truncates the list it
         # returns for large meetings. Writing the short list back would delete every

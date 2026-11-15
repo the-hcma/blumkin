@@ -378,6 +378,44 @@ def test_google_tentative_sets_tentative(tmp_path: Path) -> None:
     assert body["attendees"][0]["responseStatus"] == "tentative"
 
 
+@pytest.mark.parametrize(
+    ("verb", "phrase"),
+    [
+        ("accept", "cannot accept a meeting"),
+        ("decline", "cannot decline a meeting"),
+        ("tentative", "cannot mark tentative a meeting"),
+    ],
+)
+def test_google_rsvp_refuses_a_cancelled_meeting_and_sends_nothing(
+    tmp_path: Path, verb: str, phrase: str
+) -> None:
+    """The Google path refuses a cancelled meeting like the Microsoft one (#757)."""
+    event = {
+        "id": "evt-1",
+        "status": "cancelled",
+        "attendees": [{"email": "me@e.com", "self": True, "responseStatus": "needsAction"}],
+    }
+    service = _google_service(event)
+    provider = GoogleWorkspaceProvider(_google_cfg(tmp_path))
+    with _google_patched(service), pytest.raises(CalendarEventCancelledError, match=phrase):
+        asyncio.run(getattr(provider, f"calendar_{verb}")(event_id="evt-1"))
+    service.events.return_value.patch.assert_not_called()
+
+
+def test_google_a_live_meeting_is_still_answered(tmp_path: Path) -> None:
+    event = {
+        "id": "evt-1",
+        "status": "confirmed",
+        "attendees": [{"email": "me@e.com", "self": True, "responseStatus": "needsAction"}],
+    }
+    service = _google_service(event)
+    with _google_patched(service):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_accept(event_id="evt-1")
+        )
+    assert payload == {"accepted": ["evt-1"], "count": 1, "skipped": []}
+
+
 def test_google_propose_time_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="no propose-new-time"):
         asyncio.run(
