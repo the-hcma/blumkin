@@ -78,8 +78,10 @@ def test_the_publish_job_runs_on_a_forced_publish_although_release_please_was_sk
 def test_the_docs_name_the_commit_types_that_release_and_the_config_does_not_override_them() -> (
     None
 ):
-    """Which types release is Release Please's Python default (#755); a `changelog-sections`
-    override in the config would make the docs wrong."""
+    """The docs describe the Python release type's own section list (#755), which only holds while
+    the config does not override it with `changelog-sections`; this pins the docs to that config,
+    and the list itself was checked in Release Please's source and in practice (a docs-only commit
+    made it propose a release), which a hermetic test cannot run."""
     import json
 
     config = json.loads((_ROOT / "release-please-config.json").read_text(encoding="utf-8"))
