@@ -32,6 +32,7 @@ from blumkin.providers.kind import ProviderConfigError
 from blumkin.skills.calendar import (
     CalendarAmbiguousError,
     CalendarEventCancelledError,
+    CalendarEventNotCancelledError,
     CalendarEventNotFoundError,
     CalendarListTooLargeError,
     CalendarNotFoundError,
@@ -85,6 +86,11 @@ _FREEBUSY_HINT = (
     "address with --with (it already includes you); for `calendar freebusy`, list every "
     "address you want checked, including yours. Otherwise check that each address is a "
     "calendar you can see, then retry."
+)
+_NOT_CANCELLED_HINT = (
+    "`calendar remove-cancelled` only removes a meeting the organizer cancelled "
+    "(`is_cancelled` in `calendar get`). Answer a live meeting with `calendar decline`, or "
+    "cancel one you organize with `calendar cancel`."
 )
 _CALENDAR_AMBIGUOUS_HINT = (
     "Pass the calendar id (from `blumkin calendar list --json`), not the name."
@@ -295,6 +301,8 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
 
     if isinstance(exc, CalendarEventCancelledError):
         return ErrorInfo("event_cancelled", EXIT_USAGE, str(exc))
+    if isinstance(exc, CalendarEventNotCancelledError):
+        return ErrorInfo("usage_error", EXIT_USAGE, str(exc), _NOT_CANCELLED_HINT)
 
     # 1. per-verb "not found" / bad-input classes that the CLI catches ahead of the ladder
     if isinstance(

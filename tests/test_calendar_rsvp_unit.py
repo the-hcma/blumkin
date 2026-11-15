@@ -301,7 +301,7 @@ def test_cli_a_cancelled_meeting_is_event_cancelled_with_an_actionable_hint(
     payload = json.loads(result.stderr)
     assert payload["error"] == "event_cancelled"
     assert "cancelled" in payload["message"]
-    assert "is_cancelled" in payload["hint"] and "calendar app" in payload["hint"]
+    assert "is_cancelled" in payload["hint"] and "calendar remove-cancelled" in payload["hint"]
 
 
 def test_graph_a_day_of_only_cancelled_meetings_reports_them_and_succeeds(monkeypatch) -> None:

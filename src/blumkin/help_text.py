@@ -1527,6 +1527,20 @@ Also requires a fresh `calendar get --event-id ...` first (see
 `calendar accept --help`; issue #365) since there is no bulk mode to exempt.
 """
 
+CALENDAR_REMOVE_CANCELLED_EPILOG = """
+Example:
+
+\b
+  blumkin calendar get --event-id AAMk...
+  blumkin calendar remove-cancelled --event-id AAMk... --yes
+
+Removes a meeting the organizer cancelled from your own calendar (in Outlook this is
+"Remove from calendar"; Exchange does not process a cancellation from an outside organizer
+by itself). Nobody is notified: the cancellation was already sent. A meeting that is still on
+is refused: answer it with `calendar decline`, or cancel one you organize with `calendar cancel`.
+Requires `--yes` and a fresh `calendar get --event-id ...` first (see `calendar accept --help`).
+"""
+
 CALENDAR_CREATE_EPILOG = """
 Examples:
 

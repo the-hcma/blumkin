@@ -47,6 +47,7 @@ from blumkin.graph import create_graph_client, is_id_lookup_failure, request_con
 from blumkin.output import emit_warning, sanitize_terminal
 from blumkin.skills.calendar import (
     CalendarEventCancelledError,
+    CalendarEventNotCancelledError,
     CalendarEventNotFoundError,
     _event_to_dict,
     _graph_events_builder,
@@ -438,6 +439,10 @@ def format_rsvp_human(payload: dict[str, Any]) -> list[str]:
 
 def format_cancel_human(payload: dict[str, Any]) -> list[str]:
     return [f"Cancelled event {payload.get('cancelled')!r}"]
+
+
+def format_remove_cancelled_human(payload: dict[str, Any]) -> list[str]:
+    return [f"Removed cancelled event {payload.get('removed')!r} from your calendar"]
 
 
 def _booking_lines(payload: dict[str, Any]) -> list[str]:
@@ -929,6 +934,51 @@ async def _calendar_rsvp(
         # rather than reporting an exit-0 "success" that responded to nothing.
         raise first_error
     return {key: done, "count": len(done), "skipped": skipped}
+
+
+async def calendar_remove_cancelled(
+    *,
+    event_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Remove a meeting the organizer cancelled from the signed-in user's own calendar (#757).
+
+    It acts only on a cancelled meeting, which is why it can run without notifying anyone: the
+    cancellation was already sent, and deleting the entry sends nothing.
+    """
+    eid = event_id.strip()
+    if not eid:
+        raise ValueError("--event-id is required")
+    cfg = config or load_config()
+    client = create_graph_client(cfg)
+    builder = client.me.events.by_event_id(eid)
+    query = EventItemRequestBuilder.EventItemRequestBuilderGetQueryParameters(
+        select=["id", "isCancelled"]
+    )
+    try:
+        event = await builder.get(request_config(query))
+    except ODataError as exc:
+        if is_id_lookup_failure(exc):
+            raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+        raise
+    if event is None or not event.id:
+        raise CalendarEventNotFoundError(f"event not found: {eid}")
+    if not getattr(event, "is_cancelled", False):
+        raise CalendarEventNotCancelledError(
+            f"cannot remove a meeting that is still on, only a cancelled one: {eid}"
+        )
+    etag = (getattr(event, "additional_data", None) or {}).get("@odata.etag")
+    try:
+        # Conditional delete: a meeting restored or edited since the read answers 412 instead
+        # of being removed while it is on again.
+        await builder.delete(request_config(headers={"If-Match": etag} if etag else None))
+    except ODataError as exc:
+        if getattr(exc, "response_status_code", None) == 412:
+            raise CalendarEventNotCancelledError(
+                f"the meeting changed while it was being removed, nothing was deleted: {eid}"
+            ) from exc
+        raise
+    return {"removed": eid}
 
 
 async def _refuse_a_cancelled_meeting(builder: Any, event_id: str, action: str) -> None:

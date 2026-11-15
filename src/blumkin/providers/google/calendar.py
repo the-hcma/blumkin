@@ -23,6 +23,7 @@ from blumkin.providers.google_http import build_api_service, execute
 from blumkin.skills.calendar import (
     CalendarAmbiguousError,
     CalendarEventCancelledError,
+    CalendarEventNotCancelledError,
     CalendarEventNotFoundError,
     CalendarListTooLargeError,
     CalendarNotFoundError,
@@ -224,6 +225,53 @@ async def calendar_cancel(
         num_retries=0,
     )
     return {"cancelled": eid}
+
+
+async def calendar_remove_cancelled(
+    *,
+    event_id: str,
+    config: BlumkinConfig | None = None,
+) -> dict[str, Any]:
+    """Remove a cancelled meeting from the signed-in user's own calendar (#757).
+
+    Only a meeting whose status is `cancelled` is touched, so nobody is told: the organizer's
+    cancellation was already sent and `sendUpdates="none"` keeps the delete silent. Like the other
+    Google calendar writes it acts on the `primary` calendar only (event ids are unique per
+    calendar, so a secondary calendar's event is looked up there and answers not found).
+    """
+    eid = event_id.strip()
+    if not eid:
+        raise ValueError("--event-id is required")
+    cfg = config or load_config()
+    service = _calendar_service(cfg)
+    try:
+        existing = execute(service.events().get(calendarId="primary", eventId=eid))
+    except HttpError as exc:
+        if getattr(getattr(exc, "resp", None), "status", None) in (404, 410):
+            raise CalendarEventNotFoundError(f"event not found: {eid}") from exc
+        raise
+    if existing.get("status") != "cancelled":
+        raise CalendarEventNotCancelledError(
+            f"cannot remove a meeting that is still on, only a cancelled one: {eid}"
+        )
+    request = service.events().delete(calendarId="primary", eventId=eid, sendUpdates="none")
+    etag = existing.get("etag")
+    if etag:
+        # Conditional delete: if the event was restored or edited after the read above, the
+        # server answers 412 instead of deleting a meeting that is on again.
+        request.headers["If-Match"] = etag
+    try:
+        execute(request, num_retries=0)
+    except HttpError as exc:
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        if status == 410:
+            return {"removed": eid}  # already gone: the outcome asked for, nothing left to do
+        if status == 412:
+            raise CalendarEventNotCancelledError(
+                f"the meeting changed while it was being removed, nothing was deleted: {eid}"
+            ) from exc
+        raise
+    return {"removed": eid}
 
 
 async def calendar_create(

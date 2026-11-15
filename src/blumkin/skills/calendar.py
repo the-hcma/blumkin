@@ -36,6 +36,10 @@ class CalendarEventCancelledError(Exception):
     """The organizer cancelled the meeting, so there is nothing left to respond to (#757)."""
 
 
+class CalendarEventNotCancelledError(Exception):
+    """`calendar remove-cancelled` was asked to remove a meeting that is still on (#757)."""
+
+
 class CalendarEventNotFoundError(Exception):
     """No event matched the given id."""
 

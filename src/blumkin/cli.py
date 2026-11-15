@@ -263,6 +263,7 @@ from blumkin.skills.calendar import (
 from blumkin.skills.calendar_writes import (
     format_cancel_human,
     format_create_human,
+    format_remove_cancelled_human,
     format_rsvp_human,
     format_update_human,
 )
@@ -363,9 +364,9 @@ _DEFAULT_HINTS: dict[str, str] = {
     ),
     "event_cancelled": (
         "The organizer cancelled this meeting, so it cannot be accepted, declined or marked "
-        "tentative. `blumkin calendar get --event-id <id>` shows `is_cancelled`. An attendee "
-        "cannot clear the entry with blumkin yet (issue #757): remove it in your calendar "
-        "app (in Outlook: Remove from calendar)."
+        "tentative. `blumkin calendar get --event-id <id>` shows `is_cancelled`. Clear the "
+        "entry with `blumkin calendar remove-cancelled --event-id <id> --yes` (or remove it in "
+        "your calendar app; in Outlook: Remove from calendar)."
     ),
     "export_failed": (
         "The message could not be exported. Pick a different --out or --name if a file "
@@ -7480,6 +7481,24 @@ def calendar_cancel_cmd(
         "calendar.cancel",
         {"event_id": event_id, "calendar": calendar, "yes": yes},
         human=format_cancel_human,
+        as_json_flag=as_json_flag,
+    )
+
+
+@calendar.command("remove-cancelled", epilog=help_text.CALENDAR_REMOVE_CANCELLED_EPILOG)
+@click.option("--event-id", "event_id", required=True, help="Cancelled event id to remove.")
+@click.option("--yes", "yes", is_flag=True, help="Confirm this calendar change.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def calendar_remove_cancelled_cmd(
+    ctx: click.Context, event_id: str, yes: bool, as_json_flag: bool
+) -> None:
+    """Remove a meeting the organizer cancelled from your calendar. Requires --yes."""
+    _dispatch(
+        ctx,
+        "calendar.remove-cancelled",
+        {"event_id": event_id, "yes": yes},
+        human=format_remove_cancelled_human,
         as_json_flag=as_json_flag,
     )
 

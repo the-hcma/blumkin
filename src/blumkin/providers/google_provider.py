@@ -210,6 +210,11 @@ class GoogleWorkspaceProvider:
         # "primary" is the signed-in account's own calendar, so no address lookup is needed.
         return "primary"
 
+    async def calendar_remove_cancelled(self, *, event_id: str) -> dict[str, Any]:
+        return await google_calendar.calendar_remove_cancelled(
+            event_id=event_id, config=self._config
+        )
+
     async def calendar_suggest(
         self,
         *,
