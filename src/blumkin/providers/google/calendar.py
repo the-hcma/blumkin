@@ -181,7 +181,10 @@ async def _calendar_rsvp(
             # a 404 for something deleted since the listing, a transient 5xx, or a
             # socket timeout - which is not an HttpError at all, so the catch has to
             # be broad. Re-running is safe: an already-set RSVP is a no-op.
-            first_error = first_error or exc
+            # A cancelled meeting is an expected per-event condition, not a failure of the
+            # batch: a day made only of those reports them under `skipped` and succeeds (#757).
+            if not isinstance(exc, CalendarEventCancelledError):
+                first_error = first_error or exc
             skipped.append({"id": eid, "reason": str(exc)})
             continue
         done.append(eid)

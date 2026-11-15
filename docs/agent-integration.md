@@ -179,7 +179,9 @@ Never invent a client id or call Graph or Google directly when a blumkin skill c
   meeting the organizer cancelled (`is_cancelled` in `calendar get`), on Microsoft and Google.
   Nothing is sent: the meeting is read first, and Microsoft would only answer a generic 400. In a
   `--today-pending` batch the cancelled meeting is listed under `skipped` and the others are
-  still answered. The entry stays on the attendee's calendar until it is removed in the calendar app
+  still answered; a day made only of cancelled meetings succeeds with `count: 0` and each one
+  under `skipped`, because a cancelled meeting is an expected condition and not a failure of
+  the batch. The entry stays on the attendee's calendar until it is removed in the calendar app
   (in Outlook: Remove from calendar); blumkin cannot clear it yet (#757).
 - Exit 1 (`transient_error`): a network/server hiccup talking to the auth
   provider, not a bad grant. Safe to retry the same command once.

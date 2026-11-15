@@ -916,7 +916,10 @@ async def _calendar_rsvp(
         except Exception as exc:  # noqa: BLE001 - a batch must always report
             if not today_pending:
                 raise
-            first_error = first_error or exc
+            # A cancelled meeting is an expected per-event condition, not a failure of the
+            # batch: a day made only of those reports them under `skipped` and succeeds (#757).
+            if not isinstance(exc, CalendarEventCancelledError):
+                first_error = first_error or exc
             skipped.append({"id": eid, "reason": str(exc)})
             continue
         done.append(eid)

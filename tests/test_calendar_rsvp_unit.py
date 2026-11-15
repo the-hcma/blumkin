@@ -304,6 +304,43 @@ def test_cli_a_cancelled_meeting_is_event_cancelled_with_an_actionable_hint(
     assert "is_cancelled" in payload["hint"] and "calendar app" in payload["hint"]
 
 
+def test_graph_a_day_of_only_cancelled_meetings_reports_them_and_succeeds(monkeypatch) -> None:
+    """An expected per-event condition is not a failure of the batch (#757)."""
+    items = [
+        {"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"},
+        {"id": "b", "is_organizer": False, "response": "ResponseType.NotResponded"},
+    ]
+    client = _graph_client(monkeypatch, today_items=items)
+    client.me.events.by_event_id.side_effect = lambda _event_id: _builder(cancelled=True)
+    payload = asyncio.run(calendar_decline(today_pending=True, tz_name=_NY))
+    assert payload["declined"] == [] and payload["count"] == 0
+    assert [entry["id"] for entry in payload["skipped"]] == ["a", "b"]
+    assert all("cancelled" in entry["reason"] for entry in payload["skipped"])
+
+
+def test_graph_a_cancelled_meeting_does_not_hide_a_real_failure_in_the_same_batch(
+    monkeypatch,
+) -> None:
+    items = [
+        {"id": "a", "is_organizer": False, "response": "ResponseType.NotResponded"},
+        {"id": "b", "is_organizer": False, "response": "ResponseType.NotResponded"},
+    ]
+    client = _graph_client(monkeypatch, today_items=items)
+    failing = _builder(cancelled=False)
+    failing.decline.post = AsyncMock(side_effect=RuntimeError("token expired"))
+    builders = {"a": _builder(cancelled=True), "b": failing}
+    client.me.events.by_event_id.side_effect = lambda event_id: builders[event_id]
+    with pytest.raises(RuntimeError, match="token expired"):
+        asyncio.run(calendar_decline(today_pending=True, tz_name=_NY))
+
+
+def test_the_human_report_lists_a_batch_of_only_skipped_meetings() -> None:
+    lines = format_rsvp_human(
+        {"declined": [], "count": 0, "skipped": [{"id": "a", "reason": "cancelled"}]}
+    )
+    assert any("skipped a: cancelled" in line for line in lines)
+
+
 # --------------------------------------------------------------------------- Google
 
 
@@ -438,6 +475,39 @@ def test_google_today_pending_skips_only_the_cancelled_meeting(tmp_path: Path) -
     assert [entry["id"] for entry in payload["skipped"]] == ["b"]
     assert "cancelled" in payload["skipped"][0]["reason"]
     assert service.events.return_value.patch.call_count == 1
+
+
+def test_google_a_day_of_only_cancelled_meetings_reports_them_and_succeeds(
+    tmp_path: Path,
+) -> None:
+    events = {
+        key: {
+            "id": key,
+            "status": "cancelled",
+            "attendees": [{"email": "me@e.com", "self": True, "responseStatus": "needsAction"}],
+        }
+        for key in ("a", "b")
+    }
+    service = MagicMock()
+
+    def _get(*, calendarId, eventId):  # noqa: N803 - the Google client's keyword names
+        request = MagicMock()
+        request.execute.return_value = events[eventId]
+        return request
+
+    service.events.return_value.get.side_effect = _get
+
+    async def _today(**_kwargs):
+        pending = {"is_organizer": False, "response": "ResponseType.NotResponded"}
+        return {"items": [{"id": "a", **pending}, {"id": "b", **pending}], "complete": True}
+
+    with _google_patched(service), patch(f"{_GOOGLE_CAL}.calendar_today", _today):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_google_cfg(tmp_path)).calendar_accept(today_pending=True)
+        )
+    assert payload["accepted"] == [] and payload["count"] == 0
+    assert [entry["id"] for entry in payload["skipped"]] == ["a", "b"]
+    service.events.return_value.patch.assert_not_called()
 
 
 def test_google_a_live_meeting_is_still_answered(tmp_path: Path) -> None:
