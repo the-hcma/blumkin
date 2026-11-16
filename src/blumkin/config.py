@@ -169,6 +169,10 @@ class BrowserTaskPolicy:
     #: Strict mode (off by default): also swallow background writes (`fetch`, `XMLHttpRequest`)
     #: while a command is attached. Breaks pages that need them; for simple forms only.
     block_background_writes: bool = False
+    #: True when the task table names any control setting, even an empty or false one
+    #: (`allowed_controls = []`, `allow_all_controls = false`): the task chose its controls, so
+    #: it never gets open mode (#768).
+    control_keys_declared: bool = False
     #: Folders `download` may save into (absolute, or starting with `~/`). Empty means no
     #: download at all: the default is deny.
     download_dirs: tuple[str, ...] = ()
@@ -953,6 +957,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"got {wants_address!r}"
             )
         policies[str(name)] = BrowserTaskPolicy(
+            control_keys_declared=any(key in table for key in _CONTROL_KEYS),
             allow_all_controls=allow_all,
             allowed_hosts=hosts,
             block_background_writes=strict,
@@ -976,6 +981,17 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             download_dirs=download_dirs,
         )
     return policies
+
+
+#: The task-table keys that say something about which controls a task may click.
+_CONTROL_KEYS = (
+    "allow_all_controls",
+    "allowed_controls",
+    "dialog_confirm",
+    "dialog_confirm_in_form",
+    "dialog_landmarks",
+    "draft_controls",
+)
 
 
 def _form_url(value: Any, allowed_hosts: tuple[str, ...], prefix: str) -> str:

@@ -277,6 +277,7 @@ class _Raw:
 def _guard(
     *allowed: str,
     allow_all: bool = False,
+    open_: bool = False,
     deny: tuple[str, ...] = (),
     confirm: tuple[str, ...] = (),
     draft: tuple[str, ...] = (),
@@ -287,6 +288,7 @@ def _guard(
     policy = GuardPolicy(
         allow_all_controls=allow_all,
         allowed_controls=frozenset(allowed),
+        open_controls=open_,
         dialog_confirm=frozenset(confirm),
         dialog_confirm_in_form=in_form,
         dialog_landmarks=landmarks,
@@ -2202,3 +2204,106 @@ def test_inspect_of_a_field_named_like_a_finalizing_action_is_allowed_because_it
 
     assert driver.inspect_field("Submit").status == "found"
     assert [call[0] for call in raw.calls] == ["inspect_field"]
+
+
+# ------------------------------------------------------- open controls (#768)
+
+
+def test_open_mode_clicks_a_button_and_a_menu_item_nobody_declared() -> None:
+    raw, driver = _guard(open_=True)
+    raw.present["Billing"] = ("menuitem",)
+    raw.present["Your products"] = ("button",)
+    assert driver.click("Billing") == "menuitem"
+    assert driver.click("Your products") == "button"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Submit", "Pay now", "Checkout", "Place order", "Send", "Confirm"],
+)
+def test_open_mode_still_refuses_a_finalizing_name(name: str) -> None:
+    raw, driver = _guard(open_=True)
+    with pytest.raises(SubmitBlockedError, match="finalizing"):
+        driver.click(name, "button")
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Delete user",
+        "Remove license",
+        "Purchase services",
+        "Add to cart",
+        "Cancel subscription",
+        "Bulk update",
+        "Apply to all users",
+        "Renew now",
+    ],
+)
+def test_open_mode_hands_destructive_purchase_and_bulk_buttons_to_the_user(name: str) -> None:
+    raw, driver = _guard(open_=True)
+    with pytest.raises(SubmitBlockedError, match="destructive, purchasing or bulk"):
+        driver.click(name, "button")
+    with pytest.raises(SubmitBlockedError, match="destructive, purchasing or bulk"):
+        driver.click(name, "menuitem")
+    assert raw.calls == []
+
+
+def test_open_mode_lets_navigation_links_and_tabs_through_by_name() -> None:
+    raw, driver = _guard(open_=True)
+    raw.present["Purchase services"] = ("link",)
+    raw.present["Deleted users"] = ("tab",)
+    raw.controls["Purchase services"] = ControlInfo(tag="a", input_type="", in_form=False)
+    raw.controls["Deleted users"] = ControlInfo(tag="div", input_type="", in_form=False)
+    assert driver.click("Purchase services") == "link"
+    assert driver.click("Deleted users") == "tab"
+
+
+def test_open_mode_still_applies_the_task_s_own_deny_names() -> None:
+    raw, driver = _guard(open_=True, deny=("release",))
+    with pytest.raises(SubmitBlockedError, match="finalizing"):
+        driver.click("Release", "button")
+
+
+def test_open_mode_does_not_open_downloads_which_stay_declared() -> None:
+    raw, driver = _guard(open_=True)
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.download("Export", "button", save_to=Path("/tmp/x"))
+
+
+def test_declaring_controls_keeps_the_strict_mode() -> None:
+    raw, driver = _guard("Add line")
+    with pytest.raises(SubmitBlockedError, match="not declared"):
+        driver.click("Your products", "button")
+
+
+def test_open_mode_checks_a_gated_name_after_a_role_less_lookup() -> None:
+    raw, driver = _guard(open_=True)
+    raw.present["Delete user"] = ("button",)
+    with pytest.raises(SubmitBlockedError, match="destructive, purchasing or bulk"):
+        driver.click("Delete user")
+    assert raw.calls == []
+
+
+def test_open_mode_judges_the_element_not_the_role_the_page_gave_it() -> None:
+    raw, driver = _guard(open_=True)
+    raw.present["Delete user"] = ("link",)
+    raw.controls["Delete user"] = ControlInfo(tag="button", input_type="button", in_form=False)
+    with pytest.raises(SubmitBlockedError, match="destructive, purchasing or bulk"):
+        driver.click("Delete user")
+
+
+def test_open_mode_wins_over_the_legacy_button_rule_of_allow_all_controls() -> None:
+    raw, driver = _guard(open_=True, allow_all=True)
+    raw.present["Your products"] = ("button",)
+    raw.controls["Your products"] = ControlInfo(tag="button", input_type="button", in_form=False)
+    assert driver.click("Your products") == "button"
+
+
+def test_strict_allow_all_still_needs_a_button_declared() -> None:
+    raw, driver = _guard("Save", allow_all=True)
+    raw.present["Your products"] = ("button",)
+    raw.controls["Your products"] = ControlInfo(tag="button", input_type="button", in_form=False)
+    with pytest.raises(SubmitBlockedError, match="not declared|must be declared"):
+        driver.click("Your products")

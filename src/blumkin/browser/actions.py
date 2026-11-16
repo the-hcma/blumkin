@@ -63,7 +63,7 @@ from blumkin.browser.profiles import load_profile
 from blumkin.browser.receipt_rehome import file_sha256, find_filed
 from blumkin.browser.teams import merge_chunks, transcription_stopped_after_capture
 from blumkin.browser.transcript import assess, format_text
-from blumkin.config import BrowserSetup
+from blumkin.config import BrowserSetup, BrowserTaskPolicy
 from blumkin.output import sanitize_terminal
 from blumkin.prompt_injection import scan_for_injection
 
@@ -2019,12 +2019,30 @@ def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
     return GuardPolicy(
         allow_all_controls=declared.allow_all_controls,
         allowed_controls=frozenset(declared.allowed_controls),
+        open_controls=_declares_no_controls(declared),
         block_background_writes=declared.block_background_writes,
         dialog_confirm=frozenset(declared.dialog_confirm),
         dialog_confirm_in_form=declared.dialog_confirm_in_form,
         dialog_landmarks=tuple(tuple(group) for group in declared.dialog_landmarks),
         draft_controls=frozenset(declared.draft_controls),
         extra_deny_names=declared.extra_deny_names,
+    )
+
+
+def _declares_no_controls(declared: BrowserTaskPolicy) -> bool:
+    """True for a task that says nothing about controls: it is in open mode (#768).
+
+    Any control setting at all, even an empty list or `false` (a list, the deny-list flag, a
+    dialog confirm, a draft control or dialog landmarks), means the task chose its controls, so
+    an existing task that declared some stays strict instead of being loosened by an upgrade.
+    """
+    return not (
+        declared.control_keys_declared
+        or declared.allowed_controls
+        or declared.allow_all_controls
+        or declared.dialog_confirm
+        or declared.dialog_landmarks
+        or declared.draft_controls
     )
 
 

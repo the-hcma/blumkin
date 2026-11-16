@@ -91,6 +91,27 @@ DESTRUCTIVE_DENY_NAMES: tuple[str, ...] = (
     "void",
 )
 
+#: Names a task with no `allowed_controls` (open controls) may not click on a button or a menu
+#: item: buying, cancelling a subscription or order, and acting on many records at once. Like
+#: the destructive names they are handed to the user, who makes the click. Links and tabs only
+#: navigate, so a name such as `Purchase services` or `Deleted users` stays reachable there.
+GATED_DENY_NAMES: tuple[str, ...] = (
+    "add to cart",
+    "apply to all",
+    "bulk",
+    "cancel membership",
+    "cancel order",
+    "cancel plan",
+    "cancel subscription",
+    "deactivate",
+    "purchase",
+    "renew",
+    "revoke",
+    "subscribe",
+    "terminate",
+    "unsubscribe",
+)
+
 #: Longest value `edit_cell` types into a grid cell.
 MAX_CELL_VALUE_CHARS = 80
 
@@ -115,6 +136,10 @@ class GuardPolicy:
     #: stay individually declared.
     allow_all_controls: bool = False
     allowed_controls: frozenset[str] = frozenset()
+    #: Open mode (a task that declares no control settings): any control may be clicked
+    #: except the finalizing, destructive and gated names above on a button or menu item, and
+    #: everything the element vetting refuses. Declaring `allowed_controls` is the strict mode.
+    open_controls: bool = False
     #: Strict mode: also swallow background writes (see `block_form_submission`).
     block_background_writes: bool = False
     #: Exact names of buttons that confirm a dialog's own rows; see `vet_control`.
@@ -148,6 +173,8 @@ class GuardedDriver:
         self._confirm_names = tuple(sorted(set(policy.dialog_confirm)))
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
         self._destructive = _deny_stems(DESTRUCTIVE_DENY_NAMES)
+        self._gated = _deny_stems((*DESTRUCTIVE_DENY_NAMES, *GATED_DENY_NAMES))
+        self._open = policy.open_controls
         validate_dialog_confirm(policy.dialog_confirm, policy.extra_deny_names)
         landmark_sets = landmark_groups(policy.dialog_landmarks)
         for group in landmark_sets:
@@ -191,6 +218,16 @@ class GuardedDriver:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
         if _is_denied(name, self._deny):
             raise self._refuse(action, "its name is a finalizing action")
+        if (
+            self._open
+            and not declared_only
+            and role in _GATED_ROLES
+            and _is_denied(name, self._gated)
+        ):
+            raise self._refuse(
+                action,
+                "its name is a destructive, purchasing or bulk action, which the user clicks",
+            )
         # A draft name is a button's: a link, tab or menu item of that name is not covered.
         listed = _exact(name) in self._confirm or (
             _exact(name) in self._draft and role in (None, "button")
@@ -610,6 +647,8 @@ class GuardedDriver:
         folded = _exact(name)
         if folded in self._allowed:
             return True
+        if self._open and not declared_only:
+            return role is None or role in CLICKABLE_ROLES
         if role in _MENU_ROLES:
             return False
         if len(folded) <= _MAX_PATTERN_NAME and any(
@@ -663,7 +702,20 @@ class GuardedDriver:
         """
         if (
             name is not None
+            and self._open
+            and _is_button_element(info)
+            and _is_denied(name, self._gated)
+        ):
+            # Open mode judges the element, not the role the page gave it: a `<button
+            # role="link">` named `Delete user` is still the button that deletes.
+            raise self._refuse(
+                action,
+                "its name is a destructive, purchasing or bulk action, which the user clicks",
+            )
+        if (
+            name is not None
             and self._allow_all
+            and not self._open
             and _is_button_element(info)
             and _exact(name) not in self._confirm
             and _exact(name) not in self._draft
@@ -748,6 +800,7 @@ _MAX_PATTERN_NAME = 300
 _DENY_LIST_ROLES = frozenset({"checkbox", "link", "option", "tab", "treeitem"})
 #: Menu items are never reached by a pattern: each stays individually declared.
 _MENU_ROLES = frozenset({"menuitem", "menuitemcheckbox", "menuitemradio"})
+_GATED_ROLES = frozenset({"button", *_MENU_ROLES})
 #: Stands in for an ASCII `*` while a pattern is normalized, so a fullwidth `＊` (which NFKC turns
 #: into `*`) stays literal text.
 _WILDCARD = "\ue000"
