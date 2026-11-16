@@ -503,6 +503,7 @@ _CONSENT = {
     "calendar.freebusy": (False, False),
     "calendar.get": (False, False),
     "calendar.list": (False, False),
+    "calendar.remove-cancelled": (True, False),
     "calendar.suggest": (False, False),
     "calendar.tentative": (True, True),
     "calendar.today": (False, False),

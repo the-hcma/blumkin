@@ -27,6 +27,7 @@ from blumkin.skills.calendar_writes import (
     calendar_cancel,
     calendar_create,
     calendar_decline,
+    calendar_remove_cancelled,
     calendar_tentative,
     calendar_update,
 )
@@ -260,6 +261,9 @@ class MicrosoftWorkspaceProvider:
 
     async def calendar_organizer(self) -> str:
         return await calendar_organizer(config=self._config)
+
+    async def calendar_remove_cancelled(self, *, event_id: str) -> dict[str, Any]:
+        return await calendar_remove_cancelled(event_id=event_id, config=self._config)
 
     async def calendar_suggest(
         self,

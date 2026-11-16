@@ -148,6 +148,7 @@ _FRESHNESS_GATED_SKILLS: dict[str, str] = {
     "calendar.accept": "event_id",
     "calendar.cancel": "event_id",
     "calendar.decline": "event_id",
+    "calendar.remove-cancelled": "event_id",
     "calendar.tentative": "event_id",
 }
 

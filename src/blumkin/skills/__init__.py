@@ -533,6 +533,21 @@ SKILLS: list[SkillSpec] = [
         args=[],
     ),
     SkillSpec(
+        id="calendar.remove-cancelled",
+        cli=["blumkin", "calendar", "remove-cancelled"],
+        summary=(
+            "Remove a meeting the organizer cancelled from your own calendar (does not notify "
+            "anyone; refuses a meeting that is still on; needs a fresh calendar.get first)"
+        ),
+        mutates=True,
+        notifies_others=False,
+        scopes=["Calendars.ReadWrite"],
+        args=[
+            {"name": "--event-id", "required": True, "type": "string"},
+            {"name": "--yes", "required": True, "type": "flag"},
+        ],
+    ),
+    SkillSpec(
         id="calendar.suggest",
         cli=["blumkin", "calendar", "suggest"],
         summary=(

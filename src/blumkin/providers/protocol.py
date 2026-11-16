@@ -113,6 +113,8 @@ class WorkspaceProvider(Protocol):
 
     async def calendar_organizer(self) -> str: ...
 
+    async def calendar_remove_cancelled(self, *, event_id: str) -> dict[str, Any]: ...
+
     async def calendar_suggest(
         self,
         *,
