@@ -564,6 +564,40 @@ def _resolve_keyring_value(
     return legacy, "keyring"
 
 
+def touch_keychain(cfg: BlumkinConfig) -> bool:
+    """Read every secret of ``cfg``'s profile once, straight from the keychain (#759).
+
+    The deliberate, announced access behind ``blumkin auth keychain``. On macOS the module
+    returned by ``_keyring_module`` is the one-item vault, so each read below loads the shared
+    item (the prompt a person is waiting for) and copies the matching standalone item that the
+    previous version wrote into it. Unlike a normal read it lets a keychain failure propagate
+    instead of reading as "nothing stored", so the caller can tell the authorization did not
+    happen. Returns False when this profile does not use a keychain at all (nothing was
+    touched, so there is nothing to authorize).
+    """
+    if _backend_for(cfg) == "file":
+        return False
+    keyring = _keyring_module()
+    if keyring is None:
+        return False
+    keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
+    resolved = str(cfg.config_dir.resolve())
+    accounts = [_keyring_account(cfg, kind) for kind in ("auth_record", "google_token")]
+    # The two app secrets of ``app_secrets`` share this profile's namespace.
+    accounts += [
+        json.dumps([resolved, cfg.profile, slot], separators=(",", ":"))
+        for slot in ("google_client_secret", "ms_client_id")
+    ]
+    for account in accounts:
+        _call_keyring_with_timeout(
+            keyring.get_password,
+            _KEYRING_SERVICE,
+            account,
+            timeout=_AUTHORIZE_TIMEOUT_SECONDS,
+        )
+    return True
+
+
 def write_text(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
     """Persist the secret for ``kind`` to the active backend for this profile.
 
@@ -1256,6 +1290,8 @@ _keyring_mod: Any | None = None
 _bundle_mutation_lock = threading.Lock()
 
 
+# A person is answering a dialog during `blumkin auth keychain`: wait for them, not 5 s.
+_AUTHORIZE_TIMEOUT_SECONDS = 180.0
 _KEYRING_IO_TIMEOUT_SECONDS = 5.0
 _KEYRING_PROBE_TIMEOUT_SECONDS = 2.0
 

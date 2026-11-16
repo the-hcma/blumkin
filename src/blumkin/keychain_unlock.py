@@ -54,6 +54,7 @@ _CORE_FOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoun
 _SEC_UNLOCK_STATE_STATUS = 1
 _SECURITY_FRAMEWORK = "/System/Library/Frameworks/Security.framework/Security"
 
+_unauthorized_message: str | None = None
 _checked_at: float | None = None
 _checked_lock = threading.Lock()
 _locked_at: float | None = None
@@ -64,6 +65,14 @@ _gui_available: bool | None = None
 
 class KeychainLockedError(OSError):
     """The login keychain is locked and cannot be unlocked from this session."""
+
+
+class KeychainNotAuthorizedError(KeychainLockedError):
+    """No terminal to answer macOS's keychain prompt, and this Python build was never authorized.
+
+    A subclass of ``KeychainLockedError`` so every caller that already refuses to touch an
+    unreachable keychain (no file fallback on a write, no hang on a read) treats it the same.
+    """
 
 
 def ensure_unlocked(mode: str) -> None:
@@ -77,6 +86,10 @@ def ensure_unlocked(mode: str) -> None:
     keychain through the native API, so the lock state cannot be assumed fine).
     """
     global _checked_at, _locked_at
+    if _is_macos():
+        from blumkin import keychain_gate  # noqa: PLC0415 - gate imports this module
+
+        keychain_gate.require()
     if not _is_macos() or _recently_checked():
         return
     if not (mode == "cli" or (mode == "gui" and not gui_available())):
@@ -109,7 +122,25 @@ def explain_if_locked(prefix: str, default: str) -> str:
     Never probes: it only reflects what this process just found, so an auth error caused
     by a locked keychain says so instead of telling the user to log in again.
     """
+    if _unauthorized_message is not None:
+        return f"{prefix}: {_unauthorized_message}"
     return f"{prefix}: {_locked_message()}" if _recently_locked() else default
+
+
+def raise_if_unauthorized() -> None:
+    """Raise ``KeychainNotAuthorizedError`` when this process was just refused the keychain.
+
+    For a caller that is about to report "not signed in": a credential nobody could read is
+    not the same as one that is missing, and the fix (``blumkin auth keychain``) is different.
+    """
+    if _unauthorized_message is not None:
+        raise KeychainNotAuthorizedError(_unauthorized_message)
+
+
+def note_unauthorized(message: str | None) -> None:
+    """Remember that this process was refused the keychain, so errors can say why."""
+    global _unauthorized_message
+    _unauthorized_message = message
 
 
 def available() -> bool:
@@ -263,10 +294,11 @@ def _recently_locked() -> bool:
 
 
 def _reset_for_tests() -> None:
-    global _checked_at, _gui_available, _locked_at
+    global _checked_at, _gui_available, _locked_at, _unauthorized_message
     with _checked_lock:
         _checked_at = None
         _locked_at = None
+        _unauthorized_message = None
     _gui_available = None
 
 

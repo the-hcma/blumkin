@@ -28,6 +28,9 @@ def _force_file_secret_backend(
     from blumkin import cli, secret_store
 
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: None)
+    # The macOS keychain-authorization gate (#759) is about a person at a terminal; a test
+    # run has none and must not depend on a marker in the developer's real config dir.
+    monkeypatch.setenv("BLUMKIN_KEYCHAIN_GATE", "off")
     # `doctor`'s macOS-keychain-missing warning (issue #308) is about a *real*
     # absence (stale install, unreachable backend) - not this fixture's own
     # stubbing of `_keyring_module` above, which would otherwise make every
