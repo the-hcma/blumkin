@@ -220,6 +220,7 @@ def get_credentials(
             raise AuthRequiredError(_silent_refresh_failed_message())
 
     if not interactive:
+        keychain_unlock.raise_if_unauthorized()
         raise AuthRequiredError(
             keychain_unlock.explain_if_locked(
                 "Authentication required",
@@ -615,6 +616,7 @@ def _scopes_from_raw(raw: str | None) -> list[str] | None:
 
 
 def _silent_refresh_failed_message() -> str:
+    keychain_unlock.raise_if_unauthorized()
     return keychain_unlock.explain_if_locked(
         "Silent token refresh failed",
         "Silent token refresh failed. Run `blumkin auth login` on a TTY "

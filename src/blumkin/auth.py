@@ -183,6 +183,7 @@ def create_credential(
     scopes = effective_scopes(cfg)
     client_id = _resolved_client_id(cfg)
     if not client_id:
+        keychain_unlock.raise_if_unauthorized()
         raise ProviderConfigError(
             keychain_unlock.explain_if_locked(
                 "Missing client_id",
@@ -225,6 +226,7 @@ def create_credential(
             return credential
 
     if not interactive:
+        keychain_unlock.raise_if_unauthorized()
         raise AuthRequiredError(
             keychain_unlock.explain_if_locked(
                 "Authentication required",
@@ -429,6 +431,7 @@ def _classify_get_token_error(exc: BaseException) -> AuthError:
             "Microsoft refresh token was revoked or expired. Run `blumkin auth login` "
             "on a TTY, then retry."
         )
+    keychain_unlock.raise_if_unauthorized()
     return AuthRequiredError(
         keychain_unlock.explain_if_locked(
             "Silent token refresh failed",

@@ -470,6 +470,7 @@ _ERROR_VALUES = {
     "export_failed",
     "graph_error",
     "install_failed",
+    "keychain_not_authorized",
     "missing_scope",
     "not_found",
     "secret_write_failed",

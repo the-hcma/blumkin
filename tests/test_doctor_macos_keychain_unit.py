@@ -329,8 +329,21 @@ def _doctor_json(tmp_path: Path, monkeypatch, *, locked) -> dict:
 
 def test_doctor_reports_keychain_mode_and_lock_state(tmp_path: Path, monkeypatch) -> None:
     payload = _doctor_json(tmp_path, monkeypatch, locked=False)
-    assert payload["keychain"] == {"locked": False, "unlock_mode": "cli"}
+    assert payload["keychain"] == {
+        "access": "not_applicable",
+        "locked": False,
+        "unlock_mode": "cli",
+    }
     assert payload["warnings"] == []
+
+
+def test_doctor_warns_when_this_python_build_needs_keychain_authorization(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(cli.keychain_gate, "state", lambda: "needs_authorization")
+    payload = _doctor_json(tmp_path, monkeypatch, locked=False)
+    assert payload["keychain"]["access"] == "needs_authorization"
+    assert any("blumkin auth keychain" in w for w in payload["warnings"])
 
 
 def test_doctor_warns_when_the_keychain_is_locked(tmp_path: Path, monkeypatch) -> None:

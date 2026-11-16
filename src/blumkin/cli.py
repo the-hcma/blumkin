@@ -22,7 +22,7 @@ from typing import Any, NoReturn
 import click
 from click.shell_completion import get_completion_class
 
-from blumkin import completion_values, help_text, keychain_unlock
+from blumkin import completion_values, help_text, keychain_gate, keychain_unlock, secret_store
 from blumkin.agent import client as agent_client
 from blumkin.agent import processes as agent_processes
 from blumkin.agent.paths import binary_status
@@ -361,6 +361,13 @@ _DEFAULT_HINTS: dict[str, str] = {
     "auth_required": (
         "Run `blumkin auth login` on this machine (or `blumkin auth refresh` for an "
         "expired access token), then retry. `blumkin auth status` shows the current state."
+    ),
+    "keychain_not_authorized": (
+        "This Python build has not been authorized to use the macOS keychain and there is no "
+        "terminal to answer macOS's prompt, so blumkin refused to raise a dialog nobody would "
+        "see. Run `blumkin auth keychain` in your own terminal (from an agent session: "
+        "`! blumkin auth keychain`), choose Always Allow, then retry. A Homebrew Python update "
+        "needs it again."
     ),
     "event_cancelled": (
         "The organizer cancelled this meeting, so it cannot be accepted, declined or marked "
@@ -2153,6 +2160,77 @@ def auth_unlock(ctx: click.Context, as_json_flag: bool) -> None:
     if not keychain_unlock.unlock():
         fail("keychain_unlock_failed", "keychain unlock failed")
     done("unlocked", "keychain unlocked")
+
+
+@auth.command("keychain", epilog=help_text.AUTH_KEYCHAIN_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def auth_keychain(ctx: click.Context, as_json_flag: bool) -> None:
+    """Authorize this Python build to use the macOS keychain, once, from a terminal (#759).
+
+    Reads every secret of every profile through the keychain so macOS shows its prompt now,
+    while you are watching, and copies items from older versions into the one shared item.
+    Without it, a background process (an MCP server, an agent run) is refused the keychain
+    instead of raising a dialog nobody answers.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    if sys.platform != "darwin":
+        if as_json:
+            emit_json({"ok": True, "status": "not_macos"})
+        else:
+            emit_lines(["not macOS: no keychain prompt to authorize"])
+        return
+    if not keychain_gate.interactive():
+        _emit_error(
+            error="usage_error",
+            message=(
+                "no terminal in a GUI login session to answer macOS's prompt "
+                "(over SSH the dialog cannot be shown)"
+            ),
+            hint=(
+                f"run `{keychain_gate.AUTHORIZE_COMMAND}` in your own terminal "
+                f"(from an agent session: `! {keychain_gate.AUTHORIZE_COMMAND}`)"
+            ),
+            as_json=as_json,
+        )
+        raise SystemExit(2)
+    if not as_json:
+        emit_lines(
+            [
+                "macOS will ask for your login keychain password (once per old item, on this run).",
+                "Choose Always Allow, not Allow, so it does not ask again.",
+            ]
+        )
+    seen: list[str] = []
+    try:
+        for summary in list_profiles():
+            name = str(summary["name"])
+            if secret_store.touch_keychain(load_config(profile=name)):
+                seen.append(name)
+    except Exception as exc:  # noqa: BLE001 - keyring's own errors (KeyringLocked) are not OSErrors
+        _emit_error(
+            error="keychain_not_authorized",
+            message=f"the keychain was not authorized: {exc}",
+            hint=f"retry `{keychain_gate.AUTHORIZE_COMMAND}` and choose Always Allow",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_AUTH) from exc
+    if not seen:
+        if as_json:
+            emit_json({"ok": True, "status": "nothing_to_authorize", "profiles": []})
+        else:
+            emit_lines(
+                [
+                    "no profile uses the macOS keychain (token_storage = file, or no usable "
+                    "keychain backend): nothing was authorized"
+                ]
+            )
+        return
+    path = keychain_gate.authorize()
+    if as_json:
+        emit_json({"ok": True, "status": "authorized", "profiles": seen, "marker": str(path)})
+    else:
+        emit_lines([f"authorized for profiles: {', '.join(seen) or 'none'}"])
 
 
 @auth.command("set-app-secret", epilog=help_text.AUTH_SET_APP_SECRET_EPILOG)
@@ -6472,6 +6550,12 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             "the macOS login keychain is locked - run: blumkin auth unlock "
             f"(keychain_unlock = {cfg.keychain_unlock!r})"
         )
+    keychain_access = keychain_gate.state() if cfg.token_storage != "file" else "not_applicable"
+    if keychain_access == "needs_authorization":
+        warnings.append(
+            "this Python build has not been authorized to use the macOS keychain, so a "
+            f"background process would be refused it - run: {keychain_gate.AUTHORIZE_COMMAND}"
+        )
     resolved_dir, selected_by = config_dir_source()
     tree = source_tree()
     agent_binary = binary_status(tree)
@@ -6491,7 +6575,11 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
     payload = {
         "ok": not problems,
         "browser_models": models_dir,
-        "keychain": {"locked": keychain_locked, "unlock_mode": cfg.keychain_unlock},
+        "keychain": {
+            "access": keychain_access,
+            "locked": keychain_locked,
+            "unlock_mode": cfg.keychain_unlock,
+        },
         "build": build,
         "agent_binary": agent_binary,
         "config": {
@@ -6552,7 +6640,13 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         emit_lines([f"requested_scopes: {', '.join(status.get('requested_scopes') or [])}"])
         emit_lines([f"token_storage_backend: {status.get('token_storage_backend', 'file')}"])
         locked_text = "unknown" if keychain_locked is None else ("yes" if keychain_locked else "no")
-        emit_lines([f"keychain_unlock: {cfg.keychain_unlock}", f"keychain_locked: {locked_text}"])
+        emit_lines(
+            [
+                f"keychain_unlock: {cfg.keychain_unlock}",
+                f"keychain_locked: {locked_text}",
+                f"keychain_access: {keychain_access}",
+            ]
+        )
         available = [family for family, ok in capabilities.items() if ok]
         emit_lines([f"available: {', '.join(available) or 'none'}"])
         for problem in problems:

@@ -28,6 +28,7 @@ from blumkin.exit_codes import (
     EXIT_OTHER,
     EXIT_USAGE,
 )
+from blumkin.keychain_unlock import KeychainNotAuthorizedError
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.skills.calendar import (
     CalendarAmbiguousError,
@@ -344,6 +345,10 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
         return ErrorInfo("usage_error", EXIT_USAGE, str(exc))
 
     # 4. secret write / HTTP timeout
+    if isinstance(exc, KeychainNotAuthorizedError) or isinstance(
+        getattr(exc, "__cause__", None), KeychainNotAuthorizedError
+    ):
+        return ErrorInfo("keychain_not_authorized", EXIT_AUTH, str(exc))
     if isinstance(exc, SecretWriteError):
         return ErrorInfo("secret_write_failed", EXIT_OTHER, str(exc))
     if isinstance(exc, httpx.TimeoutException | TimeoutError):
