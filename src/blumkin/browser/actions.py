@@ -1001,7 +1001,9 @@ def frames_task(config: BrowserSetup, task: str, wait_s: float = 0.0) -> dict[st
     hosts = _declared_hosts(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        frames = driver.frame_list(lambda host: host_allowed(host, hosts), wait_s=wait_s)
+        frames = driver.frame_list(
+            lambda host: not hosts or host_allowed(host, hosts), wait_s=wait_s
+        )
         return {
             "action": "frames",
             "frames": [
@@ -1067,17 +1069,12 @@ def read_task(
         )
     scope_role, scope_name = parse_within(within) if within is not None else ("", None)
     hosts = _declared_hosts(config, task)
-    if frame is not None and not hosts:
-        raise HostBlockedError(
-            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
-            "reading a frame, got none"
-        )
 
     sign_in_hosts = sign_in_hosts_for(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         def allowed(name: str) -> bool:
-            return host_allowed(name, hosts)
+            return not hosts or host_allowed(name, hosts)
 
         # The page itself may be a recognized sign-in page outside `allowed_hosts`: reading it
         # lets the state be seen, and nothing else is allowed there (a frame read, every
@@ -1194,15 +1191,10 @@ def grid_task(
         raise ValueError(f"Expected 1 to {MAX_GRID_ROWS} rows, got {max_rows}")
     grid_role, grid_name = parse_within(within) if within is not None else (None, None)
     hosts = _declared_hosts(config, task)
-    if frame is not None and not hosts:
-        raise HostBlockedError(
-            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
-            "reading a frame, got none"
-        )
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         def allowed(name: str) -> bool:
-            return host_allowed(name, hosts)
+            return not hosts or host_allowed(name, hosts)
 
         snapshot = _redact_aria(
             driver.aria_snapshot()
@@ -1353,16 +1345,11 @@ def transcript_task(
     """
     declared = config.browser.tasks.get(task)
     hosts = declared.allowed_hosts if declared else ()
-    if not hosts:
-        raise HostBlockedError(
-            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
-            "capturing a transcript, got none"
-        )
     target = _checked_output(out) if out is not None else None
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         capture = driver.scroll_frame_text(
-            lambda host: host_allowed(host, hosts),
+            lambda host: not hosts or host_allowed(host, hosts),
             max_steps=DEFAULT_SCROLL_MAX_STEPS,
             wait_s=wait_s,
         )
@@ -1734,16 +1721,11 @@ def _field_target(
     if frame is None:
         return FieldTarget(exact=exact, nth=nth, role=role)
     hosts = _declared_hosts(config, task)
-    if not hosts:
-        raise HostBlockedError(
-            f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
-            f"{verb} in a frame, got none"
-        )
     return FieldTarget(
         exact=exact,
         frame=frame,
         frame_host=host,
-        is_allowed=lambda name: host_allowed(name, hosts),
+        is_allowed=lambda name: not hosts or host_allowed(name, hosts),
         nth=nth,
         role=role,
     )

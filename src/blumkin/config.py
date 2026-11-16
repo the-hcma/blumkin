@@ -161,8 +161,10 @@ class BrowserTaskPolicy:
     #: Exact accessible names of the controls the task may click.
     allowed_controls: tuple[str, ...] = ()
     #: Host names the task's pages may be on (`erp.example.com`, or `*.example.com` for any
-    #: subdomain). Required for `upload`, so a receipt only ever goes to a declared site, and
-    #: restricts `goto` once declared.
+    #: subdomain). Optional: with none declared, any page may be opened, read and clicked in
+    #: (what a click may do is limited by the control checks, not by host). Declaring them
+    #: narrows `goto`, reads and frames to those hosts, and is required for `upload` and
+    #: `download`, so a file only ever goes to or comes from a declared site.
     allowed_hosts: tuple[str, ...] = ()
     #: Strict mode (off by default): also swallow background writes (`fetch`, `XMLHttpRequest`)
     #: while a command is attached. Breaks pages that need them; for simple forms only.
