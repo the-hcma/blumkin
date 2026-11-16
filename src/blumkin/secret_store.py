@@ -83,6 +83,7 @@ import json
 import os
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import nullcontext
 from hashlib import sha256
 from pathlib import Path
@@ -98,6 +99,22 @@ SecretKind = Literal["auth_record", "google_token", "token_cache"]
 
 class SecretWriteError(OSError):
     """Failed to persist a secret (symlink at the path, keyring backend error, etc.)."""
+
+
+class SecretWriteTimeoutError(SecretWriteError):
+    """The OS keychain did not answer in time, most often because a macOS prompt is waiting.
+
+    Its own type because the cause and the remedy differ from every other write failure
+    (approve the prompt and retry, not fix a symlink or a permission), and because a caller that
+    already holds a valid token can finish and warn instead of failing (#756). The abandoned
+    call may still complete, so no caller may follow it with a fallback write (#287).
+    """
+
+    HINT = (
+        'A macOS keychain prompt may be waiting for an answer (look for "wants to use your '
+        'confidential information"); choose Always Allow, or run `blumkin auth keychain` in a '
+        "terminal, then retry. The first run after an upgrade can raise one."
+    )
 
 
 def macos_keychain_missing(cfg: BlumkinConfig) -> bool:
@@ -290,7 +307,7 @@ def _delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
                 # than silently treating the timeout as "deleted") at least
                 # ensures the caller is told to retry instead of assuming
                 # logout succeeded (issue #287 review).
-                raise SecretWriteError(
+                raise SecretWriteTimeoutError(
                     f"cannot delete {kind}: the OS keychain backend did not respond within "
                     f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
                     f"in the background - wait a moment and retry"
@@ -562,6 +579,29 @@ def _resolve_keyring_value(
             return legacy, "keyring"
         return legacy, "file"
     return legacy, "keyring"
+
+
+def save_after_refresh(save: Callable[[], None]) -> None:
+    """Run ``save`` after a refresh that already worked, without failing the command (#756).
+
+    The token is valid in memory, so a save that cannot reach the keychain (it timed out behind a
+    macOS prompt, or the keychain is locked or not authorized here) costs only the next refresh:
+    the command warns and goes on. Nothing is written elsewhere instead: an abandoned write may
+    still complete, so a fallback write could be overtaken by it (#287). Every other failure
+    (a symlink where the cache belongs, a permission error) still surfaces. The warning carries
+    the prompt hint only for a timeout; a locked or unauthorized keychain's own message already
+    names its remedy.
+    """
+    try:
+        save()
+    except SecretWriteError as exc:
+        timed_out = isinstance(exc, SecretWriteTimeoutError)
+        if not (timed_out or isinstance(exc.__cause__, keychain_unlock.KeychainLockedError)):
+            raise
+        emit_warning(
+            f"the refreshed token could not be saved ({exc}); this command continues and the "
+            "next one refreshes again." + (f" {SecretWriteTimeoutError.HINT}" if timed_out else "")
+        )
 
 
 def touch_keychain(cfg: BlumkinConfig) -> bool:
@@ -905,7 +945,7 @@ def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
             # every other failure below is synchronous and safe to treat as
             # final - so this is raised instead of silently falling back,
             # with an actionable message rather than a bare TimeoutError.
-            raise SecretWriteError(
+            raise SecretWriteTimeoutError(
                 f"cannot write {kind}: the OS keychain backend did not respond within "
                 f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
                 f"in the background - wait a moment and retry rather than switch profiles "
@@ -1270,7 +1310,7 @@ def _delete_legacy_per_kind_account(
         if probed_existence is None and _is_not_found(keyring_module, exc):
             return
         if isinstance(exc, TimeoutError):
-            raise SecretWriteError(
+            raise SecretWriteTimeoutError(
                 f"cannot delete legacy {kind}: the OS keychain backend did not respond within "
                 f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
                 f"in the background - wait a moment and retry"

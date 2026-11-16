@@ -20,6 +20,7 @@ from blumkin.auth import (
     AuthTransientError,
     MissingScopeError,
     SecretWriteError,
+    SecretWriteTimeoutError,
 )
 from blumkin.exit_codes import (
     EXIT_AUTH,
@@ -349,6 +350,8 @@ def classify_exception(exc: BaseException) -> ErrorInfo:  # noqa: PLR0911 - a fl
         getattr(exc, "__cause__", None), KeychainNotAuthorizedError
     ):
         return ErrorInfo("keychain_not_authorized", EXIT_AUTH, str(exc))
+    if isinstance(exc, SecretWriteTimeoutError):
+        return ErrorInfo("secret_write_failed", EXIT_OTHER, str(exc), SecretWriteTimeoutError.HINT)
     if isinstance(exc, SecretWriteError):
         return ErrorInfo("secret_write_failed", EXIT_OTHER, str(exc))
     if isinstance(exc, httpx.TimeoutException | TimeoutError):

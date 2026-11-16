@@ -18,6 +18,7 @@ from blumkin.app_secrets import read_app_secret
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.providers.kind import ProviderConfigError
 from blumkin.secret_store import SecretWriteError as SecretWriteError
+from blumkin.secret_store import SecretWriteTimeoutError as SecretWriteTimeoutError
 
 
 class AuthError(ValueError):
@@ -222,7 +223,7 @@ def create_credential(
             if not interactive:
                 raise _classify_get_token_error(exc) from exc
         else:
-            save_token_cache(cfg)
+            secret_store.save_after_refresh(lambda: save_token_cache(cfg))
             return credential
 
     if not interactive:
