@@ -136,6 +136,19 @@ so it is the safe choice inside agent sessions. Exit 3 (auth_required) means the
 refresh token is gone or revoked - run `auth login` on a TTY.
 """
 
+AUTH_KEYCHAIN_PRUNE_EPILOG = """
+Example:
+
+\b
+  blumkin auth keychain-prune
+  blumkin auth keychain-prune --yes
+
+Lists the macOS keychain items blumkin no longer uses: the old `profile:kind` naming, and items
+written under a temporary config directory (test and scratch runs). Each one is an
+access prompt waiting to happen. Only item names are read, never a secret value. With --yes it
+removes them, from a terminal in a GUI login session. `blumkin doctor` shows how many there are.
+"""
+
 AUTH_KEYCHAIN_EPILOG = """
 Example:
 

@@ -471,6 +471,7 @@ _ERROR_VALUES = {
     "graph_error",
     "install_failed",
     "keychain_not_authorized",
+    "keychain_unavailable",
     "missing_scope",
     "not_found",
     "secret_write_failed",

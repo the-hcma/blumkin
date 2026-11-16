@@ -332,6 +332,7 @@ def test_doctor_reports_keychain_mode_and_lock_state(tmp_path: Path, monkeypatch
     assert payload["keychain"] == {
         "access": "not_applicable",
         "locked": False,
+        "stale_items": None,
         "unlock_mode": "cli",
     }
     assert payload["warnings"] == []
@@ -344,6 +345,21 @@ def test_doctor_warns_when_this_python_build_needs_keychain_authorization(
     payload = _doctor_json(tmp_path, monkeypatch, locked=False)
     assert payload["keychain"]["access"] == "needs_authorization"
     assert any("blumkin auth keychain" in w for w in payload["warnings"])
+
+
+def test_doctor_counts_stale_keychain_items_and_points_at_the_command(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from blumkin import keychain_hygiene
+
+    monkeypatch.setattr(
+        keychain_hygiene,
+        "stale_items",
+        lambda: [keychain_hygiene.StaleItem("work:token_cache", "old per-kind naming")],
+    )
+    payload = _doctor_json(tmp_path, monkeypatch, locked=False)
+    assert payload["keychain"]["stale_items"] == 1
+    assert any("blumkin auth keychain-prune" in w for w in payload["warnings"])
 
 
 def test_doctor_warns_when_the_keychain_is_locked(tmp_path: Path, monkeypatch) -> None:

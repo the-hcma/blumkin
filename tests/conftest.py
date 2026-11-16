@@ -31,6 +31,10 @@ def _force_file_secret_backend(
     # The macOS keychain-authorization gate (#759) is about a person at a terminal; a test
     # run has none and must not depend on a marker in the developer's real config dir.
     monkeypatch.setenv("BLUMKIN_KEYCHAIN_GATE", "off")
+    # Listing stale keychain items runs `security dump-keychain` on the real login keychain.
+    from blumkin import keychain_hygiene
+
+    monkeypatch.setattr(keychain_hygiene, "list_accounts", lambda: None)
     # `doctor`'s macOS-keychain-missing warning (issue #308) is about a *real*
     # absence (stale install, unreachable backend) - not this fixture's own
     # stubbing of `_keyring_module` above, which would otherwise make every
