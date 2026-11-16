@@ -1275,8 +1275,9 @@ def test_real_keyring_module_resolves_consistently_under_concurrent_callers(
     second.join(timeout=5)
 
     assert len(results) == 2
-    assert results[0] is stub
-    assert results[1] is stub
+    # On macOS the resolved module is the one-item vault facade around the real one (#759).
+    assert results[0] is results[1]
+    assert getattr(results[0], "_backend", results[0]) is stub
 
 
 def test_keyring_probe_treats_a_hang_as_unusable(monkeypatch: pytest.MonkeyPatch) -> None:

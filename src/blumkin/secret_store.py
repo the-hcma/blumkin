@@ -46,6 +46,11 @@ keychain/file backend directly. A non-macOS platform, a disabled
 `token_reverify_after`, or an unavailable agent all degrade back to the
 direct backend path here without raising.
 
+On macOS none of the items below is a keychain item of its own any more: ``keychain_vault``
+wraps ``keyring`` so every account of one config directory shares a single item (issue #759),
+which this module and ``app_secrets`` reach through the same ``get_password`` /
+``set_password`` / ``delete_password`` calls and account names as before.
+
 ``auth_record`` and ``token_cache`` are not each a keychain item of their
 own: every real MSAL flow (login, silent refresh, ``doctor``) reads or writes
 both together, so two separate items meant two separate OS Keychain
@@ -78,11 +83,12 @@ import json
 import os
 import sys
 import threading
+from contextlib import nullcontext
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
-from blumkin import keychain_unlock
+from blumkin import keychain_unlock, keychain_vault
 from blumkin.agent import client as agent_client
 from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning
@@ -1105,11 +1111,11 @@ def _bundle_write_kind(keyring_module: Any, account: str, kind: SecretKind, text
     rather than risk silently dropping the sibling's value. Holds
     ``_bundle_mutation_lock`` across the get/set so concurrent in-process
     writers (login + silent refresh, abandoned timed-out set + later write)
-    cannot interleave and drop a sibling; cross-process serialization is out
-    of scope for a personal CLI (separate processes still race on the OS
-    keychain itself).
+    cannot interleave and drop a sibling; on macOS the vault facade also holds a
+    cross-process ``flock`` across it (``_vault_transaction``, issue #759), elsewhere
+    separate processes still race on the OS keychain itself.
     """
-    with _bundle_mutation_lock:
+    with _bundle_mutation_lock, _vault_transaction(keyring_module, account):
         raw = _call_keyring_with_timeout(keyring_module.get_password, _KEYRING_SERVICE, account)
         bundle = _bundle_dict_from_raw(raw)
         bundle[kind] = text
@@ -1149,7 +1155,7 @@ def _bundle_delete_kind(
     ``_bundle_mutation_lock`` across the get/set-or-delete for the same
     in-process reason as ``_bundle_write_kind``.
     """
-    with _bundle_mutation_lock:
+    with _bundle_mutation_lock, _vault_transaction(keyring_module, account):
         try:
             raw = _call_keyring_with_timeout(keyring_module.get_password, _KEYRING_SERVICE, account)
         except Exception:
@@ -1320,8 +1326,13 @@ def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = No
     if timeout is None:
         timeout = _KEYRING_IO_TIMEOUT_SECONDS
     result: dict[str, Any] = {}
+    # The lock acquisitions the caller holds right now, as tokens. When the caller releases one,
+    # the vault drops it from the holder record, so an abandoned helper that outlives the caller
+    # no longer matches and takes the lock like any other writer.
+    held = keychain_vault.current_held()
 
     def _run() -> None:
+        keychain_vault.adopt_held(held)
         try:
             result["value"] = func(*args)
         except Exception as exc:  # noqa: BLE001 - re-raised verbatim on the caller's thread
@@ -1385,7 +1396,10 @@ def _keyring_module() -> Any | None:
             _keyring_mod = None
             _keyring_checked = True
             return None
-        _keyring_mod = keyring
+        # On macOS every secret of a config dir shares one keychain item (issue #759).
+        _keyring_mod = (
+            keychain_vault.VaultKeyring(keyring) if keychain_vault.vault_applies() else keyring
+        )
         _keyring_checked = True
         return _keyring_mod
 
@@ -1449,6 +1463,16 @@ def _warn_keyring_unusable_once(cfg: BlumkinConfig) -> None:
 
 
 _warned_unusable_profiles: set[str] = set()
+
+
+def _vault_transaction(keyring_module: Any, account: str) -> Any:
+    """Lock the one-item vault around a read-modify-write of a bundled account (#759).
+
+    Without the vault (another platform, a test fake) there is nothing extra to hold.
+    """
+    if isinstance(keyring_module, keychain_vault.VaultKeyring):
+        return keyring_module.transaction(_KEYRING_SERVICE, account)
+    return nullcontext()
 
 
 def _write_all(fd: int, data: bytes) -> None:

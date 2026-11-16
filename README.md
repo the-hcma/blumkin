@@ -214,7 +214,7 @@ keychain_unlock = "cli"   # gui | cli | off
 
 **Diagnostics.** `blumkin doctor` reports `keychain_unlock` (the configured mode) and `keychain_locked` (`yes`, `no`, or `unknown` when this is not macOS, `security` is unavailable, or the profile uses `token_storage = "file"`), and warns when the keychain is locked; `--json` carries them under `keychain`. `blumkin auth unlock --json` returns `{"ok": true, "status": "unlocked" | "already_unlocked" | "not_macos"}`.
 
-**Password handling.** blumkin never receives, passes on a command line, logs or stores the keychain password; `security` prompts for it on the terminal directly. An "Always Allow" dialog for a binary that has never touched the item is a separate access-list prompt, and unlocking does not clear it.
+**Password handling.** blumkin never receives, passes on a command line, logs or stores the keychain password; `security` prompts for it on the terminal directly. An "Always Allow" dialog for a binary that has never touched the item is a separate access-list prompt, and unlocking does not clear it. On macOS every secret of a config directory (tokens, auth record, client id and secret, for all profiles) lives in one keychain item named `blumkin`, so that prompt appears once per binary instead of once per secret; items from older versions are copied in the first time they are read and then removed (issue #759).
 
 ### Google Workspace (`provider = "google"`)
 
