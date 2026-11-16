@@ -598,3 +598,29 @@ def test_silent_refresh_failure_says_the_keychain_is_locked_when_it_just_was(
     assert isinstance(err, AuthRequiredError)
     assert str(err).startswith("Silent token refresh failed: ")
     assert "blumkin auth unlock" in str(err)
+
+
+def test_a_keychain_timeout_saving_a_refreshed_google_token_warns_and_returns_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blumkin.secret_store import SecretWriteTimeoutError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    cfg = MagicMock(client_id="id", google_oauth_client_file=None)
+    creds = MagicMock(expired=True, refresh_token="r")
+
+    def slow_save(*_args, **_kwargs) -> None:
+        raise SecretWriteTimeoutError("cannot write google_token: did not respond")
+
+    with (
+        patch.object(google_auth, "_load_credentials", return_value=creds),
+        patch.object(google_auth, "refresh_request", return_value=MagicMock()),
+        patch.object(google_auth, "_save_credentials", side_effect=slow_save),
+        patch.object(google_auth, "_needs_additional_scopes", return_value=False),
+    ):
+        got = google_auth.get_credentials(cfg, allow_interactive=False)
+
+    assert got is creds
+    err = capsys.readouterr().err
+    assert "the refreshed token could not be saved" in err
+    assert "Always Allow" in err

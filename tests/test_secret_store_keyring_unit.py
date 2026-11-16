@@ -1051,7 +1051,7 @@ def test_auto_raises_rather_than_falls_back_when_a_write_times_out(
     monkeypatch.setattr(secret_store, "_KEYRING_IO_TIMEOUT_SECONDS", 0.05)
 
     try:
-        with pytest.raises(SecretWriteError, match="did not respond"):
+        with pytest.raises(secret_store.SecretWriteTimeoutError, match="did not respond"):
             secret_store.write_text(cfg, "token_cache", "new-value")
         # Must not have silently fallen back to the file.
         assert not cfg.token_cache_path.exists()

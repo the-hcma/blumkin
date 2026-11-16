@@ -32,7 +32,13 @@ from blumkin.app_secrets import (
     delete_app_secret,
     write_app_secret,
 )
-from blumkin.auth import AuthRequiredError, AuthTransientError, MissingScopeError, SecretWriteError
+from blumkin.auth import (
+    AuthRequiredError,
+    AuthTransientError,
+    MissingScopeError,
+    SecretWriteError,
+    SecretWriteTimeoutError,
+)
 from blumkin.auth_setup import (
     ACCOUNT_TYPES,
     FirstRunConfigError,
@@ -398,7 +404,9 @@ _DEFAULT_HINTS: dict[str, str] = {
         "--json`, `blumkin calendar today --json`, or `blumkin chat find --with NAME --json`."
     ),
     "secret_write_failed": (
-        "The token cache or auth record could not be written. Remove any symlink at "
+        "The token cache or auth record could not be written. If the message says the OS "
+        "keychain did not respond, a macOS keychain prompt may be waiting: approve it (or run "
+        "`blumkin auth keychain` in a terminal) and retry. Otherwise remove any symlink at "
         "~/.config/blumkin/ (or the cache files), fix the directory permissions, then retry."
     ),
     "server_outdated": (
@@ -2007,7 +2015,12 @@ def auth_logout(ctx: click.Context, as_json_flag: bool) -> None:
         # A keyring entry existed but couldn't be deleted (denied, backend
         # error, ...) - surface it rather than report a successful logout
         # that left the credential usable (issue #287 review).
-        _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+        _emit_error(
+            error="secret_write_failed",
+            message=str(exc),
+            as_json=as_json,
+            hint=SecretWriteTimeoutError.HINT if isinstance(exc, SecretWriteTimeoutError) else None,
+        )
         raise SystemExit(EXIT_OTHER) from exc
     clear_signature_state(cfg)
     if as_json:
@@ -2029,7 +2042,12 @@ def auth_refresh(ctx: click.Context, as_json_flag: bool) -> None:
     try:
         payload = _workspace().auth_refresh()
     except SecretWriteError as exc:
-        _emit_error(error="secret_write_failed", message=str(exc), as_json=as_json)
+        _emit_error(
+            error="secret_write_failed",
+            message=str(exc),
+            as_json=as_json,
+            hint=SecretWriteTimeoutError.HINT if isinstance(exc, SecretWriteTimeoutError) else None,
+        )
         raise SystemExit(EXIT_OTHER) from exc
     except ProviderConfigError as exc:
         _emit_error(

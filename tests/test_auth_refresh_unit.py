@@ -344,3 +344,113 @@ def test_status_reports_expired_access_token(
     assert payload["refresh_token_present"] is True
     assert payload["access_token_expires_in_seconds"] is not None
     assert payload["access_token_expires_in_seconds"] < 0
+
+
+# ------------------------------------------------- a failed save after a refresh (#756)
+
+
+def _refreshing_credential(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "profiles" / "default").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.toml").write_text(
+        '[profiles.default]\nclient_id = "test-client"\ntenant_id = "contoso.com"\n'
+    )
+    (tmp_path / "profiles" / "default" / "msal_token_cache.json").write_text("{}")
+    (tmp_path / "profiles" / "default" / "auth_record.json").write_text("record-bytes")
+    fake_cred = MagicMock(name="InteractiveBrowserCredential")
+    fake_cred.get_token.return_value = MagicMock(token="valid")
+    return fake_cred
+
+
+def _create_with_failing_save(fake_cred: MagicMock, failure: Exception) -> object:
+    with (
+        patch("blumkin.auth.AuthenticationRecord.deserialize", return_value=MagicMock()),
+        patch("blumkin.auth.InteractiveBrowserCredential", return_value=fake_cred),
+        patch("blumkin.auth.save_token_cache", side_effect=failure),
+    ):
+        return create_credential(allow_interactive=False)
+
+
+def test_a_keychain_timeout_saving_a_refreshed_token_warns_and_the_command_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blumkin.secret_store import SecretWriteTimeoutError
+
+    fake_cred = _refreshing_credential(tmp_path, monkeypatch)
+    failure = SecretWriteTimeoutError(
+        "cannot write token_cache: the OS keychain backend did not respond within 5.0s"
+    )
+
+    assert _create_with_failing_save(fake_cred, failure) is fake_cred
+
+    err = capsys.readouterr().err
+    assert err.startswith("warning: the refreshed token could not be saved")
+    assert "next one refreshes again" in err
+    assert "Always Allow" in err
+
+
+def test_a_locked_or_unauthorized_keychain_saving_a_refreshed_token_also_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from blumkin import keychain_unlock
+
+    fake_cred = _refreshing_credential(tmp_path, monkeypatch)
+    failure = SecretWriteError("cannot write token_cache: no terminal")
+    failure.__cause__ = keychain_unlock.KeychainNotAuthorizedError("no terminal")
+
+    assert _create_with_failing_save(fake_cred, failure) is fake_cred
+    err = capsys.readouterr().err
+    assert "could not be saved" in err
+    # A locked or unauthorized keychain's own message names its remedy; the prompt hint is
+    # for a timeout only.
+    assert "Always Allow" not in err
+
+
+def test_any_other_write_failure_after_a_refresh_still_fails_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_cred = _refreshing_credential(tmp_path, monkeypatch)
+    with pytest.raises(SecretWriteError, match="symlink"):
+        _create_with_failing_save(fake_cred, SecretWriteError("refusing a symlink at the path"))
+
+
+def test_a_keychain_timeout_gets_its_own_hint_in_the_error_envelope() -> None:
+    from blumkin.secret_store import SecretWriteTimeoutError
+    from blumkin.skills.errors import classify_exception
+
+    timeout = classify_exception(SecretWriteTimeoutError("did not respond"))
+    assert timeout.slug == "secret_write_failed"
+    assert timeout.hint is not None and "keychain prompt" in timeout.hint
+
+    other = classify_exception(SecretWriteError("refusing a symlink"))
+    assert other.slug == "secret_write_failed" and other.hint is None
+
+
+def _cli_error(error: Exception, args: list[str]) -> dict:
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    workspace = MagicMock()
+    workspace.auth_refresh.side_effect = error
+    workspace.auth_logout.side_effect = error
+    with patch("blumkin.cli._workspace", return_value=workspace):
+        result = CliRunner().invoke(main, ["--json", *args])
+    assert result.exit_code != 0, result.output
+    return json.loads(result.output.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("args", [["auth", "refresh"], ["auth", "logout"]])
+def test_auth_commands_give_a_keychain_timeout_its_own_hint(args: list[str]) -> None:
+    from blumkin.secret_store import SecretWriteTimeoutError
+
+    payload = _cli_error(SecretWriteTimeoutError("did not respond"), args)
+    assert payload["error"] == "secret_write_failed"
+    assert "keychain prompt" in payload["hint"]
+
+
+@pytest.mark.parametrize("args", [["auth", "refresh"], ["auth", "logout"]])
+def test_auth_commands_keep_the_default_hint_for_other_write_failures(args: list[str]) -> None:
+    payload = _cli_error(SecretWriteError("refusing a symlink"), args)
+    assert payload["error"] == "secret_write_failed"
+    assert "symlink" in payload["hint"] and "Always Allow" not in payload["hint"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 
 from google.auth.exceptions import RefreshError, TransportError
@@ -206,7 +207,12 @@ def get_credentials(
                 if not interactive:
                     raise _classify_refresh_error(exc) from exc
             else:
-                _save_credentials(cfg, creds, preserve_granted_scopes=True)
+                # A save that cannot reach the keychain only warns (#756). The scope check just
+                # below reads the previously stored record, which a refresh never changes the
+                # grant of, so it answers the same as it would after a successful save.
+                secret_store.save_after_refresh(
+                    partial(_save_credentials, cfg, creds, preserve_granted_scopes=True)
+                )
                 if not _needs_additional_scopes(cfg, required):
                     return creds
                 if not interactive:
