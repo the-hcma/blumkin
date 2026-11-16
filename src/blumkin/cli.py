@@ -22,7 +22,14 @@ from typing import Any, NoReturn
 import click
 from click.shell_completion import get_completion_class
 
-from blumkin import completion_values, help_text, keychain_gate, keychain_unlock, secret_store
+from blumkin import (
+    completion_values,
+    help_text,
+    keychain_gate,
+    keychain_hygiene,
+    keychain_unlock,
+    secret_store,
+)
 from blumkin.agent import client as agent_client
 from blumkin.agent import processes as agent_processes
 from blumkin.agent.paths import binary_status
@@ -367,6 +374,11 @@ _DEFAULT_HINTS: dict[str, str] = {
     "auth_required": (
         "Run `blumkin auth login` on this machine (or `blumkin auth refresh` for an "
         "expired access token), then retry. `blumkin auth status` shows the current state."
+    ),
+    "keychain_unavailable": (
+        "The macOS `security` tool could not list the login keychain (it is missing, locked or "
+        "timed out). Run this in your own terminal in a GUI login session; `blumkin auth unlock` "
+        "unlocks a locked keychain."
     ),
     "keychain_not_authorized": (
         "This Python build has not been authorized to use the macOS keychain and there is no "
@@ -2249,6 +2261,70 @@ def auth_keychain(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json({"ok": True, "status": "authorized", "profiles": seen, "marker": str(path)})
     else:
         emit_lines([f"authorized for profiles: {', '.join(seen) or 'none'}"])
+
+
+@auth.command("keychain-prune", epilog=help_text.AUTH_KEYCHAIN_PRUNE_EPILOG)
+@click.option("--yes", "yes", is_flag=True, help="Remove the stale items (default: list them).")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def auth_keychain_prune(ctx: click.Context, yes: bool, as_json_flag: bool) -> None:
+    """List, and with --yes remove, macOS keychain items blumkin no longer uses (#759).
+
+    Stale means the old `profile:kind` naming (nothing reads it any more), or an item written
+    under a temporary config directory. Only item names are read; a secret value is never
+    touched, and an item of a config directory that is merely missing is left alone.
+    """
+    as_json = _as_json(ctx, as_json_flag)
+    if sys.platform != "darwin":
+        if as_json:
+            emit_json({"ok": True, "status": "not_macos", "stale": []})
+        else:
+            emit_lines(["not macOS: no keychain items to prune"])
+        return
+    items = keychain_hygiene.stale_items()
+    if items is None:
+        _emit_error(
+            error="keychain_unavailable",
+            message="the keychain could not be listed (`security dump-keychain` failed)",
+            as_json=as_json,
+        )
+        raise SystemExit(EXIT_OTHER)
+    stale = [
+        {"account": item.account, "keychain": item.keychain, "reason": item.reason}
+        for item in items
+    ]
+    removed: list[str] = []
+    failed: list[str] = []
+    if yes and items:
+        if not keychain_gate.interactive():
+            _emit_error(
+                error="usage_error",
+                message="removing keychain items needs a terminal in a GUI login session",
+                hint="run `blumkin auth keychain-prune --yes` in your own terminal",
+                as_json=as_json,
+            )
+            raise SystemExit(EXIT_USAGE)
+        for item in items:
+            gone = keychain_hygiene.remove_item(item.account, item.keychain)
+            (removed if gone else failed).append(item.account)
+    if as_json:
+        emit_json(
+            {"ok": not failed, "stale": stale, "removed": removed, "failed": failed}
+            | ({} if yes or not stale else {"next_step": "blumkin auth keychain-prune --yes"})
+        )
+    else:
+        lines = [f"stale: {item['account']}  ({item['reason']})" for item in stale] or [
+            "no stale keychain items"
+        ]
+        if removed:
+            lines.append(f"removed {len(removed)} item(s)")
+        if failed:
+            lines.append(f"could not remove {len(failed)} item(s)")
+        if stale and not yes:
+            lines.append("run `blumkin auth keychain-prune --yes` to remove them")
+        emit_lines(lines)
+    if failed:
+        raise SystemExit(EXIT_OTHER)
 
 
 @auth.command("set-app-secret", epilog=help_text.AUTH_SET_APP_SECRET_EPILOG)
@@ -6569,6 +6645,13 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             f"(keychain_unlock = {cfg.keychain_unlock!r})"
         )
     keychain_access = keychain_gate.state() if cfg.token_storage != "file" else "not_applicable"
+    stale_keychain = keychain_hygiene.stale_items() if cfg.token_storage != "file" else None
+    if stale_keychain:
+        warnings.append(
+            f"{len(stale_keychain)} stale blumkin keychain item(s) are never used and can raise "
+            "access prompts - list them with `blumkin auth keychain-prune`, remove them with "
+            "`blumkin auth keychain-prune --yes`"
+        )
     if keychain_access == "needs_authorization":
         warnings.append(
             "this Python build has not been authorized to use the macOS keychain, so a "
@@ -6596,6 +6679,7 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         "keychain": {
             "access": keychain_access,
             "locked": keychain_locked,
+            "stale_items": None if stale_keychain is None else len(stale_keychain),
             "unlock_mode": cfg.keychain_unlock,
         },
         "build": build,

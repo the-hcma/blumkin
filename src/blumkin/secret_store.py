@@ -1044,7 +1044,16 @@ _KEYRING_SERVICE = "blumkin"
 def _backend_for(cfg: BlumkinConfig) -> Literal["file", "keyring"]:
     if cfg.token_storage == "file":
         return "file"
-    if _keyring_module() is not None:
+    module = _keyring_module()
+    if module is not None:
+        if (
+            cfg.token_storage == "auto"
+            and isinstance(module, keychain_vault.VaultKeyring)
+            and module.refuses(str(cfg.config_dir.resolve()))
+        ):
+            # A test run or a scratch config directory never reaches the real keychain (or the
+            # authorization gate in front of it): its secrets live in the file backend (#759).
+            return "file"
         return "keyring"
     if cfg.token_storage == "keyring":
         _warn_keyring_unusable_once(cfg)
@@ -1474,7 +1483,9 @@ def _keyring_module() -> Any | None:
             return None
         # On macOS every secret of a config dir shares one keychain item (issue #759).
         _keyring_mod = (
-            keychain_vault.VaultKeyring(keyring) if keychain_vault.vault_applies() else keyring
+            keychain_vault.VaultKeyring(keyring, refuse_temporary=True)
+            if keychain_vault.vault_applies()
+            else keyring
         )
         _keyring_checked = True
         return _keyring_mod

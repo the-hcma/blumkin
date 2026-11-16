@@ -39,6 +39,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from blumkin import keychain_hygiene
+
 try:  # POSIX only; Windows never reaches the vault (see ``vault_applies``).
     import fcntl
 except ImportError:  # pragma: no cover - exercised on Windows only
@@ -63,8 +65,9 @@ _thread_locks_guard = threading.Lock()
 class VaultKeyring:
     """A ``keyring``-shaped facade that stores every account of a config dir in one item."""
 
-    def __init__(self, backend: Any) -> None:
+    def __init__(self, backend: Any, *, refuse_temporary: bool = False) -> None:
         self._backend = backend
+        self._refuse_temporary = refuse_temporary
         self.errors = getattr(backend, "errors", None)
 
     def __getattr__(self, name: str) -> Any:
@@ -76,6 +79,7 @@ class VaultKeyring:
         if directory is None:
             self._backend.delete_password(service, account)
             return
+        self._guard(directory)
         found = False
         with _locked(directory, service):
             vault = self._load(service, directory, fresh=True)
@@ -91,6 +95,7 @@ class VaultKeyring:
         directory = _config_dir_of(account)
         if directory is None:
             return self._backend.get_password(service, account)
+        self._guard(directory)
         vault = self._load(service, directory)
         value = vault.get(account)
         if isinstance(value, str):
@@ -104,6 +109,7 @@ class VaultKeyring:
         if directory is None:
             self._backend.set_password(service, account, password)
             return
+        self._guard(directory)
         with _locked(directory, service):
             vault = self._load(service, directory, fresh=True)
             had_legacy_check = account in _checked(vault)
@@ -129,6 +135,15 @@ class VaultKeyring:
                 raise
             return False
         return True
+
+    def refuses(self, directory: str) -> bool:
+        """True when this facade would refuse ``directory`` the real keychain (temp dir, test)."""
+        return self._refuse_temporary and keychain_hygiene.refuses_directory(directory)
+
+    def _guard(self, directory: str) -> None:
+        """Keep a test run or a scratch config directory off the real keychain (#759)."""
+        if self._refuse_temporary:
+            keychain_hygiene.refuse_temporary_config_dir(directory)
 
     def _load(self, service: str, directory: str, *, fresh: bool = False) -> dict[str, Any]:
         vault_account = _vault_account(directory)
