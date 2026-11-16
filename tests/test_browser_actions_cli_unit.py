@@ -107,9 +107,13 @@ class _Raw:
         self.tracking = 0
         #: What `clear_session` reports, and how many times it ran.
         self.cleared_calls = 0
+        self.cache_cleared = 0
         self.cookie_count = 0
         #: The address the headings are read from, when not the page's own.
         self.settled_url: str | None = None
+
+    def clear_cache(self) -> None:
+        self.cache_cleared += 1
 
     def clear_session(self) -> int:
         self.cleared_calls += 1
@@ -4825,6 +4829,58 @@ def test_a_long_redirect_loop_keeps_its_first_and_last_steps(raw: _Raw) -> None:
     assert len(payload["chain"]) == 13
     assert payload["chain"][0].endswith("/hop0") and payload["chain"][-1].endswith("/hop29")
     assert "..." in payload["chain"]
+
+
+def test_read_of_an_almost_empty_page_hints_at_the_failed_load_diagnostics(raw: _Raw) -> None:
+    raw.page_text = PageText(text="  ", injection_warning=None)
+
+    payload = _json(_run("browser", "read", "expense-report"))
+
+    assert "inspect TASK --requests" in payload["hint"]
+    assert "blumkin browser clear-cache TASK" in payload["hint"]
+
+
+def test_the_blank_page_hint_is_only_for_a_plain_text_read(raw: _Raw, _config_dir: Path) -> None:
+    raw.page_text = PageText(text="", injection_warning=None)
+    raw.aria_text = ""
+    raw.child_frames = [_PANE]
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com", "*.sharepoint.com"]')
+
+    aria = _json(_run("browser", "read", "expense-report", "--aria"))
+    in_frame = _json(_run("browser", "read", "expense-report", "--frame", "1"))
+
+    assert "hint" not in aria
+    assert "hint" not in in_frame
+
+
+def test_read_of_a_page_with_text_has_no_hint(raw: _Raw) -> None:
+    raw.page_text = PageText(
+        text="A page with plenty of readable text on it.", injection_warning=None
+    )
+
+    assert "hint" not in _json(_run("browser", "read", "expense-report"))
+
+
+def test_clear_cache_empties_the_cache_and_signs_nobody_out(raw: _Raw) -> None:
+    result = _run("browser", "clear-cache", "expense-report")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result) == {"action": "clear-cache", "ok": True, "task": "expense-report"}
+    assert raw.cache_cleared == 1
+    assert raw.cleared_calls == 0  # no cookie was touched
+    assert raw.closed == 1
+    assert raw.net_installed == 0
+
+
+def test_clear_cache_text_says_the_sign_in_is_kept(raw: _Raw) -> None:
+    result = CliRunner().invoke(main, ["browser", "clear-cache", "expense-report"])
+    assert "browser cache cleared (sign-in kept)" in result.output
+
+
+def test_clear_cache_of_an_unknown_task_is_not_found(raw: _Raw) -> None:
+    result = _run("browser", "clear-cache", "no-such-task")
+    assert result.exit_code != EXIT_SUCCESS
+    assert raw.cache_cleared == 0
 
 
 def test_reset_session_without_yes_changes_nothing(raw: _Raw) -> None:

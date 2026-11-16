@@ -1142,7 +1142,12 @@ def read_task(
                 )
             body = _compacted(page.text) if compact else page.text
             shown, more, next_offset = window(body, offset, limit)
-            return {
+            blank_hint = (
+                {"hint": _BLANK_PAGE_HINT}
+                if frame is None and not aria and len(body.strip()) < _BLANK_PAGE_CHARS
+                else {}
+            )
+            return blank_hint | {
                 "action": "read",
                 "frame": frame,
                 "frame_host": host,
@@ -1566,6 +1571,36 @@ def verify_task(
         return payload
 
     return _with_driver(config, task, act)
+
+
+#: A text read shorter than this is reported with a hint: the page may not have loaded (#768).
+_BLANK_PAGE_CHARS = 20
+_BLANK_PAGE_HINT = (
+    "The page has almost no text. It may still be loading, or a script failed to load: wait and "
+    "read again. To see what failed, start `blumkin browser inspect TASK --requests --watch 10` "
+    "and reload the page (`blumkin browser goto TASK`) while it runs: the watch lists only "
+    "requests that start during it. If it keeps showing `Loading chunk ... failed`, empty the "
+    "browser's cache (the sign-in is kept) with `blumkin browser clear-cache TASK`."
+)
+
+
+def clear_cache_task(config: BrowserSetup, task: str) -> dict[str, Any]:
+    """Empty the HTTP cache of the task's running browser, keeping its sign-in (#768).
+
+    For a page that stays blank or shows `Loading chunk ... failed` because the browser holds
+    an old copy of a script. Cookies, the profile's folder and its settings stay, so nobody is
+    signed out (`reset-session` is the command that does that). Nothing is read from or done to
+    a page, and no form guard is installed.
+    """
+    profile = load_profile(config.config_dir, task)
+    if profile is None:
+        raise TaskNotFoundError(f"Expected an existing browser profile for task {task!r}, got none")
+    driver = attach(profile, strict=True, timeout_s=DEFAULT_ACTION_TIMEOUT_S)
+    try:
+        driver.clear_cache()
+    finally:
+        driver.close()
+    return {"action": "clear-cache", "ok": True, "task": task}
 
 
 def reset_session_task(config: BrowserSetup, task: str) -> dict[str, Any]:
