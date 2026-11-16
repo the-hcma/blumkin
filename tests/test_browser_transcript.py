@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from blumkin.browser.actions import HostBlockedError, transcript_task
+from blumkin.browser.actions import transcript_task
 from blumkin.browser.cdp import BrowserActionError
+from blumkin.browser.commands import TaskNotFoundError
 from blumkin.browser.transcript import (
     Entry,
     assess,
@@ -68,10 +69,12 @@ def test_format_text_is_one_line_per_turn() -> None:
     assert format_text([Entry("A", 3725, "hi")]) == "[1:02:05] A: hi"
 
 
-def test_transcript_task_refuses_without_allowed_hosts(tmp_path: Path) -> None:
+def test_transcript_task_needs_no_declared_hosts_to_get_as_far_as_the_profile(
+    tmp_path: Path,
+) -> None:
     config = BrowserSetup(browser=BrowserConfig(), config_dir=tmp_path)
 
-    with pytest.raises(HostBlockedError, match="allowed_hosts"):
+    with pytest.raises(TaskNotFoundError):
         transcript_task(config, "teams", duration_s=None, out=None)
 
 

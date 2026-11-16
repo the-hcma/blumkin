@@ -161,12 +161,18 @@ class BrowserTaskPolicy:
     #: Exact accessible names of the controls the task may click.
     allowed_controls: tuple[str, ...] = ()
     #: Host names the task's pages may be on (`erp.example.com`, or `*.example.com` for any
-    #: subdomain). Required for `upload`, so a receipt only ever goes to a declared site, and
-    #: restricts `goto` once declared.
+    #: subdomain). Optional: with none declared, any page may be opened, read and clicked in
+    #: (what a click may do is limited by the control checks, not by host). Declaring them
+    #: narrows `goto`, reads and frames to those hosts, and is required for `upload` and
+    #: `download`, so a file only ever goes to or comes from a declared site.
     allowed_hosts: tuple[str, ...] = ()
     #: Strict mode (off by default): also swallow background writes (`fetch`, `XMLHttpRequest`)
     #: while a command is attached. Breaks pages that need them; for simple forms only.
     block_background_writes: bool = False
+    #: True when the task table names any control setting, even an empty or false one
+    #: (`allowed_controls = []`, `allow_all_controls = false`): the task chose its controls, so
+    #: it never gets open mode (#768).
+    control_keys_declared: bool = False
     #: Folders `download` may save into (absolute, or starting with `~/`). Empty means no
     #: download at all: the default is deny.
     download_dirs: tuple[str, ...] = ()
@@ -951,6 +957,7 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
                 f"got {wants_address!r}"
             )
         policies[str(name)] = BrowserTaskPolicy(
+            control_keys_declared=any(key in table for key in _CONTROL_KEYS),
             allow_all_controls=allow_all,
             allowed_hosts=hosts,
             block_background_writes=strict,
@@ -974,6 +981,17 @@ def _browser_task_policies(raw: Any) -> dict[str, BrowserTaskPolicy]:
             download_dirs=download_dirs,
         )
     return policies
+
+
+#: The task-table keys that say something about which controls a task may click.
+_CONTROL_KEYS = (
+    "allow_all_controls",
+    "allowed_controls",
+    "dialog_confirm",
+    "dialog_confirm_in_form",
+    "dialog_landmarks",
+    "draft_controls",
+)
 
 
 def _form_url(value: Any, allowed_hosts: tuple[str, ...], prefix: str) -> str:

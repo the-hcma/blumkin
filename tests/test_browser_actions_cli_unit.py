@@ -459,6 +459,18 @@ def test_read_carries_the_injection_warning_and_truncates_long_pages(raw: _Raw) 
     assert len(payload["text"]) == 20_000
 
 
+def test_transcript_without_declared_hosts_accepts_any_frame_host(
+    raw: _Raw, tmp_path: Path
+) -> None:
+    pane = "Ann\n0 minutes 5 seconds\n0:05\nAnn 0 minutes 5 seconds\nHello there\n"
+    raw.frame_chunks = (pane,)
+
+    result = _run("browser", "transcript", "expense-report", "--out", str(tmp_path / "t.txt"))
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert ("scroll", True, 400) in raw.calls
+
+
 def test_transcript_merges_the_scrolled_chunks_and_writes_a_private_file(
     raw: _Raw, _config_dir: Path, tmp_path: Path
 ) -> None:
@@ -513,6 +525,48 @@ def test_click_of_a_declared_control_goes_through(raw: _Raw) -> None:
     result = _run("browser", "click", "expense-report", "Add line")
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert raw.calls == [("click", "button", "Add line")]
+
+
+def test_a_task_that_declares_no_controls_is_open_but_still_refused_a_gated_name(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'upload_dirs = ["~/receipts"]')
+
+    opened = _run("browser", "click", "expense-report", "Your products")
+    assert opened.exit_code == EXIT_SUCCESS, opened.output
+    assert raw.calls == [("click", "button", "Your products")]
+
+    raw.calls.clear()
+    for name in ("Purchase", "Delete user", "Submit"):
+        refused = _run("browser", "click", "expense-report", name)
+        assert refused.exit_code == EXIT_OTHER, refused.output
+        assert _json(refused)["error"] == "submit_blocked"
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'allowed_controls = ["Add line"]',
+        "allow_all_controls = true",
+        'dialog_confirm = ["OK"]',
+        'draft_controls = ["Calculate"]',
+        "allowed_controls = []",
+        "allow_all_controls = false",
+        "dialog_confirm = []",
+        "dialog_confirm_in_form = false",
+    ],
+)
+def test_a_task_that_declares_any_control_setting_stays_strict(
+    raw: _Raw, _config_dir: Path, body: str
+) -> None:
+    _policy(_config_dir, body)
+
+    refused = _run("browser", "click", "expense-report", "Your products")
+
+    assert refused.exit_code == EXIT_OTHER, refused.output
+    assert _json(refused)["error"] == "submit_blocked"
+    assert raw.calls == []
 
 
 def test_click_with_nth_clicks_that_match_and_reports_it(raw: _Raw) -> None:
@@ -1302,10 +1356,10 @@ def test_frames_lists_the_child_frames_with_whether_the_task_allows_them(
     assert raw.closed == 1
 
 
-def test_frames_without_declared_hosts_marks_every_frame_not_allowed(raw: _Raw) -> None:
+def test_frames_without_declared_hosts_marks_every_frame_allowed(raw: _Raw) -> None:
     raw.child_frames = [_PANE]
     payload = _json(_run("browser", "frames", "expense-report"))
-    assert [frame["allowed"] for frame in payload["frames"]] == [False]
+    assert [frame["allowed"] for frame in payload["frames"]] == [True]
 
 
 def test_frames_human_output_names_each_frame(raw: _Raw, _config_dir: Path) -> None:
@@ -1336,12 +1390,23 @@ def test_read_frame_returns_that_frames_text_as_untrusted_data(
     assert ("frame-text", 1, True) in raw.calls
 
 
-def test_read_frame_needs_declared_hosts(raw: _Raw) -> None:
+def test_read_frame_without_declared_hosts_reads_any_frame(raw: _Raw) -> None:
     raw.child_frames = [_PANE]
     result = _run("browser", "read", "expense-report", "--frame", "1")
-    assert result.exit_code == EXIT_OTHER, result.output
-    assert _json(result)["error"] == "host_blocked"
-    assert not any(call[0] == "frame-text" for call in raw.calls)
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert any(call[0] == "frame-text" and call[2] is True for call in raw.calls)
+
+
+def test_read_frame_with_declared_hosts_still_refuses_another_host(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.child_frames = [_AD]
+    result = _run("browser", "read", "expense-report", "--frame", "1")
+    # The fake driver does not enforce the check; it records what the task's check answered.
+    assert [call for call in raw.calls if call[0] == "frame-text"] == [("frame-text", 1, False)], (
+        result.output
+    )
 
 
 def test_read_frame_zero_is_a_usage_error(raw: _Raw) -> None:
@@ -2032,12 +2097,11 @@ def test_host_without_a_frame_is_a_usage_error(raw: _Raw) -> None:
     assert raw.calls == []
 
 
-def test_a_frame_needs_declared_allowed_hosts(raw: _Raw) -> None:
+def test_a_frame_without_declared_hosts_accepts_any_frame_host(raw: _Raw) -> None:
     result = _run("browser", "fill", "expense-report", "Title", "x", "--frame", "1")
 
-    assert result.exit_code != EXIT_SUCCESS
-    assert "allowed_hosts" in result.output
-    assert raw.calls == []
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.targets[0].is_allowed("anything.example.net") is True
 
 
 def test_fill_in_a_frame_hands_the_driver_the_frame_and_a_host_check(
@@ -3432,6 +3496,16 @@ _GRID_SNAPSHOT = """\
     - gridcell "Beta":
       - textbox "Project": Beta
 """
+
+
+def test_grid_in_a_frame_without_declared_hosts_reads_it(raw: _Raw) -> None:
+    raw.child_frames = [_PANE]
+    raw.aria_text = _GRID_SNAPSHOT
+
+    result = _run("browser", "grid", "expense-report", "--frame", "1")
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert ("frame-aria", 1) in raw.calls
 
 
 def test_grid_lists_rows_with_the_nth_to_pass_and_never_a_value(raw: _Raw) -> None:
