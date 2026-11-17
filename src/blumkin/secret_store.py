@@ -89,7 +89,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
-from blumkin import keychain_unlock, keychain_vault
+from blumkin import keychain_agent, keychain_unlock, keychain_vault
 from blumkin.agent import client as agent_client
 from blumkin.config import BlumkinConfig
 from blumkin.output import emit_warning
@@ -312,6 +312,11 @@ def _delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
                     f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
                     f"in the background - wait a moment and retry"
                 ) from exc
+            elif isinstance(exc, keychain_agent.KeychainAgentError):
+                # A declined prompt or a keychain error from the agent is an answer, not an
+                # unreachable keychain: reporting a logout that left the credential behind
+                # would be wrong.
+                raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
             elif probed_existence is None and cfg.token_storage == "auto":
                 # Existence could not be confirmed (the same access failure that
                 # is now failing this delete attempt likely already failed the
@@ -628,13 +633,18 @@ def touch_keychain(cfg: BlumkinConfig) -> bool:
         json.dumps([resolved, cfg.profile, slot], separators=(",", ":"))
         for slot in ("google_client_secret", "ms_client_id")
     ]
-    for account in accounts:
-        _call_keyring_with_timeout(
-            keyring.get_password,
-            _KEYRING_SERVICE,
-            account,
-            timeout=_AUTHORIZE_TIMEOUT_SECONDS,
-        )
+    global _direct_budget_override_s
+    _direct_budget_override_s = _AUTHORIZE_TIMEOUT_SECONDS
+    try:
+        for account in accounts:
+            _call_keyring_with_timeout(
+                keyring.get_password,
+                _KEYRING_SERVICE,
+                account,
+                timeout=_AUTHORIZE_TIMEOUT_SECONDS,
+            )
+    finally:
+        _direct_budget_override_s = None
     return True
 
 
@@ -951,6 +961,11 @@ def _write_text_direct(cfg: BlumkinConfig, kind: SecretKind, text: str) -> None:
                 f"in the background - wait a moment and retry rather than switch profiles "
                 f"or log out, to avoid a stale write landing later"
             ) from exc
+        except keychain_agent.KeychainAgentError as exc:
+            # The agent refused or failed (a declined Touch ID prompt, a keychain error): the
+            # person said no, or the keychain said so. Writing the secret to a plaintext file
+            # instead would defeat that, and a stale keychain copy could then outlive it.
+            raise SecretWriteError(f"cannot write {kind}: {exc}") from exc
         except Exception as exc:
             if cfg.token_storage != "auto":
                 # The operator explicitly asked for "keyring" - surface the
@@ -1339,6 +1354,9 @@ _keyring_mod: Any | None = None
 _bundle_mutation_lock = threading.Lock()
 
 
+# Through the agent: a little longer than the agent client's own reply budget, so its error
+# surfaces first rather than this thread's timeout.
+_AGENT_IO_TIMEOUT_SECONDS = 130.0
 # A person is answering a dialog during `blumkin auth keychain`: wait for them, not 5 s.
 _AUTHORIZE_TIMEOUT_SECONDS = 180.0
 _KEYRING_IO_TIMEOUT_SECONDS = 5.0
@@ -1409,7 +1427,14 @@ def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = No
     invalidate moments later (issue #287 review, round 10).
     """
     if timeout is None:
-        timeout = _KEYRING_IO_TIMEOUT_SECONDS
+        # Through the agent a call may sit behind a Touch ID prompt a person is answering, and
+        # the agent client bounds that wait itself; cutting it at five seconds would abandon a
+        # request the agent is still serving (#773).
+        # The direct fallback inside such a call bounds its own keyring call with the short
+        # budget (`_bound_direct_keyring_call`), so a hung dialog never holds it for 130 s.
+        timeout = (
+            _AGENT_IO_TIMEOUT_SECONDS if keychain_agent.in_use() else _KEYRING_IO_TIMEOUT_SECONDS
+        )
     result: dict[str, Any] = {}
     # The lock acquisitions the caller holds right now, as tokens. When the caller releases one,
     # the vault drops it from the holder record, so an abandoned helper that outlives the caller
@@ -1450,6 +1475,19 @@ def _call_keyring_with_timeout(func: Any, *args: Any, timeout: float | None = No
     return result.get("value")
 
 
+# Set only while `touch_keychain` runs: the deliberate authorization waits for a person.
+_direct_budget_override_s: float | None = None
+
+
+def _bound_direct_keyring_call(func: Any, *args: Any) -> Any:
+    """A direct keyring call under the short budget, for the agent backend's fallback (#773).
+
+    ``touch_keychain`` raises it to its patient authorization budget for the length of that run.
+    """
+    budget = _direct_budget_override_s or _KEYRING_IO_TIMEOUT_SECONDS
+    return _call_keyring_with_timeout(func, *args, timeout=budget)
+
+
 def _keyring_module() -> Any | None:
     """Import ``keyring`` lazily; ``None`` when unavailable or unusable.
 
@@ -1482,10 +1520,19 @@ def _keyring_module() -> Any | None:
             _keyring_checked = True
             return None
         # On macOS every secret of a config dir shares one keychain item (issue #759).
-        _keyring_mod = (
-            keychain_vault.VaultKeyring(keyring, refuse_temporary=True)
-            if keychain_vault.vault_applies()
+        # With the agent as the keychain client (#773) the vault sits on top of a backend that
+        # asks the agent and only falls back to the direct keyring when there is no agent.
+        via_agent = keychain_agent.applies()
+        keychain_agent.mark_in_use(via_agent)
+        backend = (
+            keychain_agent.AgentKeyring(keyring, bound=_bound_direct_keyring_call)
+            if via_agent
             else keyring
+        )
+        _keyring_mod = (
+            keychain_vault.VaultKeyring(backend, refuse_temporary=True)
+            if keychain_vault.vault_applies()
+            else backend
         )
         _keyring_checked = True
         return _keyring_mod

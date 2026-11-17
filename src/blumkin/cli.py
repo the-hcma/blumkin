@@ -25,6 +25,7 @@ from click.shell_completion import get_completion_class
 from blumkin import (
     completion_values,
     help_text,
+    keychain_agent,
     keychain_gate,
     keychain_hygiene,
     keychain_unlock,
@@ -2230,6 +2231,14 @@ def auth_keychain(ctx: click.Context, as_json_flag: bool) -> None:
             [
                 "macOS will ask for your login keychain password (once per old item, on this run).",
                 "Choose Always Allow, not Allow, so it does not ask again.",
+                *(
+                    [
+                        "The keychain is reached through blumkin-agent: Touch ID or your device "
+                        "password may be asked for first, and macOS then names blumkin-agent."
+                    ]
+                    if keychain_agent.applies()
+                    else []
+                ),
             ]
         )
     seen: list[str] = []
@@ -2256,6 +2265,17 @@ def auth_keychain(ctx: click.Context, as_json_flag: bool) -> None:
                     "keychain backend): nothing was authorized"
                 ]
             )
+        return
+    if keychain_agent.in_use() and not keychain_agent.fell_back_ever():
+        # Only the agent was authorized (this process asked it, and it answered). The Python
+        # build is not, so no marker is written: a direct keychain call, were the agent ever out
+        # of reach, still needs `BLUMKIN_KEYCHAIN_VIA_AGENT=0 blumkin auth keychain` to authorize
+        # this build. When the agent could not be reached and this run asked the keychain itself,
+        # it falls through to the marker below: this Python build is what was authorized.
+        if as_json:
+            emit_json({"ok": True, "status": "authorized_via_agent", "profiles": seen})
+        else:
+            emit_lines([f"authorized through blumkin-agent for profiles: {', '.join(seen)}"])
         return
     path = keychain_gate.authorize()
     if as_json:
