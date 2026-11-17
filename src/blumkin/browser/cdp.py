@@ -1197,6 +1197,32 @@ class PlaywrightDriver:
             injection_warning=scan_for_injection(text, location="page.text").to_payload(),
         )
 
+    def clear_cache(self) -> None:
+        """Empty the browser's HTTP cache, keeping every cookie and sign-in (#768).
+
+        A stale cache (an old script bundle that no longer matches the page) looks like a blank
+        or half-loaded page; emptying it is the fix that does not sign anyone out. Nothing on
+        the page is read or touched.
+        """
+        self._require_open()
+        session = None
+        try:
+            # Playwright applies no timeout to a CDP send or detach, so both are bounded here.
+            with self._bounded(self._timeout_s, "clear the browser cache"):
+                session = self._page.context.new_cdp_session(self._page)
+                session.send("Network.clearBrowserCache")
+        except _playwright_error() as exc:
+            raise self._action_error("clear the browser cache", exc) from exc
+        finally:
+            # A connection that already stopped answering gets no second blocking call; an
+            # expired driver is closed without touching it (see `close`).
+            if session is not None and not self._expired:
+                try:
+                    with self._bounded(self._timeout_s, "detach the cache-clearing session"):
+                        session.detach()
+                except _playwright_error(), BrowserActionError:
+                    pass
+
     def clear_session(self) -> int:
         """Delete every cookie the browser holds, returning how many there were.
 

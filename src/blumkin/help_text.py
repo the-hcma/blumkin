@@ -374,6 +374,21 @@ ever signalled. With no browser running it says so and exits 0. A browser that d
 reported; `--force` kills it, and its profile may then need to recover.
 """
 
+BROWSER_CLEAR_CACHE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser clear-cache expense-report
+  blumkin browser clear-cache expense-report --json
+
+Empties the HTTP cache of the task's running browser and keeps every cookie and sign-in, so
+nobody is signed out. Use it when a page stays blank or shows `Loading chunk ... failed`: the
+browser may hold an old copy of a script that no longer matches the site. Nothing is read from
+or done to a page; afterwards reload it (`blumkin browser goto TASK`). `reset-session` is the
+command that signs the profile out. With the browser not running it fails and asks you to
+launch it first.
+"""
+
 BROWSER_RESET_SESSION_EPILOG = """
 Examples:
 

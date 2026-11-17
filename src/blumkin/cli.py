@@ -75,6 +75,7 @@ from blumkin.browser.actions import (
     UploadBlockedError,
     address_task,
     cell_task,
+    clear_cache_task,
     click_task,
     dialog_task,
     download_task,
@@ -3204,6 +3205,23 @@ def browser_close(
         return
     how = "killed" if payload["forced"] else "closed"
     emit_lines([f"{task}: browser {how} (profile kept; `browser launch {task}` opens it again)"])
+
+
+@browser.command("clear-cache", epilog=help_text.BROWSER_CLEAR_CACHE_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_clear_cache(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Empty TASK's browser cache without signing it out (a stale script can blank a page)."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        payload = clear_cache_task(load_browser_setup(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task)
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"{task}: browser cache cleared (sign-in kept); reload the page"])
 
 
 @browser.command("reset-session", epilog=help_text.BROWSER_RESET_SESSION_EPILOG)

@@ -4012,3 +4012,55 @@ def test_a_watch_keeps_the_newest_requests_within_its_cap() -> None:
     assert entries[0].url.endswith("/api/5") and entries[-1].url.endswith(
         f"/api/{_MAX_REQUESTS + 4}"
     )
+
+
+# ------------------------------------------------------------ clear_cache (#768)
+
+
+def test_clear_cache_sends_the_cdp_command_and_detaches_the_session() -> None:
+    pw, driver = _driver()
+    context = pw.browser.contexts[0]
+
+    driver.clear_cache()
+
+    assert [e for e in context.events if e.startswith("cdp:")] == [
+        "cdp:page:Network.clearBrowserCache",
+        "cdp:page:detach",
+    ]
+    assert context.routes == []  # nothing was intercepted or changed on the page
+
+
+def test_clear_cache_detaches_even_when_the_command_fails() -> None:
+    pw, driver = _driver()
+    context = pw.browser.contexts[0]
+    context.stop_errors["page"] = PlaywrightError("target closed")
+
+    with pytest.raises(BrowserActionError, match="clear the browser cache"):
+        driver.clear_cache()
+
+    assert "cdp:page:detach" in context.events
+
+
+def test_clear_cache_is_bounded_and_marks_the_driver_expired_when_the_send_stalls() -> None:
+    pw, driver = _driver(timeout_s=0.1)
+    context = pw.browser.contexts[0]
+    context.stalled.add("page")
+
+    with pytest.raises(BrowserActionError, match="clear the browser cache"):
+        driver.clear_cache()
+
+    assert "cdp:page:detach" not in context.events  # no second blocking call on a dead connection
+    driver.close()
+    assert pw.stopped == 0  # an expired driver is closed without tearing the connection down
+
+
+def test_clear_cache_marks_the_driver_expired_when_only_the_detach_stalls() -> None:
+    pw, driver = _driver(timeout_s=0.1)
+    context = pw.browser.contexts[0]
+    context.stalled_detach.add("page")
+
+    driver.clear_cache()  # the command worked; the stalled teardown was bounded
+
+    assert "cdp:page:Network.clearBrowserCache" in context.events
+    driver.close()
+    assert pw.stopped == 0
