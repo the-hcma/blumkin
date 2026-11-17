@@ -25,7 +25,10 @@ from typing import Any
 #: v2 (PR #346): `unlock` requests may carry a `ttl_seconds` override; a v1
 #: agent would silently ignore it and keep serving the default TTL, so the
 #: version is bumped to force a stale v1 agent to restart instead.
-PROTOCOL_VERSION = 2
+#: v3 (#773): the agent is blumkin's keychain client: `keychain_get`, `keychain_set` and
+#: `keychain_delete` (service `blumkin` only, behind a presence check). An older agent answers
+#: those with `unknown_command`, so the version is bumped to make it restart instead.
+PROTOCOL_VERSION = 3
 
 _ENCODING = "utf-8"
 #: Generous but bounded: every message here is a small control/status

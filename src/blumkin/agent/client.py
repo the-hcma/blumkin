@@ -175,12 +175,14 @@ def _can_connect(sock_path: str) -> bool:
 
 
 def _response_timeout_seconds(request: dict[str, Any]) -> float:
-    """The recv budget for `request`'s reply - `unlock` alone needs the
-    long, presence-check-sized budget; every other command answers almost
+    """The recv budget for `request`'s reply - `unlock` and the keychain commands, which may wait
+    on a presence check, need the long budget; every other command answers almost
     immediately and should keep the short default so a genuinely wedged
     agent is still detected quickly (see `AgentUnreachableError`'s docs).
     """
-    if request.get("cmd") == "unlock":
+    cmd = request.get("cmd")
+    if cmd == "unlock" or (isinstance(cmd, str) and cmd.startswith("keychain_")):
+        # A keychain request may sit behind a presence prompt (#773).
         return _UNLOCK_TIMEOUT_SECONDS
     return _SPAWN_TIMEOUT_SECONDS
 

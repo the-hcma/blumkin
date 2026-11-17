@@ -432,3 +432,72 @@ def test_wait_for_socket_ready_rejects_a_stale_socket_with_no_listener(
 
     with pytest.raises(agent_client.AgentUnavailableError, match="did not start listening"):
         agent_client._wait_for_socket_ready(sock_path)
+
+
+def test_keychain_requests_get_the_long_presence_sized_reply_budget() -> None:
+    from blumkin.agent import client
+
+    long_budget = client._response_timeout_seconds({"cmd": "unlock"})
+    for cmd in ("keychain_get", "keychain_set", "keychain_delete"):
+        assert client._response_timeout_seconds({"cmd": cmd}) == long_budget
+    assert client._response_timeout_seconds({"cmd": "ping"}) < long_budget
+
+
+def test_the_python_and_rust_protocol_versions_match() -> None:
+    """The bundled agent and this client must agree, or every call would restart the agent."""
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "rust-agent" / "src" / "protocol.rs"
+    ).read_text()
+    match = re.search(r"pub const PROTOCOL_VERSION: u64 = (\d+);", source)
+    assert match is not None
+    assert int(match.group(1)) == protocol.PROTOCOL_VERSION
+
+
+def test_a_keychain_request_waits_for_the_reply_with_the_long_budget(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_send` hands the presence-sized budget to the receive, not only to the helper."""
+    import os
+    import shutil
+    import socket
+    import tempfile
+    import threading
+
+    from blumkin.agent import client
+
+    # A Unix socket path is limited to about 100 characters, which pytest's tmp_path exceeds.
+    short_dir = tempfile.mkdtemp(prefix="bk", dir="/tmp")
+    sock_path = os.path.join(short_dir, "a.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+
+    real_recv = protocol.recv_message  # captured before the patch: the server must not be spied on
+
+    def serve() -> None:
+        conn, _ = server.accept()
+        real_recv(conn, timeout=5)
+        protocol.send_message(conn, {"ok": True, "found": False})
+        conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    seen: list[float | None] = []
+
+    def spy(sock, *, timeout=None):
+        seen.append(timeout)
+        return real_recv(sock, timeout=timeout)
+
+    monkeypatch.setattr(protocol, "recv_message", spy)
+    try:
+        reply = client._send(sock_path, {"cmd": "keychain_get", "service": "blumkin"})
+    finally:
+        thread.join(timeout=5)
+        server.close()
+        shutil.rmtree(short_dir, ignore_errors=True)
+
+    assert reply["ok"] is True
+    assert seen == [client._UNLOCK_TIMEOUT_SECONDS]  # only the client's receive, once

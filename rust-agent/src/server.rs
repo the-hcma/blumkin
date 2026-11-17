@@ -35,6 +35,7 @@ use std::{fs, process, thread};
 
 use serde_json::{json, Value};
 
+use crate::keychain::KeychainError;
 use crate::presence::PresenceError;
 use crate::protocol::{self, ProtocolError};
 use crate::secret_cache::SecretCache;
@@ -262,6 +263,9 @@ fn dispatch(request: &Value, shutdown_requested: &AtomicBool, cache: &SecretCach
     }
     match request.get("cmd").and_then(Value::as_str) {
         Some("get_secret") => handle_get_secret(request, cache),
+        Some("keychain_delete") => handle_keychain_delete(request, cache),
+        Some("keychain_get") => handle_keychain_get(request, cache),
+        Some("keychain_set") => handle_keychain_set(request, cache),
         Some("lock") => handle_lock(request, cache),
         Some("ping") => handle_ping(),
         Some("shutdown") => handle_shutdown(shutdown_requested),
@@ -381,6 +385,97 @@ fn handle_unlock(request: &Value, cache: &SecretCache) -> Value {
     }
 }
 
+/// The only keychain service the agent will touch: it is blumkin's own keychain client, not a
+/// general one for any local process that can reach its socket.
+const KEYCHAIN_SERVICE: &str = "blumkin";
+/// Bounds on what a keychain request may carry; a vault is a few KB to a few tens of KB.
+const MAX_KEYCHAIN_ACCOUNT_BYTES: usize = 2048;
+const MAX_KEYCHAIN_VALUE_BYTES: usize = 512_000;
+
+/// Validates a keychain request's `service` and `account`, and runs the presence gate (a recent
+/// check lets it through without a prompt). Returns the account, or the response to send back.
+fn keychain_request<'a>(request: &'a Value, cache: &SecretCache) -> Result<&'a str, Value> {
+    match request.get("service").and_then(Value::as_str) {
+        Some(KEYCHAIN_SERVICE) => {}
+        _ => {
+            return Err(invalid_request(&format!(
+                "service must be \"{KEYCHAIN_SERVICE}\": the agent serves no other keychain item"
+            )))
+        }
+    }
+    let account = non_empty_str_field(request, "account")?;
+    if account.len() > MAX_KEYCHAIN_ACCOUNT_BYTES {
+        return Err(invalid_request("account is too long"));
+    }
+    // The window is the agent's own policy at most: a client may ask for a shorter one, never a
+    // longer one, so no other process can stretch how long one Touch ID check is reused.
+    let window = optional_ttl_seconds_field(request)?.map_or(cache.default_window(), |asked| {
+        asked.min(cache.default_window())
+    });
+    let reason = request
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("use blumkin's secrets in the keychain");
+    cache
+        .ensure_recent_presence(reason, window)
+        .map_err(presence_error_response)?;
+    Ok(account)
+}
+
+fn keychain_error_response(err: KeychainError) -> Value {
+    json!({"ok": false, "error": "keychain_error", "message": err.to_string()})
+}
+
+fn handle_keychain_delete(request: &Value, cache: &SecretCache) -> Value {
+    let account = match keychain_request(request, cache) {
+        Ok(account) => account,
+        Err(response) => return response,
+    };
+    match cache.keychain().delete(KEYCHAIN_SERVICE, account) {
+        Ok(deleted) => json!({"ok": true, "deleted": deleted}),
+        Err(err) => keychain_error_response(err),
+    }
+}
+
+fn handle_keychain_get(request: &Value, cache: &SecretCache) -> Value {
+    let account = match keychain_request(request, cache) {
+        Ok(account) => account,
+        Err(response) => return response,
+    };
+    match cache.keychain().get(KEYCHAIN_SERVICE, account) {
+        Ok(Some(bytes)) => match String::from_utf8(bytes) {
+            Ok(value) => json!({"ok": true, "found": true, "value": value}),
+            Err(_) => json!({
+                "ok": false,
+                "error": "corrupt_secret",
+                "message": "the keychain item is not valid UTF-8 text",
+            }),
+        },
+        Ok(None) => json!({"ok": true, "found": false}),
+        Err(err) => keychain_error_response(err),
+    }
+}
+
+fn handle_keychain_set(request: &Value, cache: &SecretCache) -> Value {
+    let value = match request.get("value").and_then(Value::as_str) {
+        Some(value) if value.len() <= MAX_KEYCHAIN_VALUE_BYTES => value,
+        Some(_) => return invalid_request("value is too large"),
+        None => return invalid_request("keychain_set requires a \"value\" string"),
+    };
+    let account = match keychain_request(request, cache) {
+        Ok(account) => account,
+        Err(response) => return response,
+    };
+    match cache
+        .keychain()
+        .set(KEYCHAIN_SERVICE, account, value.as_bytes())
+    {
+        Ok(()) => json!({"ok": true}),
+        Err(err) => keychain_error_response(err),
+    }
+}
+
 fn invalid_request(message: &str) -> Value {
     json!({"ok": false, "error": "invalid_request", "message": message})
 }
@@ -389,6 +484,11 @@ fn invalid_request(message: &str) -> Value {
 /// response describing exactly what was missing/malformed.
 fn non_empty_str_field<'a>(request: &'a Value, field: &str) -> Result<&'a str, Value> {
     match request.get(field).and_then(Value::as_str) {
+        // A NUL is refused everywhere: the cache uses one in the key of the keychain's shared
+        // presence check, which a profile name must never be able to collide with.
+        Some(value) if value.contains('\0') => Err(invalid_request(&format!(
+            "{field} must not contain a NUL character"
+        ))),
         Some(value) if !value.is_empty() => Ok(value),
         _ => Err(invalid_request(&format!(
             "{field} must be present and a non-empty string"
@@ -909,5 +1009,285 @@ mod tests {
         assert!(matches!(result, Ok(Some(_))));
         fs::remove_file(&sock_path).ok();
         fs::remove_dir_all(&dir).ok();
+    }
+
+    // ------------------------------------------------------------ keychain commands (#773)
+
+    use crate::keychain::tests::FakeKeychain;
+    use std::sync::Arc;
+    use std::thread;
+
+    fn keychain_cache(
+        keychain: FakeKeychain,
+        presence: Arc<crate::presence::tests::FakePresenceVerifier>,
+    ) -> SecretCache {
+        SecretCache::with_verifier(Duration::from_secs(60), Box::new(presence))
+            .with_keychain(Box::new(keychain))
+    }
+
+    fn keychain_call(cache: &SecretCache, cmd: &str, extra: Value) -> Value {
+        let mut request = json!({"cmd": cmd, "protocol_version": protocol::PROTOCOL_VERSION});
+        for (key, value) in extra.as_object().unwrap() {
+            request[key] = value.clone();
+        }
+        dispatch(&request, &AtomicBool::new(false), cache)
+    }
+
+    #[test]
+    fn keychain_get_returns_the_value_after_a_presence_check() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(
+            FakeKeychain::with_item("blumkin", "acct", b"the vault"),
+            Arc::clone(&presence),
+        );
+
+        let response = keychain_call(
+            &cache,
+            "keychain_get",
+            json!({"service": "blumkin", "account": "acct", "reason": "read the vault"}),
+        );
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["found"], true);
+        assert_eq!(response["value"], "the vault");
+        assert_eq!(presence.reasons_seen(), vec!["read the vault".to_string()]);
+    }
+
+    #[test]
+    fn a_recent_presence_check_spares_the_next_keychain_request_a_prompt() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(FakeKeychain::default(), Arc::clone(&presence));
+
+        for account in ["a", "b", "c"] {
+            let response = keychain_call(
+                &cache,
+                "keychain_set",
+                json!({"service": "blumkin", "account": account, "value": "v"}),
+            );
+            assert_eq!(response["ok"], true);
+        }
+
+        assert_eq!(presence.reasons_seen().len(), 1);
+    }
+
+    #[test]
+    fn an_unlock_counts_as_a_recent_presence_check_for_the_keychain() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(
+            FakeKeychain::with_item("blumkin", "acct", b"v"),
+            Arc::clone(&presence),
+        );
+        cache
+            .unlock("work", "unlock", b"s3cr3t".to_vec(), None)
+            .unwrap();
+
+        let response = keychain_call(
+            &cache,
+            "keychain_get",
+            json!({"service": "blumkin", "account": "acct"}),
+        );
+
+        assert_eq!(response["found"], true);
+        assert_eq!(presence.reasons_seen().len(), 1);
+    }
+
+    #[test]
+    fn a_missing_keychain_item_is_not_an_error() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(FakeKeychain::default(), presence);
+
+        let response = keychain_call(
+            &cache,
+            "keychain_get",
+            json!({"service": "blumkin", "account": "nope"}),
+        );
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["found"], false);
+    }
+
+    #[test]
+    fn keychain_set_then_delete_round_trips() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let keychain = Arc::new(FakeKeychain::default());
+        let cache = SecretCache::with_verifier(Duration::from_secs(60), Box::new(presence))
+            .with_keychain(Box::new(Arc::clone(&keychain)));
+
+        let set = keychain_call(
+            &cache,
+            "keychain_set",
+            json!({"service": "blumkin", "account": "acct", "value": "v1"}),
+        );
+        assert_eq!(set["ok"], true);
+        assert_eq!(keychain.value("blumkin", "acct"), Some(b"v1".to_vec()));
+
+        let deleted = keychain_call(
+            &cache,
+            "keychain_delete",
+            json!({"service": "blumkin", "account": "acct"}),
+        );
+        assert_eq!(deleted["deleted"], true);
+        let again = keychain_call(
+            &cache,
+            "keychain_delete",
+            json!({"service": "blumkin", "account": "acct"}),
+        );
+        assert_eq!(again["deleted"], false);
+    }
+
+    #[test]
+    fn the_agent_serves_no_keychain_service_but_blumkins() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(
+            FakeKeychain::with_item("other-app", "acct", b"not yours"),
+            Arc::clone(&presence),
+        );
+
+        let response = keychain_call(
+            &cache,
+            "keychain_get",
+            json!({"service": "other-app", "account": "acct"}),
+        );
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "invalid_request");
+        assert!(
+            presence.reasons_seen().is_empty(),
+            "no prompt for a refused request"
+        );
+    }
+
+    #[test]
+    fn a_denied_presence_check_leaves_the_keychain_untouched() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Err(
+            PresenceError::Denied("no".to_string()),
+        )));
+        let keychain = Arc::new(FakeKeychain::default());
+        let cache = SecretCache::with_verifier(Duration::from_secs(60), Box::new(presence))
+            .with_keychain(Box::new(Arc::clone(&keychain)));
+
+        let response = keychain_call(
+            &cache,
+            "keychain_set",
+            json!({"service": "blumkin", "account": "acct", "value": "v"}),
+        );
+
+        assert_eq!(response["error"], "presence_denied");
+        assert_eq!(keychain.value("blumkin", "acct"), None);
+    }
+
+    #[test]
+    fn a_keychain_failure_is_reported_with_its_status() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(FakeKeychain::failing(-25293, "auth failed"), presence);
+
+        let response = keychain_call(
+            &cache,
+            "keychain_get",
+            json!({"service": "blumkin", "account": "acct"}),
+        );
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "keychain_error");
+        assert!(response["message"].as_str().unwrap().contains("-25293"));
+    }
+
+    #[test]
+    fn keychain_set_refuses_a_value_that_is_too_large_or_missing() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(FakeKeychain::default(), Arc::clone(&presence));
+
+        let huge = "x".repeat(MAX_KEYCHAIN_VALUE_BYTES + 1);
+        let too_big = keychain_call(
+            &cache,
+            "keychain_set",
+            json!({"service": "blumkin", "account": "acct", "value": huge}),
+        );
+        let missing = keychain_call(
+            &cache,
+            "keychain_set",
+            json!({"service": "blumkin", "account": "acct"}),
+        );
+
+        assert_eq!(too_big["error"], "invalid_request");
+        assert_eq!(missing["error"], "invalid_request");
+        assert!(presence.reasons_seen().is_empty());
+    }
+
+    #[test]
+    fn a_client_cannot_stretch_the_presence_window_beyond_the_agents_own() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache =
+            SecretCache::with_verifier(Duration::from_millis(40), Box::new(Arc::clone(&presence)))
+                .with_keychain(Box::new(FakeKeychain::default()));
+        let get = json!({"service": "blumkin", "account": "a", "ttl_seconds": u64::MAX});
+
+        keychain_call(&cache, "keychain_get", get.clone());
+        thread::sleep(Duration::from_millis(80));
+        keychain_call(&cache, "keychain_get", get);
+
+        assert_eq!(
+            presence.reasons_seen().len(),
+            2,
+            "the old check must have expired"
+        );
+    }
+
+    #[test]
+    fn a_lock_ends_prompt_free_keychain_access() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(FakeKeychain::default(), Arc::clone(&presence));
+        let get = json!({"service": "blumkin", "account": "a"});
+
+        keychain_call(&cache, "keychain_get", get.clone());
+        keychain_call(&cache, "keychain_get", get.clone());
+        assert_eq!(presence.reasons_seen().len(), 1);
+
+        let locked = dispatch(
+            &json!({"cmd": "lock", "protocol_version": protocol::PROTOCOL_VERSION}),
+            &AtomicBool::new(false),
+            &cache,
+        );
+        assert_eq!(locked["ok"], true);
+        keychain_call(&cache, "keychain_get", get);
+
+        assert_eq!(
+            presence.reasons_seen().len(),
+            2,
+            "a lock must revoke the earlier check"
+        );
+    }
+
+    #[test]
+    fn a_profile_lock_also_ends_prompt_free_keychain_access() {
+        let presence = Arc::new(crate::presence::tests::FakePresenceVerifier::always(Ok(())));
+        let cache = keychain_cache(FakeKeychain::default(), Arc::clone(&presence));
+        let get = json!({"service": "blumkin", "account": "a"});
+
+        keychain_call(&cache, "keychain_get", get.clone());
+        cache.lock("work");
+        keychain_call(&cache, "keychain_get", get);
+
+        assert_eq!(presence.reasons_seen().len(), 2);
+    }
+
+    #[test]
+    fn a_profile_name_cannot_borrow_the_keychains_presence_slot() {
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(crate::presence::tests::FakePresenceVerifier::always(Ok(()))),
+        );
+        let response = dispatch(
+            &json!({
+                "cmd": "unlock",
+                "protocol_version": protocol::PROTOCOL_VERSION,
+                "profile": "\u{0}keychain",
+                "reason": "unlock",
+                "secret": "s",
+            }),
+            &AtomicBool::new(false),
+            &cache,
+        );
+        assert_eq!(response["error"], "invalid_request");
     }
 }
