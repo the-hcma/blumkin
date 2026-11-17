@@ -26,9 +26,11 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::keychain::{KeychainBackend, SystemKeychain};
 use crate::presence::{PresenceError, PresenceVerifier, SystemPresenceVerifier};
 
 /// Secret bytes held only for as long as they are cached, `mlock(2)`ed
@@ -191,8 +193,8 @@ struct PresenceCheckShare {
 /// enough (something *did* go wrong) without over-claiming a specific
 /// cause for a check that never got to finish.
 struct LeaderCleanup<'a> {
-    inflight: &'a Mutex<HashMap<String, Arc<PresenceCheckShare>>>,
-    profile: &'a str,
+    inflight: &'a Mutex<HashMap<(String, u64), Arc<PresenceCheckShare>>>,
+    key: (String, u64),
     share: Arc<PresenceCheckShare>,
     result: Option<Result<(), PresenceError>>,
 }
@@ -202,9 +204,14 @@ impl Drop for LeaderCleanup<'_> {
         let result = self.result.take().unwrap_or(Err(PresenceError::Busy));
         *self.share.result.lock().unwrap() = Some(result);
         self.share.done.notify_all();
-        self.inflight.lock().unwrap().remove(self.profile);
+        self.inflight.lock().unwrap().remove(&self.key);
     }
 }
+
+/// The key under which a keychain request's presence check is shared, so concurrent requests
+/// make one prompt. It cannot collide with a profile name: the server refuses a NUL in any
+/// string field of a request (`non_empty_str_field`).
+const KEYCHAIN_PRESENCE_KEY: &str = "\0keychain";
 
 /// A presence-gated, TTL-bounded, per-profile secret cache.
 pub struct SecretCache {
@@ -218,7 +225,7 @@ pub struct SecretCache {
     // a redundant `evaluatePolicy` of its own, which macOS would cancel
     // the first prompt for (issue #343). A profile's entry is removed as
     // soon as its one real check finishes.
-    presence_inflight: Mutex<HashMap<String, Arc<PresenceCheckShare>>>,
+    presence_inflight: Mutex<HashMap<(String, u64), Arc<PresenceCheckShare>>>,
     // Held (via `try_lock`, never a blocking `lock`) for the duration of
     // the *one* leader's real `verify` call, across all profiles: two
     // genuinely different profiles unlocked at the same moment would
@@ -228,6 +235,14 @@ pub struct SecretCache {
     // `verify_presence_once`'s docs for why waiting is never bounded
     // safely here).
     presence_lock: Mutex<()>,
+    // When a presence check last succeeded, for any reason. A keychain request is allowed
+    // without a new prompt while this is within its window (issue #773).
+    last_presence: Mutex<Option<Instant>>,
+    // Bumped by every lock. A presence check that started before a lock must not record itself
+    // afterwards, or it would restore the prompt-free access the lock just ended.
+    presence_epoch: Arc<AtomicU64>,
+    // The agent's own access to the keychain. Only `server.rs` decides what may be asked of it.
+    keychain: Box<dyn KeychainBackend>,
 }
 
 impl SecretCache {
@@ -244,7 +259,48 @@ impl SecretCache {
             generations: Mutex::new(CacheGenerations::new()),
             presence_inflight: Mutex::new(HashMap::new()),
             presence_lock: Mutex::new(()),
+            last_presence: Mutex::new(None),
+            presence_epoch: Arc::new(AtomicU64::new(0)),
+            keychain: Box::new(SystemKeychain),
         }
+    }
+
+    /// Replaces the keychain this cache hands out (tests use an in-memory one).
+    #[cfg(test)]
+    pub fn with_keychain(mut self, keychain: Box<dyn KeychainBackend>) -> Self {
+        self.keychain = keychain;
+        self
+    }
+
+    /// How long a successful presence check keeps a keychain request prompt-free by default.
+    pub fn default_window(&self) -> Duration {
+        self.default_ttl
+    }
+
+    /// The agent's keychain access.
+    pub fn keychain(&self) -> &dyn KeychainBackend {
+        self.keychain.as_ref()
+    }
+
+    /// Lets a keychain request through when a presence check succeeded within `window`, and
+    /// otherwise runs one (the OS prompt shows `reason`). Concurrent callers share one prompt.
+    pub fn ensure_recent_presence(
+        &self,
+        reason: &str,
+        window: Duration,
+    ) -> Result<(), PresenceError> {
+        if let Some(at) = *self.last_presence.lock().unwrap() {
+            if at.elapsed() <= window {
+                return Ok(());
+            }
+        }
+        self.verify_presence_once(KEYCHAIN_PRESENCE_KEY, reason)
+    }
+
+    /// Forgets that presence was ever verified, so the next keychain request prompts again.
+    fn forget_presence(&self) {
+        self.presence_epoch.fetch_add(1, Ordering::SeqCst);
+        *self.last_presence.lock().unwrap() = None;
     }
 
     /// Runs the presence check (`reason` is shown to the user) and, only on
@@ -361,6 +417,8 @@ impl SecretCache {
         let mut generations = self.generations.lock().unwrap();
         generations.begin(profile);
         self.entries.lock().unwrap().remove(profile);
+        // An explicit lock also ends prompt-free keychain access.
+        self.forget_presence();
     }
 
     /// Wipes every cached secret - backs the daemon-wide `lock` command.
@@ -372,6 +430,7 @@ impl SecretCache {
         let mut generations = self.generations.lock().unwrap();
         generations.invalidate_all();
         self.entries.lock().unwrap().clear();
+        self.forget_presence();
     }
 
     /// Whether `profile` currently has *any* cached entry, expired or not -
@@ -402,16 +461,20 @@ impl SecretCache {
     /// enforces cross-profile is "at most one real prompt at a time",
     /// never "wait your turn".
     fn verify_presence_once(&self, profile: &str, reason: &str) -> Result<(), PresenceError> {
+        // A check is shared only within one epoch: a request that starts after a lock must not
+        // ride on a check that began before it, or it would inherit access the lock ended.
+        let epoch = self.presence_epoch.load(Ordering::SeqCst);
+        let key = (profile.to_string(), epoch);
         let share = {
             let mut inflight = self.presence_inflight.lock().unwrap();
-            if let Some(existing) = inflight.get(profile) {
+            if let Some(existing) = inflight.get(&key) {
                 (Arc::clone(existing), false)
             } else {
                 let share = Arc::new(PresenceCheckShare {
                     result: Mutex::new(None),
                     done: Condvar::new(),
                 });
-                inflight.insert(profile.to_string(), Arc::clone(&share));
+                inflight.insert(key.clone(), Arc::clone(&share));
                 (share, true)
             }
         };
@@ -430,7 +493,7 @@ impl SecretCache {
         // returns normally or panics - see [`LeaderCleanup`]'s docs.
         let mut cleanup = LeaderCleanup {
             inflight: &self.presence_inflight,
-            profile,
+            key,
             share: Arc::clone(&share),
             result: None,
         };
@@ -455,6 +518,16 @@ impl SecretCache {
                 self.verifier.verify(reason)
             }
         };
+        // The time of the check itself, taken by the one caller that ran it (a caller that
+        // shared the result would otherwise stamp a later moment).
+        if result.is_ok() {
+            let mut last = self.last_presence.lock().unwrap();
+            // Under the same lock `forget_presence` clears it with, so a lock cannot slip in
+            // between this check and the write.
+            if self.presence_epoch.load(Ordering::SeqCst) == epoch {
+                *last = Some(Instant::now());
+            }
+        }
         cleanup.result = Some(result.clone());
         result
     }
@@ -1023,5 +1096,71 @@ mod tests {
             .unwrap();
 
         assert_eq!(cache.get("work").as_deref(), Some(b"s3cr3t".as_slice()));
+    }
+
+    #[test]
+    fn a_presence_check_that_a_lock_overtook_does_not_restore_prompt_free_access() {
+        use crate::presence::PresenceVerifier;
+
+        // A verifier that bumps the epoch (as a `lock` does) while its check is still running.
+        struct LockedDuringCheck(Arc<AtomicU64>);
+        impl PresenceVerifier for LockedDuringCheck {
+            fn verify(&self, _reason: &str) -> Result<(), PresenceError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let cache = SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(FakePresenceVerifier::always(Ok(()))),
+        );
+        let epoch = Arc::clone(&cache.presence_epoch);
+        let cache = SecretCache {
+            verifier: Box::new(LockedDuringCheck(epoch)),
+            ..cache
+        };
+
+        cache
+            .ensure_recent_presence("read", Duration::from_secs(60))
+            .unwrap();
+
+        assert!(
+            cache.last_presence.lock().unwrap().is_none(),
+            "a check overtaken by a lock must not record itself"
+        );
+    }
+
+    #[test]
+    fn a_request_after_a_lock_does_not_join_a_check_that_began_before_it() {
+        use crate::presence::tests::GatedPresenceVerifier;
+        use std::sync::Arc;
+
+        let (verifier, release) = GatedPresenceVerifier::new();
+        let cache = Arc::new(SecretCache::with_verifier(
+            Duration::from_secs(60),
+            Box::new(verifier),
+        ));
+
+        // A starts a keychain presence check and waits on the prompt.
+        let a = {
+            let cache = Arc::clone(&cache);
+            thread::spawn(move || cache.ensure_recent_presence("read", Duration::from_secs(60)))
+        };
+        // Wait until A is the in-flight leader.
+        while cache.presence_inflight.lock().unwrap().is_empty() {
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        cache.lock_all();
+
+        // B starts after the lock: it must not be handed A's result.
+        let b = cache.ensure_recent_presence("read", Duration::from_secs(60));
+        release.send(()).unwrap();
+        a.join().unwrap().unwrap();
+
+        assert!(
+            matches!(b, Err(PresenceError::Busy)),
+            "B must run its own check (here refused as busy while A holds the prompt), got {b:?}"
+        );
     }
 }

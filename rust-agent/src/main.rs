@@ -4,6 +4,7 @@ fn main() {
     server::run();
 }
 
+mod keychain;
 mod paths;
 mod presence;
 mod protocol;

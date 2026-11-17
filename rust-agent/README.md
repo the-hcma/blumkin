@@ -26,6 +26,10 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
 Without `rustup` (e.g. a bare `brew install rust`), `hatch_build.py` falls back to a native-arch-only build for local development and prints a warning; the release workflow's macOS leg (`.github/workflows/release-please.yml`, `build-dists`'s `macos-latest` matrix entry - lands alongside this foundation layer in issue #328's stacked PRs, not in this crate's own diff) installs both targets via `dtolnay/rust-toolchain`, so the actual published wheel gets a true universal2 binary.
 
+## Keychain access (issue #773)
+
+The agent is blumkin's keychain client. Besides the secret cache, protocol version 3 adds `keychain_get`, `keychain_set` and `keychain_delete`, which read, write and delete a generic-password item through Security.framework (the `security-framework` crate, macOS only; elsewhere there is no presence check to pass, so a request answers `presence_unsupported` before the keychain is reached). Only the service `blumkin` is served, so the agent is not a keychain proxy for other applications, and every request first needs a presence check: one that succeeded within the reverify window (the request's `ttl_seconds`, which may only shorten the cache TTL) lets it through without a prompt, otherwise Touch ID or the device password is asked for. A `lock` (one profile or all) ends the window. A keychain item's access list names binaries, so with the agent as the only client the identity macOS sees changes when blumkin is upgraded, not with every Python build.
+
 ## Protocol parity
 
 There is no shared code between this crate and `blumkin.agent.protocol`/`paths.py` - both independently implement the same newline-delimited JSON framing and `BLUMKIN_AGENT_RUNTIME_DIR`-aware socket path resolution. Changing the wire format (`PROTOCOL_VERSION`) or the runtime-directory layout requires updating both sides.
