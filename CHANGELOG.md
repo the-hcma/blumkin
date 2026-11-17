@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.15.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.14.0...blumkin-v1.15.0) (2026-11-17)
+
+
+### Features
+
+* **agent:** keychain_get, keychain_set and keychain_delete, so the agent can be blumkin's keychain client ([#773](https://github.com/the-hcma/blumkin/issues/773)) ([#776](https://github.com/the-hcma/blumkin/issues/776)) ([05b74dc](https://github.com/the-hcma/blumkin/commit/05b74dce9ad5fd570b9d1476584325da0fd73095))
+* **browser:** a task needs no allowed_hosts to read frames, fill in … ([#770](https://github.com/the-hcma/blumkin/issues/770)) ([f94b5bd](https://github.com/the-hcma/blumkin/commit/f94b5bd793a6674dea037c881bdd67b2c1002ff4))
+* **browser:** clear-cache keeps the sign-in, and read hints at faile… ([#774](https://github.com/the-hcma/blumkin/issues/774)) ([acd912a](https://github.com/the-hcma/blumkin/commit/acd912ad7506b964dc0d5334ee73ff465c918586))
+* **calendar:** an attendee can remove a cancelled invitation with ca… ([#765](https://github.com/the-hcma/blumkin/issues/765)) ([5c9f4b7](https://github.com/the-hcma/blumkin/commit/5c9f4b7c259fce0e44dcbaa10593fc945350c589))
+* **keychain:** authorize the keychain once from a terminal, and refuse background processes instead of raising a dialog ([#759](https://github.com/the-hcma/blumkin/issues/759)) ([#769](https://github.com/the-hcma/blumkin/issues/769)) ([353f8ca](https://github.com/the-hcma/blumkin/commit/353f8caa736be0577c71c5edc1b6f6f4151c68d9))
+* **keychain:** list and remove stale keychain items, and keep tempor… ([#772](https://github.com/the-hcma/blumkin/issues/772)) ([4bcc252](https://github.com/the-hcma/blumkin/commit/4bcc2521acfb981eb61fcbef6b4fbe2e2ecdb01e))
+* **keychain:** one keychain item per config directory on macOS, with migration and a cross-process write lock ([#759](https://github.com/the-hcma/blumkin/issues/759)) ([#767](https://github.com/the-hcma/blumkin/issues/767)) ([dcd5116](https://github.com/the-hcma/blumkin/commit/dcd51163c0b8ff623cdd828a307e14722d5217df))
+* **keychain:** the vault reaches the keychain through blumkin-agent … ([#777](https://github.com/the-hcma/blumkin/issues/777)) ([bd096e4](https://github.com/the-hcma/blumkin/commit/bd096e4bf56af33bacd21897e0e5d618fd1cf0cc))
+
+
+### Bug Fixes
+
+* **auth:** a keychain timeout saving a refreshed token warns instead … ([#771](https://github.com/the-hcma/blumkin/issues/771)) ([154a95a](https://github.com/the-hcma/blumkin/commit/154a95a1c270216e3916037126afb7276434a04e))
+* **calendar:** accept, decline and tentative refuse a cancelled meeting with a clear event_cancelled error ([#764](https://github.com/the-hcma/blumkin/issues/764)) ([a7b039e](https://github.com/the-hcma/blumkin/commit/a7b039e3a709facbca72c743af97c53dae1b9633))
+
+
+### Documentation
+
+* bring the guides, skills and release docs in line with the code before the 1.14.0 publish ([#752](https://github.com/the-hcma/blumkin/issues/752)) ([e711b50](https://github.com/the-hcma/blumkin/commit/e711b505252a9648258b6865515bf6adc97218b5))
+
 ## [1.14.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.13.0...blumkin-v1.14.0) (2026-11-14)
 
 
