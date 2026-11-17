@@ -26,6 +26,15 @@ class AgentUnavailableError(Exception):
     """The agent could not be reached or spawned."""
 
 
+class AgentReplyLostError(AgentUnavailableError):
+    """A keychain request was sent and no usable reply came back.
+
+    Distinct from "no agent": the agent may have handled the request (a write may have landed),
+    so the request is neither replayed nor answered by asking the keychain another way. Its
+    own type, not an ``AgentUnreachableError``, only so callers can tell the two apart.
+    """
+
+
 class AgentUnreachableError(AgentUnavailableError):
     """A process answered the connect but did not reply in time.
 
@@ -198,9 +207,20 @@ def _send(sock_path: str, request: dict[str, Any]) -> dict[str, Any]:
         # `_response_timeout_seconds`'s docs).
         connection.settimeout(_SPAWN_TIMEOUT_SECONDS)
         connection.connect(sock_path)
-        protocol.send_message(connection, request)
-        connection.settimeout(_response_timeout_seconds(request))
-        return protocol.recv_message(connection, timeout=_response_timeout_seconds(request))
+        try:
+            protocol.send_message(connection, request)
+            connection.settimeout(_response_timeout_seconds(request))
+            return protocol.recv_message(connection, timeout=_response_timeout_seconds(request))
+        except TimeoutError:
+            raise
+        except (OSError, protocol.ProtocolError) as exc:
+            # Connected, so the request may have been dispatched: a keychain request is never
+            # replayed against a freshly spawned agent, and the caller must not assume it failed.
+            if str(request.get("cmd", "")).startswith("keychain_"):
+                raise AgentReplyLostError(
+                    f"the agent did not reply to {request.get('cmd')}: {exc}"
+                ) from exc
+            raise
     finally:
         connection.close()
 

@@ -501,3 +501,61 @@ def test_a_keychain_request_waits_for_the_reply_with_the_long_budget(
 
     assert reply["ok"] is True
     assert seen == [client._UNLOCK_TIMEOUT_SECONDS]  # only the client's receive, once
+
+
+def _serve_and_hang_up(sock_dir: str, replies: list[bytes]):
+    """A one-shot agent that reads the request and then closes without a usable reply."""
+    import os
+    import socket
+    import threading
+
+    path = os.path.join(sock_dir, "a.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+    real_recv = protocol.recv_message
+
+    def serve() -> None:
+        conn, _ = server.accept()
+        real_recv(conn, timeout=5)
+        for reply in replies:
+            conn.sendall(reply)
+        conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    return path, server, thread
+
+
+def test_a_keychain_request_that_lost_its_reply_is_not_replayed_or_reported_as_no_agent() -> None:
+    import shutil
+    import tempfile
+
+    from blumkin.agent import client
+
+    sock_dir = tempfile.mkdtemp(prefix="bk", dir="/tmp")
+    path, server, thread = _serve_and_hang_up(sock_dir, [])
+    try:
+        with pytest.raises(client.AgentReplyLostError, match="keychain_set"):
+            client._send(path, {"cmd": "keychain_set", "service": "blumkin", "account": "a"})
+    finally:
+        thread.join(timeout=5)
+        server.close()
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+def test_other_commands_keep_the_plain_error_when_the_reply_is_lost() -> None:
+    import shutil
+    import tempfile
+
+    from blumkin.agent import client
+
+    sock_dir = tempfile.mkdtemp(prefix="bk", dir="/tmp")
+    path, server, thread = _serve_and_hang_up(sock_dir, [])
+    try:
+        with pytest.raises(protocol.ProtocolError):
+            client._send(path, {"cmd": "ping"})
+    finally:
+        thread.join(timeout=5)
+        server.close()
+        shutil.rmtree(sock_dir, ignore_errors=True)

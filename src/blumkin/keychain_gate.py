@@ -26,7 +26,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from blumkin import keychain_unlock
+from blumkin import keychain_agent, keychain_unlock
 from blumkin.config import config_dir
 
 AUTHORIZE_COMMAND = "blumkin auth keychain"
@@ -89,10 +89,17 @@ def marker_path() -> Path:
     return config_dir() / MARKER_NAME
 
 
-def require() -> None:
-    """Let a keychain call through, or raise ``KeychainNotAuthorizedError`` without touching it."""
+def require(*, direct: bool = False) -> None:
+    """Let a keychain call through, or raise ``KeychainNotAuthorizedError`` without touching it.
+
+    With the agent as the keychain client (#773) this process asks the agent and holds no
+    keychain access of its own, so there is nothing to authorize here; ``direct`` is for the
+    fallback that does touch the keychain itself because the agent cannot be reached.
+    """
     global _noticed
     if sys.platform != "darwin" or _switched_off():
+        return
+    if not direct and keychain_agent.in_use():
         return
     if is_authorized():
         # Authorized meanwhile (another terminal ran the command): forget an earlier refusal.
@@ -118,9 +125,16 @@ def require() -> None:
 
 
 def state() -> str:
-    """``authorized`` | ``needs_authorization`` | ``not_applicable`` (for ``doctor``)."""
+    """``authorized`` | ``needs_authorization`` | ``via_agent`` | ``not_applicable`` (``doctor``).
+
+    ``via_agent`` is what is configured (the agent is built and not switched off): keychain access
+    then goes through the agent, and falls back to the gated direct keyring only when the agent
+    cannot be started.
+    """
     if sys.platform != "darwin" or _switched_off():
         return "not_applicable"
+    if keychain_agent.applies():
+        return "via_agent"
     return "authorized" if is_authorized() else "needs_authorization"
 
 

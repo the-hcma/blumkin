@@ -31,6 +31,9 @@ def _force_file_secret_backend(
     # The macOS keychain-authorization gate (#759) is about a person at a terminal; a test
     # run has none and must not depend on a marker in the developer's real config dir.
     monkeypatch.setenv("BLUMKIN_KEYCHAIN_GATE", "off")
+    # The keychain is reached through the agent by default on macOS (#773); tests that mean it
+    # set this back themselves.
+    monkeypatch.setenv("BLUMKIN_KEYCHAIN_VIA_AGENT", "0")
     # Listing stale keychain items runs `security dump-keychain` on the real login keychain.
     from blumkin import keychain_hygiene
 
