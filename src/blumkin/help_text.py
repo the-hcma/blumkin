@@ -136,19 +136,6 @@ so it is the safe choice inside agent sessions. Exit 3 (auth_required) means the
 refresh token is gone or revoked - run `auth login` on a TTY.
 """
 
-AUTH_KEYCHAIN_PRUNE_EPILOG = """
-Example:
-
-\b
-  blumkin auth keychain-prune
-  blumkin auth keychain-prune --yes
-
-Lists the macOS keychain items blumkin no longer uses: the old `profile:kind` naming, and items
-written under a temporary config directory (test and scratch runs). Each one is an
-access prompt waiting to happen. Only item names are read, never a secret value. With --yes it
-removes them, from a terminal in a GUI login session. `blumkin doctor` shows how many there are.
-"""
-
 AUTH_KEYCHAIN_EPILOG = """
 Example:
 
@@ -156,9 +143,8 @@ Example:
   blumkin auth keychain
 
 Authorizes this Python build to use the macOS keychain, once, while you are at a
-terminal. macOS asks for your login keychain password; choose Always Allow. It also
-copies the per-secret items the previous version wrote into the one shared keychain
-item. Until it has run, a process with no terminal (an MCP server, an agent or cron
+terminal. macOS asks for your login keychain password; choose Always Allow. Until it has
+run, a process with no terminal (an MCP server, an agent or cron
 run) is refused the keychain at once with this command in the error, instead of
 raising a dialog nobody answers. A Homebrew Python update is a new binary, so run it
 again after one. From an agent session run it with `! blumkin auth keychain`.

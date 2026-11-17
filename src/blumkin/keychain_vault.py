@@ -9,14 +9,12 @@ object mapping the old per-secret account name to its text. ``secret_store`` and
 ``app_secrets`` keep calling ``get_password`` / ``set_password`` / ``delete_password`` with the
 account names they always used; nothing above this layer knows the storage changed.
 
-- **Migration.** The first time an account is missing from the vault, the old standalone item
-  is read once, copied in and removed. The accounts already checked are recorded in the vault
-  (``_legacy_checked``) so a secret that never existed under the old layout is never probed
-  again, which is what keeps a miss from raising a dialog. Deleting the last secret removes
-  the item with its markers, so an uninstall leaves nothing behind; the next miss then probes
-  the old standalone item once more, which finds nothing and raises no dialog.
+- **Nothing from an older layout is read.** There is no migration of per-secret items written
+  by earlier versions: an account that is not in the vault is simply absent, so a miss never
+  touches the keychain a second time. Deleting the last secret removes the item, so an
+  uninstall leaves nothing behind.
 - **Cross-process writes.** One item shared by unrelated writers turns a write into
-  read-modify-write, so every write (and every miss that migrates) runs under an exclusive
+  read-modify-write, so every write runs under an exclusive
   ``flock`` on ``<config dir>/.keychain.lock``. A second process waits and then re-reads, so
   it neither drops the first one's change nor stacks a second keychain request.
 - **At most one read per run.** The parsed item is cached in memory for a few seconds, so a
@@ -47,7 +45,6 @@ except ImportError:  # pragma: no cover - exercised on Windows only
     fcntl = None  # type: ignore[assignment]
 
 _CACHE_TTL_SECONDS = 5.0
-_LEGACY_CHECKED_KEY = "_legacy_checked"
 _LOCK_FILENAME = ".keychain.lock"
 _LOCK_POLL_SECONDS = 0.05
 _LOCK_TIMEOUT_SECONDS = 30.0
@@ -86,7 +83,6 @@ class VaultKeyring:
             if account in vault:
                 del vault[account]
                 found = True
-            found = self._drop_legacy(service, account, strict=True) or found
             self._store(service, directory, vault)
         if not found:
             self._raise_not_found(service, account)
@@ -98,11 +94,7 @@ class VaultKeyring:
         self._guard(directory)
         vault = self._load(service, directory)
         value = vault.get(account)
-        if isinstance(value, str):
-            return value
-        if account in _checked(vault):
-            return None
-        return self._migrate(service, directory, account)
+        return value if isinstance(value, str) else None
 
     def set_password(self, service: str, account: str, password: str) -> None:
         directory = _config_dir_of(account)
@@ -112,29 +104,8 @@ class VaultKeyring:
         self._guard(directory)
         with _locked(directory, service):
             vault = self._load(service, directory, fresh=True)
-            had_legacy_check = account in _checked(vault)
             vault[account] = password
-            _mark_checked(vault, account)
             self._store(service, directory, vault)
-            if not had_legacy_check:
-                self._drop_legacy(service, account)
-
-    def _drop_legacy(self, service: str, account: str, *, strict: bool = False) -> bool:
-        """Remove the old standalone item for ``account``; True when one was there.
-
-        ``strict`` (an explicit delete) propagates a failure: a logout must not report success
-        while the old copy of a credential is still in the keychain. After a write or a
-        migration the vault copy is authoritative, so a failed cleanup is only a leftover.
-        """
-        try:
-            if self._backend.get_password(service, account) is None:
-                return False
-            self._backend.delete_password(service, account)
-        except Exception:  # noqa: BLE001
-            if strict:
-                raise
-            return False
-        return True
 
     def refuses(self, directory: str) -> bool:
         """True when this facade would refuse ``directory`` the real keychain (temp dir, test)."""
@@ -165,43 +136,14 @@ class VaultKeyring:
                 _cache[vault_account] = (time.monotonic(), dict(vault))
         return vault
 
-    def _migrate(self, service: str, directory: str, account: str) -> str | None:
-        """Copy the old standalone item for ``account`` into the vault, once, and remove it."""
-        with _locked(directory, service):
-            # Another process may have migrated or written it while this one waited.
-            vault = self._load(service, directory, fresh=True)
-            value = vault.get(account)
-            if isinstance(value, str):
-                return value
-            if account in _checked(vault):
-                return None
-            legacy = self._backend.get_password(service, account)
-            _mark_checked(vault, account)
-            if isinstance(legacy, str):
-                vault[account] = legacy
-            self._store(service, directory, vault, keep_bookkeeping=True)
-            if isinstance(legacy, str):
-                self._drop_legacy(service, account)
-            return legacy if isinstance(legacy, str) else None
-
     def _raise_not_found(self, service: str, account: str) -> None:
         """Raise the backend's own "nothing to delete" error, as a plain ``delete`` would."""
         self._backend.delete_password(service, account)
 
-    def _store(
-        self,
-        service: str,
-        directory: str,
-        vault: dict[str, Any],
-        *,
-        keep_bookkeeping: bool = False,
-    ) -> None:
+    def _store(self, service: str, directory: str, vault: dict[str, Any]) -> None:
         vault_account = _vault_account(directory)
-        has_secret = any(isinstance(v, str) for k, v in vault.items() if k != _LEGACY_CHECKED_KEY)
-        # Bookkeeping alone is worth an item only right after a miss, so "this account was
-        # never in the old layout" survives the process; once the last secret is deleted
-        # the item goes, so an uninstall leaves nothing behind.
-        if not has_secret and not (keep_bookkeeping and _checked(vault)):
+        # Once the last secret is deleted the item goes, so an uninstall leaves nothing behind.
+        if not any(isinstance(v, str) for v in vault.values()):
             if self._backend.get_password(service, vault_account) is not None:
                 self._backend.delete_password(service, vault_account)
             with _cache_lock:
@@ -268,11 +210,6 @@ def _acquire(handle: Any) -> None:
                     f"{_LOCK_TIMEOUT_SECONDS:.0f}s; try again in a moment"
                 ) from None
             time.sleep(_LOCK_POLL_SECONDS)
-
-
-def _checked(vault: dict[str, Any]) -> set[str]:
-    raw = vault.get(_LEGACY_CHECKED_KEY)
-    return {a for a in raw if isinstance(a, str)} if isinstance(raw, list) else set()
 
 
 def _config_dir_of(account: str) -> str | None:
@@ -351,12 +288,6 @@ def _locked(directory: str, service: str) -> Iterator[None]:
         thread_lock.release()
 
 
-def _mark_checked(vault: dict[str, Any], account: str) -> None:
-    checked = _checked(vault)
-    checked.add(account)
-    vault[_LEGACY_CHECKED_KEY] = sorted(checked)
-
-
 def _open_lock_file(directory: str) -> Any | None:
     """Open (creating, ``0600``) the lock file; None when there is nowhere to put it."""
     if fcntl is None:
@@ -377,7 +308,10 @@ def _parse(raw: str | None) -> dict[str, Any]:
         data = json.loads(raw)
     except ValueError:
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    data.pop("_legacy_checked", None)  # bookkeeping an earlier release wrote; no longer used
+    return data
 
 
 def _vault_account(directory: str) -> str:

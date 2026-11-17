@@ -66,11 +66,9 @@ per-item OS prompt to economize on, and splitting the two file layouts would
 only cost the on-disk compatibility ``AGENTS.md`` documents
 (``auth_record.json`` / ``msal_token_cache.json``) for no benefit. There is no
 read migration from the pre-bundle, one-keychain-item-per-kind scheme this
-replaces - a profile still on that scheme reads back empty here and needs a
-fresh ``blumkin auth login``, which then always writes the bundled shape.
-``delete()`` / ``auth logout`` still remove those legacy per-kind items when
-present, so a successful logout does not leave a live refresh token behind
-under the old account names. Bundling also means both secrets share one
+replaces, and logout does not look for its items either - a profile still on
+that scheme reads back empty here and needs a fresh ``blumkin auth login``,
+which then always writes the bundled shape. Bundling also means both secrets share one
 backend size cap (notably Windows Credential Manager's 2560-byte
 ``CRED_MAX_CREDENTIAL_BLOB_SIZE``); a realistic MSAL cache plus a small
 auth record usually still fits, and ``token_storage = "auto"`` falls back
@@ -329,11 +327,6 @@ def _delete_keyring_entry(cfg: BlumkinConfig, kind: SecretKind) -> None:
                 pass
             else:
                 raise SecretWriteError(f"cannot delete {kind} from the OS keychain: {exc}") from exc
-    if kind in _BUNDLED_KINDS:
-        # Reads deliberately ignore the pre-bundle per-kind accounts, but an
-        # explicit logout must still remove them so a live refresh token is
-        # not left behind under the old naming after "Logged out" succeeds.
-        _delete_legacy_per_kind_account(cfg, keyring, kind)
 
 
 def _is_not_found(keyring_module: Any, exc: Exception) -> bool:
@@ -613,12 +606,11 @@ def touch_keychain(cfg: BlumkinConfig) -> bool:
     """Read every secret of ``cfg``'s profile once, straight from the keychain (#759).
 
     The deliberate, announced access behind ``blumkin auth keychain``. On macOS the module
-    returned by ``_keyring_module`` is the one-item vault, so each read below loads the shared
-    item (the prompt a person is waiting for) and copies the matching standalone item that the
-    previous version wrote into it. Unlike a normal read it lets a keychain failure propagate
-    instead of reading as "nothing stored", so the caller can tell the authorization did not
-    happen. Returns False when this profile does not use a keychain at all (nothing was
-    touched, so there is nothing to authorize).
+    returned by ``_keyring_module`` is the one-item vault, so the first read below loads the
+    shared item (the prompt a person is waiting for). Unlike a normal read it lets a keychain
+    failure propagate instead of reading as "nothing stored", so the caller can tell the
+    authorization did not happen. Returns False when this profile does not use a keychain at
+    all (nothing was touched, so there is nothing to authorize).
     """
     if _backend_for(cfg) == "file":
         return False
@@ -1153,15 +1145,6 @@ def _keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:
     return json.dumps([resolved_config_dir, cfg.profile, slot], separators=(",", ":"))
 
 
-def _legacy_per_kind_keyring_account(cfg: BlumkinConfig, kind: SecretKind) -> str:
-    """Pre-bundle account name: one keychain item per kind, keyed by kind name.
-
-    Used only by ``delete()`` / logout to purge leftovers that reads
-    deliberately ignore (no carry-over into the bundled shape).
-    """
-    return json.dumps([str(cfg.config_dir.resolve()), cfg.profile, kind], separators=(",", ":"))
-
-
 _BUNDLED_KINDS: frozenset[SecretKind] = frozenset({"auth_record", "token_cache"})
 _BUNDLE_SLOT = "ms_credentials"
 
@@ -1302,46 +1285,6 @@ def _bundled_item_present_for_delete(keyring_module: Any, account: str, kind: Se
     if kind in bundle:
         return True
     return not bundle
-
-
-def _delete_legacy_per_kind_account(
-    cfg: BlumkinConfig, keyring_module: Any, kind: SecretKind
-) -> None:
-    """Best-effort removal of a pre-bundle per-kind keychain item for ``kind``.
-
-    Reads never consult these accounts (no carry-over), but logout must still
-    purge them so a live refresh token is not left behind under the old
-    naming after a successful ``auth logout``. Failures follow the same
-    ``token_storage`` rules as the main ``delete()`` keyring path.
-    """
-    legacy_account = _legacy_per_kind_keyring_account(cfg, kind)
-    _await_pending_mutation(legacy_account, timeout=_KEYRING_IO_TIMEOUT_SECONDS)
-    probed_existence: bool | None
-    try:
-        probed_existence = (
-            _call_keyring_with_timeout(
-                keyring_module.get_password, _KEYRING_SERVICE, legacy_account
-            )
-            is not None
-        )
-    except Exception:
-        probed_existence = None
-    if probed_existence is False:
-        return
-    try:
-        _call_keyring_with_timeout(keyring_module.delete_password, _KEYRING_SERVICE, legacy_account)
-    except Exception as exc:
-        if probed_existence is None and _is_not_found(keyring_module, exc):
-            return
-        if isinstance(exc, TimeoutError):
-            raise SecretWriteTimeoutError(
-                f"cannot delete legacy {kind}: the OS keychain backend did not respond within "
-                f"{_KEYRING_IO_TIMEOUT_SECONDS}s; the previous attempt may still complete "
-                f"in the background - wait a moment and retry"
-            ) from exc
-        if probed_existence is None and cfg.token_storage == "auto":
-            return
-        raise SecretWriteError(f"cannot delete legacy {kind} from the OS keychain: {exc}") from exc
 
 
 _keyring_checked = False

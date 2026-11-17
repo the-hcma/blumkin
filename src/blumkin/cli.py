@@ -27,7 +27,6 @@ from blumkin import (
     help_text,
     keychain_agent,
     keychain_gate,
-    keychain_hygiene,
     keychain_unlock,
     secret_store,
 )
@@ -378,9 +377,9 @@ _DEFAULT_HINTS: dict[str, str] = {
         "expired access token), then retry. `blumkin auth status` shows the current state."
     ),
     "keychain_unavailable": (
-        "The macOS `security` tool could not list the login keychain (it is missing, locked or "
-        "timed out). Run this in your own terminal in a GUI login session; `blumkin auth unlock` "
-        "unlocks a locked keychain."
+        "The macOS `security` tool was not found, so blumkin cannot check or unlock the login "
+        'keychain. Restore it (it ships in /usr/bin), or set keychain_unlock = "off" in '
+        "config.toml."
     ),
     "keychain_not_authorized": (
         "This Python build has not been authorized to use the macOS keychain and there is no "
@@ -2201,9 +2200,8 @@ def auth_keychain(ctx: click.Context, as_json_flag: bool) -> None:
     """Authorize this Python build to use the macOS keychain, once, from a terminal (#759).
 
     Reads every secret of every profile through the keychain so macOS shows its prompt now,
-    while you are watching, and copies items from older versions into the one shared item.
-    Without it, a background process (an MCP server, an agent run) is refused the keychain
-    instead of raising a dialog nobody answers.
+    while you are watching. Without it, a background process (an MCP server, an agent run) is
+    refused the keychain instead of raising a dialog nobody answers.
     """
     as_json = _as_json(ctx, as_json_flag)
     if sys.platform != "darwin":
@@ -2229,7 +2227,7 @@ def auth_keychain(ctx: click.Context, as_json_flag: bool) -> None:
     if not as_json:
         emit_lines(
             [
-                "macOS will ask for your login keychain password (once per old item, on this run).",
+                "macOS will ask for your login keychain password (once, on this run).",
                 "Choose Always Allow, not Allow, so it does not ask again.",
                 *(
                     [
@@ -2282,70 +2280,6 @@ def auth_keychain(ctx: click.Context, as_json_flag: bool) -> None:
         emit_json({"ok": True, "status": "authorized", "profiles": seen, "marker": str(path)})
     else:
         emit_lines([f"authorized for profiles: {', '.join(seen) or 'none'}"])
-
-
-@auth.command("keychain-prune", epilog=help_text.AUTH_KEYCHAIN_PRUNE_EPILOG)
-@click.option("--yes", "yes", is_flag=True, help="Remove the stale items (default: list them).")
-@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
-@click.pass_context
-def auth_keychain_prune(ctx: click.Context, yes: bool, as_json_flag: bool) -> None:
-    """List, and with --yes remove, macOS keychain items blumkin no longer uses (#759).
-
-    Stale means the old `profile:kind` naming (nothing reads it any more), or an item written
-    under a temporary config directory. Only item names are read; a secret value is never
-    touched, and an item of a config directory that is merely missing is left alone.
-    """
-    as_json = _as_json(ctx, as_json_flag)
-    if sys.platform != "darwin":
-        if as_json:
-            emit_json({"ok": True, "status": "not_macos", "stale": []})
-        else:
-            emit_lines(["not macOS: no keychain items to prune"])
-        return
-    items = keychain_hygiene.stale_items()
-    if items is None:
-        _emit_error(
-            error="keychain_unavailable",
-            message="the keychain could not be listed (`security dump-keychain` failed)",
-            as_json=as_json,
-        )
-        raise SystemExit(EXIT_OTHER)
-    stale = [
-        {"account": item.account, "keychain": item.keychain, "reason": item.reason}
-        for item in items
-    ]
-    removed: list[str] = []
-    failed: list[str] = []
-    if yes and items:
-        if not keychain_gate.interactive():
-            _emit_error(
-                error="usage_error",
-                message="removing keychain items needs a terminal in a GUI login session",
-                hint="run `blumkin auth keychain-prune --yes` in your own terminal",
-                as_json=as_json,
-            )
-            raise SystemExit(EXIT_USAGE)
-        for item in items:
-            gone = keychain_hygiene.remove_item(item.account, item.keychain)
-            (removed if gone else failed).append(item.account)
-    if as_json:
-        emit_json(
-            {"ok": not failed, "stale": stale, "removed": removed, "failed": failed}
-            | ({} if yes or not stale else {"next_step": "blumkin auth keychain-prune --yes"})
-        )
-    else:
-        lines = [f"stale: {item['account']}  ({item['reason']})" for item in stale] or [
-            "no stale keychain items"
-        ]
-        if removed:
-            lines.append(f"removed {len(removed)} item(s)")
-        if failed:
-            lines.append(f"could not remove {len(failed)} item(s)")
-        if stale and not yes:
-            lines.append("run `blumkin auth keychain-prune --yes` to remove them")
-        emit_lines(lines)
-    if failed:
-        raise SystemExit(EXIT_OTHER)
 
 
 @auth.command("set-app-secret", epilog=help_text.AUTH_SET_APP_SECRET_EPILOG)
@@ -6683,13 +6617,6 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
             f"(keychain_unlock = {cfg.keychain_unlock!r})"
         )
     keychain_access = keychain_gate.state() if cfg.token_storage != "file" else "not_applicable"
-    stale_keychain = keychain_hygiene.stale_items() if cfg.token_storage != "file" else None
-    if stale_keychain:
-        warnings.append(
-            f"{len(stale_keychain)} stale blumkin keychain item(s) are never used and can raise "
-            "access prompts - list them with `blumkin auth keychain-prune`, remove them with "
-            "`blumkin auth keychain-prune --yes`"
-        )
     if keychain_access == "needs_authorization":
         warnings.append(
             "this Python build has not been authorized to use the macOS keychain, so a "
@@ -6717,7 +6644,6 @@ def doctor(ctx: click.Context, as_json_flag: bool) -> None:
         "keychain": {
             "access": keychain_access,
             "locked": keychain_locked,
-            "stale_items": None if stale_keychain is None else len(stale_keychain),
             "unlock_mode": cfg.keychain_unlock,
         },
         "build": build,

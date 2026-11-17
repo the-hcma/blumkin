@@ -476,3 +476,21 @@ def test_lock_state_falls_back_to_security_when_native_cannot_answer(
     monkeypatch.setattr(keychain_unlock, "_native_lock_state", lambda: None)
     _fake_run(monkeypatch, subprocess.CompletedProcess([], 0, "no-timeout", ""))
     assert keychain_unlock.keychain_lock_state() is False
+
+
+def test_auth_unlock_reports_keychain_unavailable_when_security_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from blumkin.cli import main
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(keychain_unlock, "available", lambda: False)
+
+    result = CliRunner().invoke(main, ["auth", "unlock", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output.strip().splitlines()[-1])["error"] == "keychain_unavailable"
