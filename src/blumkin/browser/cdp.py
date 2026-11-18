@@ -410,13 +410,16 @@ _QUIET_REQUESTS_S = 0.5
 #: mentions it in a sentence is a working page); a failed script chunk is named by its error.
 _STUCK_JS = r"""() => {
   const text = ((document.body && document.body.innerText) || '').trim();
-  // A page that holds what someone typed is never stuck, whatever else it says: reloading
-  // it would throw that away. This also covers a help line or an example that quotes a
-  // loading or error message on a page that works.
-  const typed = Array.from(document.querySelectorAll(
-    'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button])'
-    + ':not([type=submit]),textarea'
-  )).some((el) => el.value);
+  // A page whose fields were changed from what the page gave them (something typed, a file
+  // chosen) or whose editable area has text is never stuck, whatever else it says:
+  // reloading it would throw that away. This also covers a help line or an example that
+  // quotes a loading or error message on a page that works. A field still holding its
+  // default (a prefilled value, a slider, a colour picker) is not evidence of anything.
+  const fields = 'input:not([type=hidden]):not([type=range]):not([type=color])'
+    + ':not([type=reset]):not([type=image]):not([type=submit]):not([type=button])'
+    + ':not([type=checkbox]):not([type=radio]),textarea';
+  const typed = Array.from(document.querySelectorAll(fields))
+    .some((el) => el.value !== el.defaultValue);
   const edited = Array.from(document.querySelectorAll('[contenteditable]'))
     .some((el) => (el.innerText || '').trim());
   if (typed || edited) return '';
