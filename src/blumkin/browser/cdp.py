@@ -389,6 +389,20 @@ STUCK_GRACE_S = 5.0
 MAX_STUCK_RELOADS = 2
 STUCK_BUDGET_S = 25.0
 _STUCK_POLL_MS = 500
+#: How a history entry was reached when that is a plain GET. `reload` is not on the list: it
+#: keeps the data of whatever it reloaded, a form submission included.
+_GET_TRANSITIONS = frozenset(
+    {
+        "auto_bookmark",
+        "auto_toplevel",
+        "generated",
+        "keyword",
+        "keyword_generated",
+        "link",
+        "start_page",
+        "typed",
+    }
+)
 _QUIET_REQUESTS_S = 0.5
 #: What a stuck page looks like, judged only from what is on it. A page with a field, a button,
 #: a link or an editable area is never "blank" (a draft editor may show only a label while it
@@ -396,6 +410,16 @@ _QUIET_REQUESTS_S = 0.5
 #: mentions it in a sentence is a working page); a failed script chunk is named by its error.
 _STUCK_JS = r"""() => {
   const text = ((document.body && document.body.innerText) || '').trim();
+  // A page that holds what someone typed is never stuck, whatever else it says: reloading
+  // it would throw that away. This also covers a help line or an example that quotes a
+  // loading or error message on a page that works.
+  const typed = Array.from(document.querySelectorAll(
+    'input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button])'
+    + ':not([type=submit]),textarea'
+  )).some((el) => el.value);
+  const edited = Array.from(document.querySelectorAll('[contenteditable]'))
+    .some((el) => (el.innerText || '').trim());
+  if (typed || edited) return '';
   if (/Loading chunk \d+ failed|ChunkLoadError/i.test(text)) return 'chunk';
   const spinner = /^\s*loading( the)? (page|content)?[.…\s]*,?\s*please wait[.…\s]*$/i;
   if (text.split('\n').some((line) => spinner.test(line))) return 'loading';
@@ -547,6 +571,11 @@ class PageText:
     text: str
     #: `InjectionScanResult.to_payload()` shape, None when nothing matched.
     injection_warning: dict[str, object] | None
+
+
+def _without_fragment(address: str) -> str:
+    """An address without its `#fragment`: the same document, whichever fragment it shows."""
+    return address.split("#", 1)[0]
 
 
 class PlaywrightDriver:
@@ -1078,7 +1107,7 @@ class PlaywrightDriver:
                 reloads >= MAX_STUCK_RELOADS
                 or left() <= 0
                 or (may_reload is not None and not may_reload(str(self._page.url)))
-                or self._loaded_by_form(left)
+                or not self._safe_to_reload(left, after_our_reload=reloads > 0)
             ):
                 return reloads
             try:
@@ -1090,13 +1119,17 @@ class PlaywrightDriver:
             reloads += 1
             self.wait_network_quiet(min(GOTO_IDLE_WAIT_S, left()))
 
-    def _loaded_by_form(self, left: Callable[[], float]) -> bool:
-        """Whether the page in front of the browser is the answer to a form submission.
+    def _safe_to_reload(self, left: Callable[[], float], *, after_our_reload: bool) -> bool:
+        """Whether reloading the page in front of the browser cannot resubmit a form.
 
-        Reloading such a page resubmits the form, so it is never done. The browser's own
-        navigation history says how the current entry was reached, whether this connection saw
-        it or not; when that cannot be read in the time the recovery has left, or at all, the
-        page is treated as one that must not be reloaded.
+        The browser does not say whether a history entry holds POST data, only how it was
+        reached, and a reload keeps the data of the document it reloads. A change of the
+        address fragment on that document adds a history entry of its own (reached by a plain
+        link), so the whole run of entries on the same document is read, not only the last:
+        the page is reloaded only when every one of them was reached in a way that is a plain
+        GET (typing an address, following a link, a redirect). A form submission anywhere in
+        the run, a reload that was not this recovery's own, a transition not known to be safe,
+        or a history that cannot be read in the time left, leaves the page alone.
         """
         try:
             with self._bounded(max(1.0, left()), "read the page's navigation history"):
@@ -1105,12 +1138,21 @@ class PlaywrightDriver:
                     history = session.send("Page.getNavigationHistory")
                 finally:
                     session.detach()
-            entry = history["entries"][history["currentIndex"]]
-            return str(entry.get("transitionType", "")) == "form_submit"
+            entries = history["entries"]
+            current = int(history["currentIndex"])
+            here = _without_fragment(str(entries[current].get("url", "")))
+            run = [str(entries[current].get("transitionType", ""))]
+            for entry in reversed(entries[:current]):
+                if _without_fragment(str(entry.get("url", ""))) != here:
+                    break
+                run.append(str(entry.get("transitionType", "")))
         except _DeadlineExpired:
-            return True  # a target that does not answer: leave the page alone
-        except Exception:  # unreadable or malformed: the safe answer is "do not reload"
-            return True
+            return False  # a target that does not answer: leave the page alone
+        except Exception:  # unreadable or malformed
+            return False
+        if "reload" in run and not after_our_reload:
+            return False
+        return all(kind in _GET_TRANSITIONS or kind == "reload" for kind in run)
 
     def _stays_stuck(self, grace_s: float, left: Callable[[], float] | None = None) -> bool:
         """True when the page is still stuck after `grace_s` seconds of looking."""

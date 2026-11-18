@@ -303,7 +303,7 @@ class GuardedDriver:
         return self._raw.checked_download(
             name,
             chosen,
-            lambda info: self._vet_control(action, info),
+            lambda info: self._vet_download(action, info, name),
             save_to=save_to,
             timeout_s=DEFAULT_ACTION_TIMEOUT_S,
         )
@@ -720,6 +720,22 @@ class GuardedDriver:
         if held:
             raise self._refuse(action, "a name this control also goes by is a finalizing action")
 
+    def _refuse_form_button(self, action: str, info: ControlInfo, name: str) -> None:
+        """Refuse a native button inside a form whose name is a finalizing action.
+
+        A noun such as `Payment methods` is let through on a link, a tab or a tree item. Many
+        sites render tabs as a native `<button role="tab">`, which stays reachable; but a native
+        button inside a form, whatever role it reports, is judged as the button it is: that is
+        where a finalizing action lives.
+        """
+        if _is_button_element(info) and info.in_form and _is_denied(name, self._deny):
+            raise self._refuse(action, "its name is a finalizing action")
+
+    def _vet_download(self, action: str, info: ControlInfo, name: str) -> None:
+        """Vet the element a download clicks: the click checks, with no draft or confirm pass."""
+        self._refuse_form_button(action, info, name)
+        self._vet_control(action, info)
+
     def _vet_control(
         self, action: str, info: ControlInfo, name: str | None = None, role: str | None = None
     ) -> None:
@@ -732,17 +748,8 @@ class GuardedDriver:
         (`<button role="link">` is still a button): the role only decides what the name check
         let through, not what the element is.
         """
-        if (
-            name is not None
-            and _is_button_element(info)
-            and info.in_form
-            and _is_denied(name, self._deny)
-        ):
-            # A noun such as `Payment methods` is let through on a link, a tab or a tree item.
-            # Many sites render tabs as a native `<button role="tab">`, which stays reachable;
-            # but a native button inside a form, whatever role it reports, is judged as the
-            # button it is: that is where a finalizing action lives.
-            raise self._refuse(action, "its name is a finalizing action")
+        if name is not None:
+            self._refuse_form_button(action, info, name)
         if (
             name is not None
             and self._open

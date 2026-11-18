@@ -297,6 +297,11 @@ def click_task(
             # before the report, so what the report says (the address, the heading, whether an
             # expected heading showed up) describes the page the caller will actually find.
             on_allowed_host(driver.url)
+            # The click returns before the page it started has committed: let that page appear
+            # (without waiting for a heading) so recovery looks at the destination, not at the
+            # healthy page that was left.
+            driver.settle_page(expect_wait_s=0)
+            on_allowed_host(driver.url)
             reloads = _recover_stuck(driver, sign_in_hosts, "click", already_done="the click")
             if reloads:
                 payload["reloaded"] = reloads

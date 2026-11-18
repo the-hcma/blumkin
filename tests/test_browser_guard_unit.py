@@ -2422,3 +2422,20 @@ def test_a_task_that_lists_a_built_in_word_itself_lets_no_noun_past_it(own_rule:
     raw.controls[name] = _TREE_ITEM
     with pytest.raises(SubmitBlockedError):
         driver.click(name, "treeitem")
+
+
+def test_download_refuses_a_native_button_in_a_form_named_like_a_finalizing_action() -> None:
+    raw, driver = _guard("Payment methods")
+    raw.present["Payment methods"] = ("tab",)
+    raw.controls["Payment methods"] = ControlInfo(tag="button", input_type="button", in_form=True)
+    with pytest.raises(SubmitBlockedError):
+        driver.download("Payment methods", "tab", save_to=Path("/tmp"))
+    assert not any(call[0] == "download" for call in raw.calls)
+
+
+def test_download_keeps_a_native_button_tab_outside_any_form_reachable() -> None:
+    raw, driver = _guard("Payment methods")
+    raw.present["Payment methods"] = ("tab",)
+    raw.controls["Payment methods"] = ControlInfo(tag="button", input_type="button", in_form=False)
+    driver.download("Payment methods", "tab", save_to=Path("/tmp"))
+    assert any(call[0] == "download" for call in raw.calls)

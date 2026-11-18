@@ -114,16 +114,20 @@ class _Raw:
         #: Stuck-page recovery: how many reloads it reports, what it raises, and the order of
         #: its calls against the settle that builds the report.
         self.reloads = 0
+        self.stuck_only_after_settle = False
         self.recover_error: Exception | None = None
         self.recover_checks: list[Callable[[str], bool] | None] = []
         self.quiet_waits = 0
         self.order: list[str] = []
 
     def recover_stuck_page(self, may_reload: Callable[[str], bool] | None = None) -> int:
+        seen_the_destination = "settle" in self.order
         self.order.append("recover")
         self.recover_checks.append(may_reload)
         if self.recover_error is not None:
             raise self.recover_error
+        if self.stuck_only_after_settle and not seen_the_destination:
+            return 0  # the page that was left is healthy; the stuck one has not appeared yet
         return self.reloads
 
     def wait_network_quiet(self) -> None:
@@ -611,7 +615,7 @@ def test_click_waits_for_the_page_to_settle_and_reports_where_it_ended(raw: _Raw
     assert payload["url"] == "https://erp.example.com/expenses/report/7"
     assert "SECRET" not in result.output
     assert payload["untrusted"]
-    assert raw.settle_calls == [None]
+    assert raw.settle_calls == [None, None]
 
 
 def test_click_text_output_names_the_page_it_ended_on(raw: _Raw) -> None:
@@ -633,7 +637,7 @@ def test_click_expect_heading_passes_when_the_heading_shows(raw: _Raw) -> None:
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["expect_heading"] is True
-    assert raw.settle_calls == ["expense REPORT"]
+    assert raw.settle_calls == [None, "expense REPORT"]
 
 
 def test_click_expect_heading_failure_says_the_click_was_made_and_never_clicks_again(
@@ -4654,7 +4658,7 @@ def test_click_discards_headings_read_from_a_document_on_another_host(
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "host_blocked"
     assert raw.calls == [("click", "button", "Add line")]
-    assert raw.settle_calls == ["password"]
+    assert raw.settle_calls == [None, "password"]
     assert "password" not in result.output
     assert "/login" not in result.output
 
@@ -5570,7 +5574,8 @@ def test_click_recovers_a_stuck_page_before_it_builds_the_report(raw: _Raw) -> N
     result = _run("--json", "browser", "click", "expense-report", "Add line")
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["reloaded"] == 1
-    assert raw.order == ["recover", "settle"]
+    # The destination is given time to appear, then recovered, then the report is built.
+    assert raw.order == ["settle", "recover", "settle"]
 
 
 def test_click_without_a_stuck_page_reports_no_reload(raw: _Raw) -> None:
@@ -5655,3 +5660,13 @@ def test_goto_refuses_a_page_a_reload_landed_on_outside_the_tasks_hosts(
     result = _run("--json", "browser", "goto", "expense-report", "https://erp.example.com/expenses")
     assert result.exit_code == EXIT_OTHER, result.output
     assert _json(result)["error"] == "host_blocked"
+
+
+def test_click_recovers_a_destination_that_only_turns_up_stuck_after_the_click_returned(
+    raw: _Raw,
+) -> None:
+    raw.reloads = 1
+    raw.stuck_only_after_settle = True
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["reloaded"] == 1

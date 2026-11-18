@@ -4079,6 +4079,8 @@ class _StuckPage(_Page):
         self.url = "https://app.example.com/page"
         #: How the current history entry was reached, and an error for an unreadable history.
         self.transition = "link"
+        #: A whole history as (address, transition) pairs, when a test needs more than one entry.
+        self.history: list[tuple[str, str]] | None = None
         self.history_error: Exception | None = None
 
     def evaluate(self, script: str, arg: Any = None) -> Any:  # type: ignore[override]
@@ -4089,6 +4091,7 @@ class _StuckPage(_Page):
 
     def reload(self, **kwargs: Any) -> None:
         self.reload_times.append(self.now)
+        self.transition = "reload"  # the history entry of a reloaded page says so
         if len(self.reload_times) >= self.reloads_needed:
             self.stuck_until_reload = False
 
@@ -4120,11 +4123,14 @@ class _HistorySession:
         assert method == "Page.getNavigationHistory"
         if self._page.history_error is not None:
             raise self._page.history_error
+        if self._page.history is not None:
+            entries = [{"url": url, "transitionType": kind} for url, kind in self._page.history]
+            return {"currentIndex": len(entries) - 1, "entries": entries}
         return {
             "currentIndex": 1,
             "entries": [
-                {"transitionType": "typed"},
-                {"transitionType": self._page.transition},
+                {"url": "https://app.example.com/start", "transitionType": "typed"},
+                {"url": self._page.url, "transitionType": self._page.transition},
             ],
         }
 
@@ -4302,3 +4308,82 @@ def test_a_navigation_history_that_never_answers_ends_the_recovery_without_a_rel
     assert driver.recover_stuck_page() == 0
     assert page.reload_times == []
     assert time.monotonic() - started < 5.0  # ended at the 1 second floor, not after 10 seconds
+
+
+@pytest.mark.parametrize("transition", ["typed", "link", "generated", "auto_toplevel"])
+def test_a_page_reached_by_a_plain_get_transition_is_reloaded(
+    monkeypatch: pytest.MonkeyPatch, transition: str
+) -> None:
+    page = _StuckPage()
+    page.transition = transition
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
+
+
+@pytest.mark.parametrize("transition", ["form_submit", "manual_subframe", "something_new"])
+def test_a_page_reached_in_a_way_not_known_to_be_a_plain_get_is_never_reloaded(
+    monkeypatch: pytest.MonkeyPatch, transition: str
+) -> None:
+    page = _StuckPage()
+    page.transition = transition
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_page_someone_else_reloaded_is_not_reloaded_because_a_reload_keeps_post_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.transition = "reload"  # the entry may be a form's answer that was reloaded by hand
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_second_reload_is_allowed_when_the_first_was_this_recoverys_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.reloads_needed = 2
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 2
+
+
+def test_a_fragment_link_on_top_of_a_forms_answer_does_not_make_it_reloadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history = [
+        ("https://app.example.com/form", "typed"),
+        ("https://app.example.com/post", "form_submit"),
+        ("https://app.example.com/post#next", "link"),  # same document, a new entry
+    ]
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_fragment_link_on_top_of_a_plain_get_page_is_reloadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history = [
+        ("https://app.example.com/app", "typed"),
+        ("https://app.example.com/app#/billing", "link"),
+        ("https://app.example.com/app#/billing/payments", "link"),
+    ]
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
+
+
+def test_a_form_submission_on_an_earlier_page_does_not_stop_a_reload_of_this_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history = [
+        ("https://app.example.com/post", "form_submit"),
+        ("https://app.example.com/other", "typed"),  # a different document: not this one's POST
+    ]
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
