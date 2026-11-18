@@ -4064,3 +4064,495 @@ def test_clear_cache_marks_the_driver_expired_when_only_the_detach_stalls() -> N
     assert "cdp:page:Network.clearBrowserCache" in context.events
     driver.close()
     assert pw.stopped == 0
+
+
+class _StuckPage(_Page):
+    """A page whose stuck state, clock and request events a test drives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.now = 0.0
+        self.stuck_until_reload = True
+        self.reloads_needed = 1
+        self.reload_times: list[float] = []
+        self.listeners: dict[str, list[Any]] = {}
+        self.url = "https://app.example.com/page"
+        #: How the current history entry was reached, and an error for an unreadable history.
+        self.transition = "link"
+        #: A whole history as (address, transition) pairs, when a test needs more than one entry.
+        self.history: list[tuple[str, str]] | None = None
+        self.history_error: Exception | None = None
+
+    def evaluate(self, script: str, arg: Any = None) -> Any:  # type: ignore[override]
+        return "chunk" if self.stuck_until_reload else ""
+
+    def on(self, event: str, handler: Any) -> None:
+        self.listeners.setdefault(event, []).append(handler)
+
+    def reload(self, **kwargs: Any) -> None:
+        self.reload_times.append(self.now)
+        self.transition = "reload"  # the history entry of a reloaded page says so
+        if len(self.reload_times) >= self.reloads_needed:
+            self.stuck_until_reload = False
+
+    def wait_for_timeout(self, ms: float) -> None:
+        self.now += ms / 1000
+
+    def fire(self, event: str, request: Any) -> None:
+        for handler in self.listeners.get(event, []):
+            handler(request)
+
+
+class _NetRequest:
+    def __init__(self, method: str = "GET", navigation: bool = False, kind: str = "fetch") -> None:
+        self.method = method
+        self.resource_type = kind
+        self._navigation = navigation
+        self.frame = SimpleNamespace(parent_frame=None)
+
+    def is_navigation_request(self) -> bool:
+        return self._navigation
+
+
+class _HistorySession:
+    """A CDP session that answers `Page.getNavigationHistory` the way the test sets it."""
+
+    def __init__(self, page: _StuckPage) -> None:
+        self._page = page
+
+    def send(self, method: str) -> Any:
+        assert method == "Page.getNavigationHistory"
+        if self._page.history_error is not None:
+            raise self._page.history_error
+        if self._page.history is not None:
+            entries = [{"url": url, "transitionType": kind} for url, kind in self._page.history]
+            return {"currentIndex": len(entries) - 1, "entries": entries}
+        return {
+            "currentIndex": 1,
+            "entries": [
+                {"url": "https://app.example.com/start", "transitionType": "typed"},
+                {"url": self._page.url, "transitionType": self._page.transition},
+            ],
+        }
+
+    def detach(self) -> None:
+        return None
+
+
+def _stuck_driver(monkeypatch: pytest.MonkeyPatch, page: _StuckPage):
+    import blumkin.browser.cdp as cdp
+
+    monkeypatch.setattr(
+        cdp, "time", SimpleNamespace(monotonic=lambda: page.now, sleep=lambda s: None)
+    )
+    driver = _driver(_Playwright(page))[1]
+    assert page.context is not None
+    page.context.new_cdp_session = lambda target: _HistorySession(page)  # type: ignore[method-assign]
+    return driver
+
+
+def test_a_stuck_page_gets_the_grace_period_before_it_is_reloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
+    assert len(page.reload_times) == 1
+    assert page.reload_times[0] >= 5.0  # the page was given its 5 seconds first
+
+
+def test_reloading_stops_at_the_cap_when_the_page_never_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.reloads_needed = 99
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 2
+    assert len(page.reload_times) == 2
+
+
+def test_a_healthy_page_is_not_reloaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _StuckPage()
+    page.stuck_until_reload = False
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_page_the_caller_refuses_to_reload_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    seen: list[str] = []
+
+    def refuse(url: str) -> bool:
+        seen.append(url)
+        return False
+
+    assert driver.recover_stuck_page(refuse) == 0
+    assert seen == ["https://app.example.com/page"]  # asked with the page as it is then
+    assert page.reload_times == []
+
+
+def test_a_page_that_came_from_a_form_submission_is_never_reloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.transition = "form_submit"  # also when it was loaded before this connection existed
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_page_whose_history_cannot_be_read_is_not_reloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history_error = RuntimeError("target closed")
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_the_whole_recovery_stays_inside_its_time_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import blumkin.browser.cdp as cdp
+
+    page = _StuckPage()
+    page.reloads_needed = 99
+    driver = _stuck_driver(monkeypatch, page)
+    driver.recover_stuck_page()
+    assert page.now <= cdp.STUCK_BUDGET_S + 1  # the poll step; nothing waits past the budget
+
+
+def test_waiting_for_the_network_returns_at_once_when_nothing_is_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    driver.wait_network_quiet()
+    assert page.now < 2.0
+
+
+def test_waiting_for_the_network_waits_for_a_request_in_flight_and_then_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    request = _NetRequest()
+    page.fire("request", request)
+    original = page.wait_for_timeout
+
+    finished: list[bool] = []
+
+    def finish_after_three_seconds(ms: float) -> None:
+        original(ms)
+        if page.now >= 3.0 and not finished:
+            finished.append(True)
+            page.fire("requestfinished", request)  # a request finishes once
+
+    page.wait_for_timeout = finish_after_three_seconds  # type: ignore[method-assign]
+    driver.wait_network_quiet()
+    assert 3.0 <= page.now < 6.0
+
+
+def test_waiting_for_the_network_ends_at_its_cap_for_a_request_that_never_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    page.fire("request", _NetRequest())
+    driver.wait_network_quiet(4.0)
+    assert 4.0 <= page.now < 5.0
+
+
+def test_a_reload_gets_at_least_a_second_even_when_the_budget_is_nearly_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import blumkin.browser.cdp as cdp
+
+    page = _StuckPage()
+    seen: list[float] = []
+    original = page.reload
+
+    def reload(**kwargs: Any) -> None:
+        seen.append(kwargs["timeout"])
+        original(**kwargs)
+
+    page.reload = reload  # type: ignore[method-assign]
+    # The 5 second look at the stuck page leaves about 0.3 seconds of the budget.
+    monkeypatch.setattr(cdp, "STUCK_BUDGET_S", 5.3)
+    driver = _stuck_driver(monkeypatch, page)
+    driver.recover_stuck_page()
+    assert seen, "the page should have been reloaded with what was left"
+    assert all(timeout >= 1000.0 for timeout in seen)
+
+
+def test_a_navigation_history_that_never_answers_ends_the_recovery_without_a_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import blumkin.browser.cdp as cdp
+
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    started = time.monotonic()
+
+    class _Hung:
+        def send(self, method: str) -> Any:
+            time.sleep(10)  # a target that never answers; the recovery's deadline ends this
+
+        def detach(self) -> None:
+            return None
+
+    assert page.context is not None
+    page.context.new_cdp_session = lambda target: _Hung()  # type: ignore[method-assign]
+    monkeypatch.setattr(cdp, "STUCK_BUDGET_S", 6.0)  # 1 second is left after the grace
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+    assert time.monotonic() - started < 5.0  # ended at the 1 second floor, not after 10 seconds
+
+
+@pytest.mark.parametrize("transition", ["typed", "link", "generated", "auto_toplevel"])
+def test_a_page_reached_by_a_plain_get_transition_is_reloaded(
+    monkeypatch: pytest.MonkeyPatch, transition: str
+) -> None:
+    page = _StuckPage()
+    page.transition = transition
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
+
+
+@pytest.mark.parametrize("transition", ["form_submit", "manual_subframe", "something_new"])
+def test_a_page_reached_in_a_way_not_known_to_be_a_plain_get_is_never_reloaded(
+    monkeypatch: pytest.MonkeyPatch, transition: str
+) -> None:
+    page = _StuckPage()
+    page.transition = transition
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_page_someone_else_reloaded_is_not_reloaded_because_a_reload_keeps_post_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.transition = "reload"  # the entry may be a form's answer that was reloaded by hand
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_second_reload_is_allowed_when_the_first_was_this_recoverys_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.reloads_needed = 2
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 2
+
+
+def test_a_fragment_link_on_top_of_a_forms_answer_does_not_make_it_reloadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history = [
+        ("https://app.example.com/form", "typed"),
+        ("https://app.example.com/post", "form_submit"),
+        ("https://app.example.com/post#next", "link"),  # same document, a new entry
+    ]
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_fragment_link_on_top_of_a_plain_get_page_is_reloadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history = [
+        ("https://app.example.com/app", "typed"),
+        ("https://app.example.com/app#/billing", "link"),
+        ("https://app.example.com/app#/billing/payments", "link"),
+    ]
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
+
+
+def test_a_form_submission_on_an_earlier_page_does_not_stop_a_reload_of_this_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history = [
+        ("https://app.example.com/post", "form_submit"),
+        ("https://app.example.com/other", "typed"),  # a different document: not this one's POST
+    ]
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
+
+
+_SPINNER = "<div>Loading page, please wait...</div>"
+
+#: (name, page body, what the stuck-page script must answer). '' means a page that works.
+_STUCK_PAGES = [
+    ("a working page", "<h1>Billing</h1><p>Some text that is long enough.</p>", ""),
+    ("an empty page", "", "blank"),
+    ("a page with only an iframe", "<iframe srcdoc='<p>x</p>'></iframe>", ""),
+    ("a tiny page with a link", "<a href='/x'>OK</a>", ""),
+    ("a draft editor showing only a label", "<label>Name</label><input>", ""),
+    ("a spinner line", _SPINNER, "loading"),
+    ("navigation plus a spinner line", f"<nav>Home Users Devices</nav>{_SPINNER}", "loading"),
+    (
+        "a help sentence that mentions the spinner",
+        "<p>If it says Loading page, please wait, call us.</p>",
+        "",
+    ),
+    ("a failed script chunk", "<p>Loading chunk 9743 failed. (error: x.js)</p>", "chunk"),
+    ("text typed into a field", f"{_SPINNER}<input id=i><script>i.value='mine'</script>", ""),
+    (
+        "text typed into a textarea",
+        f"{_SPINNER}<textarea id=t></textarea><script>t.value='x'</script>",
+        "",
+    ),
+    (
+        "an edited field that began prefilled",
+        f"{_SPINNER}<input id=i value=a><script>i.value='b'</script>",
+        "",
+    ),
+    ("an editable area with text", f"{_SPINNER}<div contenteditable=true>draft</div>", ""),
+    (
+        "a non-editable area marked contenteditable=false",
+        f"{_SPINNER}<div contenteditable=false>text</div>",
+        "loading",
+    ),
+    (
+        "a ticked checkbox",
+        f"{_SPINNER}<input type=checkbox id=c><script>c.checked=true</script>",
+        "",
+    ),
+    ("a selected radio", f"{_SPINNER}<input type=radio id=r><script>r.checked=true</script>", ""),
+    (
+        "a changed dropdown",
+        f"{_SPINNER}<select id=s><option>a<option>b</select><script>s.value='b'</script>",
+        "",
+    ),
+    ("a checkbox left as the page set it", f"{_SPINNER}<input type=checkbox checked>", "loading"),
+    (
+        "a dropdown left as the page set it",
+        f"{_SPINNER}<select><option>a<option selected>b</select>",
+        "loading",
+    ),
+    ("a prefilled field left alone", f"{_SPINNER}<input value='server default'>", "loading"),
+    ("a prefilled textarea left alone", f"{_SPINNER}<textarea>server text</textarea>", "loading"),
+    ("a range slider", f"{_SPINNER}<input type=range>", "loading"),
+    ("a colour picker", f"{_SPINNER}<input type=color>", "loading"),
+    ("submit and reset buttons", f"{_SPINNER}<input type=submit><input type=reset>", "loading"),
+]
+
+
+@pytest.fixture(scope="module")
+def _real_page():
+    """A page in a real browser for running the stuck-page script, or a skip when none exists."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    manager = sync_api.sync_playwright().start()
+    browser = None
+    for options in ({}, {"channel": "chrome"}, {"channel": "msedge"}):
+        try:
+            browser = manager.chromium.launch(headless=True, **options)
+            break
+        except Exception:  # not installed here: try the next one
+            continue
+    if browser is None:
+        manager.stop()
+        pytest.skip("no Chromium, Chrome or Edge is available to run the page script in")
+    page = browser.new_page()
+    yield page
+    browser.close()
+    manager.stop()
+
+
+@pytest.mark.parametrize(
+    ("label", "body", "expected"), _STUCK_PAGES, ids=[p[0] for p in _STUCK_PAGES]
+)
+def test_the_stuck_page_script_classifies_a_real_page(
+    _real_page: Any, label: str, body: str, expected: str
+) -> None:
+    from blumkin.browser.cdp import _STUCK_JS
+
+    _real_page.set_content(f"<body>{body}</body>")
+    assert _real_page.evaluate(_STUCK_JS) == expected
+
+
+def test_a_request_that_starts_and_finishes_between_two_looks_restarts_the_quiet_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    original = page.wait_for_timeout
+    done: list[bool] = []
+
+    def one_quick_request(ms: float) -> None:
+        original(ms)
+        if page.now >= 0.4 and not done:
+            done.append(True)  # starts and finishes inside one poll, at 0.4 seconds
+            request = _NetRequest()
+            page.fire("request", request)
+            page.fire("requestfinished", request)
+
+    page.wait_for_timeout = one_quick_request  # type: ignore[method-assign]
+    driver.wait_network_quiet()
+    # Half a second of quiet counts from the request's end (0.4), not from the start (0).
+    assert page.now >= 0.9
+
+
+def test_a_session_that_will_not_detach_does_not_stall_the_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    started = time.monotonic()
+
+    class _HungDetach:
+        def send(self, method: str) -> Any:
+            return {
+                "currentIndex": 0,
+                "entries": [{"url": "https://app.example.com/page", "transitionType": "typed"}],
+            }
+
+        def detach(self) -> None:
+            time.sleep(10)  # never comes back in time
+
+    assert page.context is not None
+    page.context.new_cdp_session = lambda target: _HungDetach()  # type: ignore[method-assign]
+    # The release is time-boxed; a connection that would not let go is not used again, so the
+    # page is left as it is and the recovery returns instead of hanging or raising.
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+    assert time.monotonic() - started < 6.0
+
+
+def test_requests_a_navigation_cancelled_do_not_keep_the_network_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    for _ in range(5):
+        page.fire("request", _NetRequest())  # the old page's requests, never reported finished
+    document = _NetRequest(navigation=True, kind="document")
+    page.fire("request", document)  # a new document: the old one's requests are gone
+    page.fire("requestfinished", document)
+    driver.wait_network_quiet()
+    assert page.now < 2.0  # not the full 10 second cap
+
+
+@pytest.mark.parametrize("kind", ["eventsource", "websocket", "ping"])
+def test_a_request_that_stays_open_for_the_life_of_the_page_is_not_waited_for(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    page.fire("request", _NetRequest(kind=kind))
+    driver.wait_network_quiet()
+    assert page.now < 2.0

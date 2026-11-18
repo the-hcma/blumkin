@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +111,38 @@ class _Raw:
         self.cookie_count = 0
         #: The address the headings are read from, when not the page's own.
         self.settled_url: str | None = None
+        #: Stuck-page recovery: how many reloads it reports, what it raises, and the order of
+        #: its calls against the settle that builds the report.
+        self.reloads = 0
+        self.pass_active = False
+        self.navigated_from: list[str] = []
+        self.recovered_in_pass: list[bool] = []
+        self.on_recover: Callable[[], None] | None = None
+        self.stuck_only_after_settle = False
+        self.recover_error: Exception | None = None
+        self.recover_checks: list[Callable[[str], bool] | None] = []
+        self.quiet_waits = 0
+        self.order: list[str] = []
+
+    def recover_stuck_page(self, may_reload: Callable[[str], bool] | None = None) -> int:
+        seen_the_destination = "settle" in self.order
+        self.order.append("recover")
+        self.recovered_in_pass.append(self.pass_active)
+        if self.on_recover is not None:
+            self.on_recover()
+        self.recover_checks.append(may_reload)
+        if self.recover_error is not None:
+            raise self.recover_error
+        if self.stuck_only_after_settle and not seen_the_destination:
+            return 0  # the page that was left is healthy; the stuck one has not appeared yet
+        return self.reloads
+
+    def wait_network_quiet(self) -> None:
+        self.quiet_waits += 1
+
+    def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
+        self.order.append("navigate")
+        self.navigated_from.append(previous_url)
 
     def clear_cache(self) -> None:
         self.cache_cleared += 1
@@ -129,6 +161,7 @@ class _Raw:
         self, *, expect_heading: str | None = None, expect_wait_s: float | None = None
     ) -> PageSettled:
         self.settle_calls.append(expect_heading)
+        self.order.append("settle")
         matched = (
             None
             if expect_heading is None
@@ -345,9 +378,16 @@ class _Raw:
     def title(self) -> str:
         return self.title_text
 
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool], is_task_host: Any = None) -> Any:
+    @contextlib.contextmanager
+    def sign_in_pass(
+        self, is_sign_in_host: Callable[[str], bool], is_task_host: Any = None
+    ) -> Iterator[None]:
         self.sign_ins.append(is_sign_in_host("login.microsoftonline.com"))
-        return contextlib.nullcontext()
+        self.pass_active = True
+        try:
+            yield
+        finally:
+            self.pass_active = False
 
     def mark_window(
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
@@ -593,7 +633,7 @@ def test_click_waits_for_the_page_to_settle_and_reports_where_it_ended(raw: _Raw
     assert payload["url"] == "https://erp.example.com/expenses/report/7"
     assert "SECRET" not in result.output
     assert payload["untrusted"]
-    assert raw.settle_calls == [None]
+    assert raw.settle_calls == [None, None]
 
 
 def test_click_text_output_names_the_page_it_ended_on(raw: _Raw) -> None:
@@ -615,7 +655,7 @@ def test_click_expect_heading_passes_when_the_heading_shows(raw: _Raw) -> None:
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["expect_heading"] is True
-    assert raw.settle_calls == ["expense REPORT"]
+    assert raw.settle_calls == [None, "expense REPORT"]
 
 
 def test_click_expect_heading_failure_says_the_click_was_made_and_never_clicks_again(
@@ -4636,7 +4676,7 @@ def test_click_discards_headings_read_from_a_document_on_another_host(
     assert result.exit_code == EXIT_OTHER
     assert _json(result)["error"] == "host_blocked"
     assert raw.calls == [("click", "button", "Add line")]
-    assert raw.settle_calls == ["password"]
+    assert raw.settle_calls == [None, "password"]
     assert "password" not in result.output
     assert "/login" not in result.output
 
@@ -5545,3 +5585,160 @@ def test_inspect_watch_without_a_page_on_an_allowed_host_listens_to_nothing(
     assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
     assert [call for call in raw.calls if call[0] == "watch_requests"] == []
     assert raw.net_installed == 0 and raw.closed == 1  # still detached
+
+
+def test_click_recovers_a_stuck_page_before_it_builds_the_report(raw: _Raw) -> None:
+    raw.reloads = 1
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["reloaded"] == 1
+    # The destination is given time to appear, then recovered, then the report is built.
+    assert raw.order == ["navigate", "settle", "recover", "settle"]
+
+
+def test_click_without_a_stuck_page_reports_no_reload(raw: _Raw) -> None:
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert "reloaded" not in _json(result)
+
+
+def test_a_reload_that_fails_after_a_click_says_the_click_was_made(raw: _Raw) -> None:
+    raw.recover_error = BrowserActionError("Expected the page to reload, got a timeout")
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_OTHER, result.output
+    message = _json(result)["message"]
+    assert "WAS made" in message
+    assert "read the page before repeating" in message
+
+
+def test_the_reload_check_refuses_an_identity_provider_page_and_allows_the_task_page(
+    raw: _Raw,
+) -> None:
+    _run("--json", "browser", "click", "expense-report", "Add line")
+    may_reload = raw.recover_checks[0]
+    assert may_reload is not None
+    assert may_reload("https://erp.example.com/expenses") is True
+    assert may_reload("https://login.microsoftonline.com/common/reprocess") is False
+
+
+def test_goto_waits_for_the_network_then_reports_a_reload(raw: _Raw) -> None:
+    raw.reloads = 1
+    result = _run("--json", "browser", "goto", "expense-report", "https://erp.example.com/expenses")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.quiet_waits == 1
+    assert _json(result)["reloaded"] == 1
+
+
+def test_a_click_on_an_identity_provider_page_runs_in_the_sign_in_pass(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'upload_dirs = ["~/receipts"]')
+    raw._url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+    result = _run("--json", "browser", "click", "expense-report", "Your products")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.sign_ins == [True]
+
+
+def test_a_click_on_the_tasks_own_application_page_never_runs_in_the_sign_in_pass(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'upload_dirs = ["~/receipts"]')
+    result = _run("--json", "browser", "click", "expense-report", "Your products")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.sign_ins == []
+
+
+def test_a_host_that_is_both_the_tasks_own_and_a_sign_in_host_keeps_the_strict_net_on_clicks(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(
+        _config_dir,
+        'allowed_hosts = ["login.microsoftonline.com"]\n'
+        'sign_in_hosts = ["login.microsoftonline.com"]\n'
+        'upload_dirs = ["~/receipts"]',
+    )
+    raw._url = "https://login.microsoftonline.com/app/page"
+    result = _run("--json", "browser", "click", "expense-report", "Your products")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.sign_ins == []
+
+
+def test_goto_refuses_a_page_a_reload_landed_on_outside_the_tasks_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nupload_dirs = ["~/receipts"]')
+    raw.reloads = 1
+    original = raw.recover_stuck_page
+
+    def land_elsewhere(may_reload: Any = None) -> int:
+        count = original(may_reload)
+        raw._url = "https://elsewhere.example.net/page"
+        return count
+
+    raw.recover_stuck_page = land_elsewhere  # type: ignore[method-assign]
+    result = _run("--json", "browser", "goto", "expense-report", "https://erp.example.com/expenses")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "host_blocked"
+
+
+def test_click_recovers_a_destination_that_only_turns_up_stuck_after_the_click_returned(
+    raw: _Raw,
+) -> None:
+    raw.reloads = 1
+    raw.stuck_only_after_settle = True
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["reloaded"] == 1
+
+
+def test_goto_recovers_a_stuck_page_while_the_sign_in_pass_is_still_active(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.reloads = 1
+    payload = _goto(120.0, _Clock())
+    assert raw.recovered_in_pass == [True]
+    assert payload["reloaded"] == 1
+
+
+def test_goto_waits_through_a_second_sign_in_when_the_reload_sends_it_back_to_the_provider(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.reloads = 1
+    raw.url_script = [_FORM]
+
+    def reload_lands_on_the_provider() -> None:
+        raw.url_script = [_IDP, _IDP, _FORM]  # the session had expired: sign in again
+
+    raw.on_recover = reload_lands_on_the_provider
+    clock = _Clock()
+
+    payload = _goto(120.0, clock)
+
+    assert payload["url"] == _FORM
+    assert payload["reloaded"] == 1
+    assert payload["waited_for_sign_in_s"] >= 1.0  # the second sign-in was waited through
+    assert clock.sleeps >= 1
+
+
+def test_click_waits_for_the_navigation_it_started_from_the_page_it_was_on(raw: _Raw) -> None:
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.navigated_from == [
+        "https://erp.example.com/expenses"
+    ]  # the page left, not the new one
+    assert raw.order.index("navigate") < raw.order.index("recover")
+
+
+def test_goto_refuses_a_page_outside_the_tasks_hosts_before_waiting_on_or_reloading_it(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import HostBlockedError
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nupload_dirs = ["~/receipts"]')
+    raw.reloads = 1
+    raw.lands_on = "https://elsewhere.example.net/page"
+    with pytest.raises(HostBlockedError):
+        _goto(120.0, _Clock())
+    assert raw.quiet_waits == 0
+    assert raw.order == []  # nothing waited on, settled or reloaded the foreign page
