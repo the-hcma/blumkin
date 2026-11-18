@@ -4064,3 +4064,241 @@ def test_clear_cache_marks_the_driver_expired_when_only_the_detach_stalls() -> N
     assert "cdp:page:Network.clearBrowserCache" in context.events
     driver.close()
     assert pw.stopped == 0
+
+
+class _StuckPage(_Page):
+    """A page whose stuck state, clock and request events a test drives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.now = 0.0
+        self.stuck_until_reload = True
+        self.reloads_needed = 1
+        self.reload_times: list[float] = []
+        self.listeners: dict[str, list[Any]] = {}
+        self.url = "https://app.example.com/page"
+        #: How the current history entry was reached, and an error for an unreadable history.
+        self.transition = "link"
+        self.history_error: Exception | None = None
+
+    def evaluate(self, script: str, arg: Any = None) -> Any:  # type: ignore[override]
+        return "chunk" if self.stuck_until_reload else ""
+
+    def on(self, event: str, handler: Any) -> None:
+        self.listeners.setdefault(event, []).append(handler)
+
+    def reload(self, **kwargs: Any) -> None:
+        self.reload_times.append(self.now)
+        if len(self.reload_times) >= self.reloads_needed:
+            self.stuck_until_reload = False
+
+    def wait_for_timeout(self, ms: float) -> None:
+        self.now += ms / 1000
+
+    def fire(self, event: str, request: Any) -> None:
+        for handler in self.listeners.get(event, []):
+            handler(request)
+
+
+class _NetRequest:
+    def __init__(self, method: str = "GET", navigation: bool = False) -> None:
+        self.method = method
+        self._navigation = navigation
+        self.frame = SimpleNamespace(parent_frame=None)
+
+    def is_navigation_request(self) -> bool:
+        return self._navigation
+
+
+class _HistorySession:
+    """A CDP session that answers `Page.getNavigationHistory` the way the test sets it."""
+
+    def __init__(self, page: _StuckPage) -> None:
+        self._page = page
+
+    def send(self, method: str) -> Any:
+        assert method == "Page.getNavigationHistory"
+        if self._page.history_error is not None:
+            raise self._page.history_error
+        return {
+            "currentIndex": 1,
+            "entries": [
+                {"transitionType": "typed"},
+                {"transitionType": self._page.transition},
+            ],
+        }
+
+    def detach(self) -> None:
+        return None
+
+
+def _stuck_driver(monkeypatch: pytest.MonkeyPatch, page: _StuckPage):
+    import blumkin.browser.cdp as cdp
+
+    monkeypatch.setattr(
+        cdp, "time", SimpleNamespace(monotonic=lambda: page.now, sleep=lambda s: None)
+    )
+    driver = _driver(_Playwright(page))[1]
+    assert page.context is not None
+    page.context.new_cdp_session = lambda target: _HistorySession(page)  # type: ignore[method-assign]
+    return driver
+
+
+def test_a_stuck_page_gets_the_grace_period_before_it_is_reloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 1
+    assert len(page.reload_times) == 1
+    assert page.reload_times[0] >= 5.0  # the page was given its 5 seconds first
+
+
+def test_reloading_stops_at_the_cap_when_the_page_never_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.reloads_needed = 99
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 2
+    assert len(page.reload_times) == 2
+
+
+def test_a_healthy_page_is_not_reloaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _StuckPage()
+    page.stuck_until_reload = False
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_page_the_caller_refuses_to_reload_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    seen: list[str] = []
+
+    def refuse(url: str) -> bool:
+        seen.append(url)
+        return False
+
+    assert driver.recover_stuck_page(refuse) == 0
+    assert seen == ["https://app.example.com/page"]  # asked with the page as it is then
+    assert page.reload_times == []
+
+
+def test_a_page_that_came_from_a_form_submission_is_never_reloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.transition = "form_submit"  # also when it was loaded before this connection existed
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_a_page_whose_history_cannot_be_read_is_not_reloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    page.history_error = RuntimeError("target closed")
+    driver = _stuck_driver(monkeypatch, page)
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+
+
+def test_the_whole_recovery_stays_inside_its_time_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import blumkin.browser.cdp as cdp
+
+    page = _StuckPage()
+    page.reloads_needed = 99
+    driver = _stuck_driver(monkeypatch, page)
+    driver.recover_stuck_page()
+    assert page.now <= cdp.STUCK_BUDGET_S + 1  # the poll step; nothing waits past the budget
+
+
+def test_waiting_for_the_network_returns_at_once_when_nothing_is_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    driver.wait_network_quiet()
+    assert page.now < 2.0
+
+
+def test_waiting_for_the_network_waits_for_a_request_in_flight_and_then_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    request = _NetRequest()
+    page.fire("request", request)
+    original = page.wait_for_timeout
+
+    def finish_after_three_seconds(ms: float) -> None:
+        original(ms)
+        if page.now >= 3.0:
+            page.fire("requestfinished", request)
+
+    page.wait_for_timeout = finish_after_three_seconds  # type: ignore[method-assign]
+    driver.wait_network_quiet()
+    assert 3.0 <= page.now < 6.0
+
+
+def test_waiting_for_the_network_ends_at_its_cap_for_a_request_that_never_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    page.fire("request", _NetRequest())
+    driver.wait_network_quiet(4.0)
+    assert 4.0 <= page.now < 5.0
+
+
+def test_a_reload_gets_at_least_a_second_even_when_the_budget_is_nearly_spent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import blumkin.browser.cdp as cdp
+
+    page = _StuckPage()
+    seen: list[float] = []
+    original = page.reload
+
+    def reload(**kwargs: Any) -> None:
+        seen.append(kwargs["timeout"])
+        original(**kwargs)
+
+    page.reload = reload  # type: ignore[method-assign]
+    # The 5 second look at the stuck page leaves about 0.3 seconds of the budget.
+    monkeypatch.setattr(cdp, "STUCK_BUDGET_S", 5.3)
+    driver = _stuck_driver(monkeypatch, page)
+    driver.recover_stuck_page()
+    assert seen, "the page should have been reloaded with what was left"
+    assert all(timeout >= 1000.0 for timeout in seen)
+
+
+def test_a_navigation_history_that_never_answers_ends_the_recovery_without_a_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import blumkin.browser.cdp as cdp
+
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    started = time.monotonic()
+
+    class _Hung:
+        def send(self, method: str) -> Any:
+            time.sleep(10)  # a target that never answers; the recovery's deadline ends this
+
+        def detach(self) -> None:
+            return None
+
+    assert page.context is not None
+    page.context.new_cdp_session = lambda target: _Hung()  # type: ignore[method-assign]
+    monkeypatch.setattr(cdp, "STUCK_BUDGET_S", 6.0)  # 1 second is left after the grace
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+    assert time.monotonic() - started < 5.0  # ended at the 1 second floor, not after 10 seconds

@@ -259,26 +259,82 @@ def click_task(
 
     declared = config.browser.tasks.get(task)
     hosts = declared.allowed_hosts if declared else ()
+    sign_in_hosts = (*SIGN_IN_HOSTS, *(declared.sign_in_hosts if declared else ()))
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        found = driver.click(name, role, waited, nth=nth)
-        payload: dict[str, Any] = {
-            "action": "click",
-            "name": name,
-            "ok": True,
-            "role": found,
-            "task": task,
-        }
-        if nth is not None:
-            payload["nth"] = nth
+        # A click on an account tile or a sign-in button starts the identity provider's own
+        # form post back to the site (`/common/reprocess`). The safety net would answer that
+        # post with an empty page and leave the browser on "Working..." for good, so on a
+        # sign-in page the click runs inside the same pass `goto` uses. Other pages keep the
+        # full net.
+        page_host = urlsplit(driver.url).hostname or ""
+        on_sign_in_page = host_allowed(page_host, sign_in_hosts) and not (
+            hosts and host_allowed(page_host, hosts)
+        )
+        with contextlib.ExitStack() as stack:
+            if on_sign_in_page:
+                stack.enter_context(
+                    driver.sign_in_pass(
+                        lambda host: host_allowed(host, sign_in_hosts),
+                        lambda host: not hosts or host_allowed(host, hosts),
+                    )
+                )
+            found = driver.click(name, role, waited, nth=nth)
+            payload: dict[str, Any] = {
+                "action": "click",
+                "name": name,
+                "ok": True,
+                "role": found,
+                "task": task,
+            }
+            if nth is not None:
+                payload["nth"] = nth
 
-        def on_allowed_host(url: str) -> None:
-            _require_allowed_url(url, task, hosts, "the click")
+            def on_allowed_host(url: str) -> None:
+                _require_allowed_url(url, task, hosts, "the click")
 
-        payload.update(_settled_report(driver, expect_heading, on_allowed_host))
+            # The page is on a host the task may use before it is looked at or reloaded, and
+            # before the report, so what the report says (the address, the heading, whether an
+            # expected heading showed up) describes the page the caller will actually find.
+            on_allowed_host(driver.url)
+            reloads = _recover_stuck(driver, sign_in_hosts, "click", already_done="the click")
+            if reloads:
+                payload["reloaded"] = reloads
+
+            payload.update(_settled_report(driver, expect_heading, on_allowed_host))
         return payload
 
     return _with_driver(config, task, act, check_after=True)
+
+
+def _recover_stuck(
+    driver: GuardedDriver,
+    sign_in_hosts: Sequence[str],
+    what: str,
+    *,
+    already_done: str | None = None,
+) -> int:
+    """Reload a page the action left stuck; how many reloads it took.
+
+    Asked again before every reload, with the address the page is on then, so a page that has
+    moved to an identity provider is left alone (reloading its form-post step would fire the
+    sign-in handshake a second time). When the reload itself fails, `already_done` says the
+    action was made, so the caller reads the page before repeating it.
+    """
+
+    def may_reload(url: str) -> bool:
+        return not host_allowed(urlsplit(url).hostname or "", sign_in_hosts)
+
+    try:
+        return driver.recover_stuck_page(may_reload)
+    except BrowserActionError as exc:
+        if already_done is None:
+            raise
+        raise BrowserActionError(
+            f"Expected the page to load after {already_done}, but it stayed stuck and reloading "
+            f"it failed ({exc}); {already_done} WAS made, so read the page before repeating the "
+            f"{what}"
+        ) from exc
 
 
 def dialog_task(
@@ -584,7 +640,15 @@ def goto_task(
             if len(chain) > 1:
                 exc.chain = chain  # type: ignore[attr-defined]
             raise
+        # After a sign-in has finished and the application page is up, not before: the wait
+        # and the recovery both look at the page the caller will actually use.
+        driver.wait_network_quiet()
+        reloads = _recover_stuck(driver, sign_in_hosts, "navigation")
+        if reloads:
+            _require_allowed_page(driver, task, hosts, "the action")
         payload: dict[str, Any] = {"action": "goto", "ok": True, "task": task, "url": driver.url}
+        if reloads:
+            payload["reloaded"] = reloads
         if waited is not None:
             payload["sign_in_host"] = waited[1]
             payload["waited_for_sign_in_s"] = round(waited[0], 1)

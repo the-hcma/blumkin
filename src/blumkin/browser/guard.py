@@ -69,6 +69,12 @@ DEFAULT_DENY_NAMES: tuple[str, ...] = (
     "confirm",
     "file",
     "finish",
+    "make a payment",
+    "make payment",
+    "make payments",
+    "make the payment",
+    "make this payment",
+    "make your payment",
     "pay",
     "place order",
     "publish",
@@ -172,6 +178,8 @@ class GuardedDriver:
         self._declared = tuple(sorted(set(policy.allowed_controls)))
         self._confirm_names = tuple(sorted(set(policy.dialog_confirm)))
         self._deny = _deny_stems((*DEFAULT_DENY_NAMES, *policy.extra_deny_names))
+        # A stem the task also lists itself is the task's own rule: no noun is let past it.
+        self._noun_ok = _BUILTIN_STEMS - frozenset(_deny_stems(tuple(policy.extra_deny_names)))
         self._destructive = _deny_stems(DESTRUCTIVE_DENY_NAMES)
         self._gated = _deny_stems((*DESTRUCTIVE_DENY_NAMES, *GATED_DENY_NAMES))
         self._open = policy.open_controls
@@ -205,8 +213,13 @@ class GuardedDriver:
         *,
         confirm_ok: bool = True,
         declared_only: bool = False,
+        resolving: bool = False,
     ) -> None:
         """Raise `SubmitBlockedError` unless a click on `name` is allowed (no page access).
+
+        `resolving` marks the first pass of a click by name alone, before the control's role is
+        known: a noun that merely starts like a finalizing word is left for the second pass,
+        which runs with the role the page reports and refuses it on a button or a menu item.
 
         A dialog confirm name passes only with `confirm_ok`; a download is never a dialog's
         confirm, so it takes `allowed_controls` names alone. `declared_only` also leaves out
@@ -216,7 +229,8 @@ class GuardedDriver:
         action = f"click {name!r}"
         if role is not None and role not in CLICKABLE_ROLES:
             raise self._refuse(action, f"the role {role!r} is not one a task may click")
-        if _is_denied(name, self._deny):
+        navigation = role in _NAVIGATION_ROLES or (resolving and role is None)
+        if _is_denied(name, self._deny, navigation=navigation, noun_ok=self._noun_ok):
             raise self._refuse(action, "its name is a finalizing action")
         if (
             self._open
@@ -453,6 +467,22 @@ class GuardedDriver:
     ) -> FrameCapture:
         return self._raw.scroll_frame_text(is_allowed, max_steps=max_steps, wait_s=wait_s)
 
+    def recover_stuck_page(self, may_reload: Callable[[str], bool] | None = None) -> int:
+        """Reload a page that stays stuck (blank, a spinner only, a failed script chunk).
+
+        `may_reload` is asked with the page's address before every reload. Returns how many
+        reloads it took; 0 when the page was fine or the driver cannot do it. Reads and
+        reloads only; it clicks nothing.
+        """
+        recover = getattr(self._raw, "recover_stuck_page", None)
+        return int(recover(may_reload)) if recover is not None else 0
+
+    def wait_network_quiet(self) -> None:
+        """Wait (bounded) for the page's background requests to finish; reads nothing."""
+        wait = getattr(self._raw, "wait_network_quiet", None)
+        if wait is not None:
+            wait()
+
     def settle_page(
         self, *, expect_heading: str | None = None, expect_wait_s: float | None = None
     ) -> PageSettled | None:
@@ -589,7 +619,9 @@ class GuardedDriver:
     ) -> tuple[str, str]:
         """Check the policy, then find `name` on the page: (the role it is in, the action)."""
         action = f"click {name!r}"
-        self.check_click(name, role, confirm_ok=confirm_ok, declared_only=declared_only)
+        self.check_click(
+            name, role, confirm_ok=confirm_ok, declared_only=declared_only, resolving=True
+        )
         roles = (role,) if role is not None else tuple(sorted(CLICKABLE_ROLES))
         found = self._raw.matching_roles(name, roles, wait_s, nth=nth)
         label = role if role is not None else "control"
@@ -700,6 +732,17 @@ class GuardedDriver:
         (`<button role="link">` is still a button): the role only decides what the name check
         let through, not what the element is.
         """
+        if (
+            name is not None
+            and _is_button_element(info)
+            and info.in_form
+            and _is_denied(name, self._deny)
+        ):
+            # A noun such as `Payment methods` is let through on a link, a tab or a tree item.
+            # Many sites render tabs as a native `<button role="tab">`, which stays reachable;
+            # but a native button inside a form, whatever role it reports, is judged as the
+            # button it is: that is where a finalizing action lives.
+            raise self._refuse(action, "its name is a finalizing action")
         if (
             name is not None
             and self._open
@@ -1068,8 +1111,56 @@ def _is_cell_value(value: str) -> bool:
 #: action of filing a report.
 _FILE_NOUNS = frozenset({"name", "names", "size", "type"})
 
+#: Roles that only navigate: a click on one opens a page, it does not act on the one it is on.
+_NAVIGATION_ROLES = frozenset({"link", "tab", "treeitem"})
 
-def _is_denied(name: str, stems: tuple[str, ...]) -> bool:
+#: Words that start with a finalizing stem but name a thing, not the action (`Payment methods`,
+#: `Registered devices`, `Publisher`). Only a link, a tab or a tree item gets this pass: a
+#: button or a menu item named `Payment` may well be the action, and keeps being refused. The
+#: action itself (`Pay`, `Pay now`, `Make a payment`) is still caught by its own stems.
+_NOUN_FORMS = frozenset(
+    {
+        "buyer",
+        "buyers",
+        "completed",
+        "confirmation",
+        "confirmations",
+        "confirmed",
+        "payable",
+        "payables",
+        "payee",
+        "payees",
+        "payer",
+        "payers",
+        "payment",
+        "payments",
+        "payroll",
+        "published",
+        "publisher",
+        "publishers",
+        "registered",
+        "registration",
+        "registrations",
+        "registry",
+        "sender",
+        "senders",
+        "submitted",
+    }
+)
+
+
+#: The stems of the built-in finalizing words. Only these may be passed a noun on a navigation
+#: control: a task's own `extra_deny_names` are matched against every word of the name.
+_BUILTIN_STEMS = frozenset(_deny_stems(DEFAULT_DENY_NAMES))
+
+
+def _is_denied(
+    name: str,
+    stems: tuple[str, ...],
+    *,
+    navigation: bool = False,
+    noun_ok: frozenset[str] = frozenset(),
+) -> bool:
     folded = _folded(name)
     words = re.findall(r"[^\W_]+", folded)
     # `File Name or URL` is a column header, not the filing action: only the built-in `file`
@@ -1080,6 +1171,9 @@ def _is_denied(name: str, stems: tuple[str, ...]) -> bool:
         for i, word in enumerate(words)
         if not (word == "file" and i + 1 < len(words) and words[i + 1] in _FILE_NOUNS)
     ]
+    # A navigation control may carry a noun that merely starts like a finalizing stem. Phrases
+    # (`make a payment`) are matched on every word below, so they still see the noun.
+    single = [w for w in words if not (navigation and w in _NOUN_FORMS)]
     spaced = " ".join(words)
     # The same words run together, with the offset where each word starts, so a deny word
     # written `e-mail` also catches `Email`.
@@ -1095,7 +1189,12 @@ def _is_denied(name: str, stems: tuple[str, ...]) -> bool:
             glued = stem.replace(" ", "")
             if any(compact.startswith(glued, start) for start in starts):
                 return True
-        elif any(word.startswith(stem) for word in (plain if stem == "file" else words)):
+        elif any(
+            word.startswith(stem)
+            for word in (
+                plain if stem == "file" else (single if navigation and stem in noun_ok else words)
+            )
+        ):
             return True
     return False
 

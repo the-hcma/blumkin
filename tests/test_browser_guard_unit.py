@@ -906,6 +906,8 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "press",
         "read_field",
         "read_frame_text",
+        "recover_stuck_page",
+        "wait_network_quiet",
         "read_text",
         "scroll_frame_text",
         "select",
@@ -978,6 +980,27 @@ def test_click_without_a_role_finds_the_one_role_and_reports_it() -> None:
     raw.present["Notes"] = ("tab",)
     assert driver.click("Notes") == "tab"
     assert ("click", "tab", "Notes") in raw.calls
+
+
+_TREE_ITEM = ControlInfo(tag="div", input_type="", in_form=False)
+
+
+def test_click_by_name_reaches_a_navigation_item_named_with_a_noun_like_payments() -> None:
+    raw, driver = _guard("Payment methods")
+    raw.present["Payment methods"] = ("treeitem",)
+    raw.controls["Payment methods"] = _TREE_ITEM
+    assert driver.click("Payment methods") == "treeitem"
+    assert ("click", "treeitem", "Payment methods") in raw.calls
+
+
+def test_click_by_name_still_refuses_a_button_named_payment_methods_after_the_role_resolves() -> (
+    None
+):
+    raw, driver = _guard("Payment methods")
+    raw.present["Payment methods"] = ("button",)
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Payment methods")
+    assert not any(call[0] == "click" for call in raw.calls)
 
 
 def test_click_without_a_role_refuses_an_ambiguous_name_listing_the_roles() -> None:
@@ -2307,3 +2330,95 @@ def test_strict_allow_all_still_needs_a_button_declared() -> None:
     raw.controls["Your products"] = ControlInfo(tag="button", input_type="button", in_form=False)
     with pytest.raises(SubmitBlockedError, match="not declared|must be declared"):
         driver.click("Your products")
+
+
+@pytest.mark.parametrize(
+    ("name", "role"),
+    [
+        ("Payment methods", "treeitem"),
+        ("Bills & payments", "link"),
+        ("Registered devices", "link"),
+        ("Publisher", "tab"),
+        ("Confirmation settings", "link"),
+    ],
+)
+def test_a_navigation_control_named_with_a_noun_that_starts_like_a_finalizing_word_is_clickable(
+    name: str, role: str
+) -> None:
+    from blumkin.browser import guard
+
+    stems = guard._deny_stems(guard.DEFAULT_DENY_NAMES)
+    assert not guard._is_denied(
+        name, stems, navigation=role in guard._NAVIGATION_ROLES, noun_ok=guard._BUILTIN_STEMS
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "role"),
+    [
+        ("Pay now", "link"),
+        ("Pay invoice", "treeitem"),
+        ("Make a payment", "link"),
+        ("Make payment", "tab"),
+        ("Payment", "button"),
+        ("Payment methods", "button"),
+        ("Payment methods", "menuitem"),
+        ("Submit", "link"),
+        ("Confirm", "tab"),
+        ("Place order", "link"),
+    ],
+)
+def test_an_action_or_a_button_named_like_a_finalizing_word_is_still_refused(
+    name: str, role: str
+) -> None:
+    from blumkin.browser import guard
+
+    stems = guard._deny_stems(guard.DEFAULT_DENY_NAMES)
+    assert guard._is_denied(
+        name, stems, navigation=role in guard._NAVIGATION_ROLES, noun_ok=guard._BUILTIN_STEMS
+    )
+
+
+def test_a_native_button_in_a_form_reported_as_a_tab_is_judged_as_the_button_it_is() -> None:
+    raw, driver = _guard("Payment methods")
+    raw.present["Payment methods"] = ("tab",)
+    raw.controls["Payment methods"] = ControlInfo(tag="button", input_type="button", in_form=True)
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Payment methods", "tab")
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_native_button_tab_outside_any_form_stays_reachable() -> None:
+    raw, driver = _guard("Payment methods")
+    raw.present["Payment methods"] = ("tab",)
+    raw.controls["Payment methods"] = ControlInfo(tag="button", input_type="button", in_form=False)
+    assert driver.click("Payment methods", "tab") == "tab"
+
+
+def test_a_tasks_own_deny_name_still_applies_to_a_navigation_item_with_that_noun() -> None:
+    raw, driver = _guard("Payment methods", deny=("payment",))
+    raw.present["Payment methods"] = ("treeitem",)
+    raw.controls["Payment methods"] = _TREE_ITEM
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Payment methods", "treeitem")
+
+
+@pytest.mark.parametrize(
+    "name", ["Make the payment", "Make your payment", "Make this payment", "Make payments"]
+)
+def test_imperative_payment_phrasing_is_refused_on_a_navigation_item(name: str) -> None:
+    raw, driver = _guard(name)
+    raw.present[name] = ("link",)
+    raw.controls[name] = _TREE_ITEM
+    with pytest.raises(SubmitBlockedError):
+        driver.click(name, "link")
+
+
+@pytest.mark.parametrize("own_rule", ["pay", "payment", "publish"])
+def test_a_task_that_lists_a_built_in_word_itself_lets_no_noun_past_it(own_rule: str) -> None:
+    name = "Publisher" if own_rule == "publish" else "Payment methods"
+    raw, driver = _guard(name, deny=(own_rule,))
+    raw.present[name] = ("treeitem",)
+    raw.controls[name] = _TREE_ITEM
+    with pytest.raises(SubmitBlockedError):
+        driver.click(name, "treeitem")

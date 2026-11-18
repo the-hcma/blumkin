@@ -379,6 +379,33 @@ HEADINGS_REPORTED = 20
 SETTLE_GRACE_MS = 300
 SETTLE_QUIET_MS = 500
 SETTLE_WAIT_S = 4.0
+# How long `goto` waits for a page's background requests to finish before it lets go.
+GOTO_IDLE_WAIT_S = 10.0
+#: How long a page may stay stuck (blank, a spinner only, a script chunk that failed to load)
+#: before it is reloaded, how many reloads one action may spend on it, and the most time all of
+#: that may take (it must fit inside the per-call deadline, which is twice the action timeout
+#: and some seconds on top).
+STUCK_GRACE_S = 5.0
+MAX_STUCK_RELOADS = 2
+STUCK_BUDGET_S = 25.0
+_STUCK_POLL_MS = 500
+_QUIET_REQUESTS_S = 0.5
+#: What a stuck page looks like, judged only from what is on it. A page with a field, a button,
+#: a link or an editable area is never "blank" (a draft editor may show only a label while it
+#: holds unsaved input); a loading message counts only as a line of its own (a help panel that
+#: mentions it in a sentence is a working page); a failed script chunk is named by its error.
+_STUCK_JS = r"""() => {
+  const text = ((document.body && document.body.innerText) || '').trim();
+  if (/Loading chunk \d+ failed|ChunkLoadError/i.test(text)) return 'chunk';
+  const spinner = /^\s*loading( the)? (page|content)?[.…\s]*,?\s*please wait[.…\s]*$/i;
+  if (text.split('\n').some((line) => spinner.test(line))) return 'loading';
+  if (text.length < 20) {
+    const live = 'input,textarea,select,button,a[href],[contenteditable],'
+      + '[role=button],[role=textbox],iframe,embed,object';
+    if (!document.querySelector(live)) return 'blank';
+  }
+  return '';
+}"""
 #: How long `--expect-heading` waits for the heading before the click is reported as not landed.
 SETTLE_EXPECT_WAIT_S = 15.0
 
@@ -564,6 +591,53 @@ class PlaywrightDriver:
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
         self._timeout_s = timeout_s
+        self._inflight = 0
+        self._track_requests(page)
+
+    def _track_requests(self, page: Any) -> None:
+        """Count this page's requests still in flight and remember how the last document came.
+
+        The count is how `wait_network_quiet` knows a single-page app has stopped fetching, also
+        when `goto` only changed the fragment of a document that had already gone idle (the
+        browser's own idle state would then return at once).
+        """
+        listen = getattr(page, "on", None)
+        if listen is None:
+            return
+
+        def started(request: Any) -> None:
+            self._inflight += 1
+
+        def finished(_request: Any) -> None:
+            self._inflight = max(0, self._inflight - 1)
+
+        listen("request", started)
+        listen("requestfinished", finished)
+        listen("requestfailed", finished)
+
+    def wait_network_quiet(self, cap_s: float = GOTO_IDLE_WAIT_S) -> None:
+        """Wait until no request of this page is in flight (for a moment), at most `cap_s`.
+
+        A single-page app keeps fetching after `load`, and those requests pass through this
+        connection's routes: detaching with some in flight leaves them unanswered and the page
+        spinning for good. Long-lived requests (a poll, a stream) never finish, so the wait is
+        capped, and ending at the cap is not an error.
+        """
+        self._require_open()
+        deadline = time.monotonic() + cap_s
+        quiet_since: float | None = None
+        while time.monotonic() < deadline:
+            if self._inflight <= 0:
+                now = time.monotonic()
+                quiet_since = now if quiet_since is None else quiet_since
+                if now - quiet_since >= _QUIET_REQUESTS_S:
+                    return
+            else:
+                quiet_since = None
+            try:
+                self._page.wait_for_timeout(_STUCK_POLL_MS // 5)
+            except _playwright_error():
+                return
 
     def close(self) -> None:
         """Disconnect from the browser; it keeps running with the user's session."""
@@ -977,6 +1051,84 @@ class PlaywrightDriver:
             self._page.goto(url, timeout=self._timeout_ms)
         except _playwright_error() as exc:
             raise self._action_error(f"open {url!r}", exc) from exc
+
+    def recover_stuck_page(self, may_reload: Callable[[str], bool] | None = None) -> int:
+        """Reload a page that stays stuck, and say how many reloads it took (0 when it was fine).
+
+        Stuck means the page shows nothing (and no field or control), only a "Loading page,
+        please wait" line, or a script chunk that failed to load. It gets `STUCK_GRACE_S` to
+        clear on its own; if it does not, it is reloaded and given the same time again, up to
+        `MAX_STUCK_RELOADS` times and `STUCK_BUDGET_S` in all. `may_reload` is asked with the
+        address of the page as it is at that moment, before every reload, so a page that has
+        moved to somewhere a reload would do harm (an identity provider) is left alone. A page
+        that came from a form POST is never reloaded: that would resubmit the form. It reads
+        and reloads only; nothing is clicked or typed.
+        """
+        self._require_open()
+        deadline = time.monotonic() + STUCK_BUDGET_S
+        reloads = 0
+
+        def left() -> float:
+            return max(0.0, deadline - time.monotonic())
+
+        while True:
+            if not self._stays_stuck(min(STUCK_GRACE_S, left()), left):
+                return reloads
+            if (
+                reloads >= MAX_STUCK_RELOADS
+                or left() <= 0
+                or (may_reload is not None and not may_reload(str(self._page.url)))
+                or self._loaded_by_form(left)
+            ):
+                return reloads
+            try:
+                self._page.reload(
+                    timeout=max(1000.0, min(self._timeout_ms, left() * 1000)), wait_until="load"
+                )
+            except _playwright_error() as exc:
+                raise self._action_error("reload a page that stayed stuck", exc) from exc
+            reloads += 1
+            self.wait_network_quiet(min(GOTO_IDLE_WAIT_S, left()))
+
+    def _loaded_by_form(self, left: Callable[[], float]) -> bool:
+        """Whether the page in front of the browser is the answer to a form submission.
+
+        Reloading such a page resubmits the form, so it is never done. The browser's own
+        navigation history says how the current entry was reached, whether this connection saw
+        it or not; when that cannot be read in the time the recovery has left, or at all, the
+        page is treated as one that must not be reloaded.
+        """
+        try:
+            with self._bounded(max(1.0, left()), "read the page's navigation history"):
+                session = self._context.new_cdp_session(self._page)
+                try:
+                    history = session.send("Page.getNavigationHistory")
+                finally:
+                    session.detach()
+            entry = history["entries"][history["currentIndex"]]
+            return str(entry.get("transitionType", "")) == "form_submit"
+        except _DeadlineExpired:
+            return True  # a target that does not answer: leave the page alone
+        except Exception:  # unreadable or malformed: the safe answer is "do not reload"
+            return True
+
+    def _stays_stuck(self, grace_s: float, left: Callable[[], float] | None = None) -> bool:
+        """True when the page is still stuck after `grace_s` seconds of looking."""
+        deadline = time.monotonic() + grace_s
+        while True:
+            try:
+                bound = self._call_deadline_s()
+                if left is not None:
+                    bound = max(1.0, min(bound, left()))
+                with self._bounded(bound, "look at the page"):
+                    reason = str(self._page.evaluate(_STUCK_JS))
+            except _playwright_error():
+                return False  # a navigation replaced the page: it is not the one that was stuck
+            if not reason:
+                return False
+            if time.monotonic() >= deadline:
+                return True
+            self._page.wait_for_timeout(_STUCK_POLL_MS)
 
     def matching_roles(
         self, name: str, roles: Sequence[str], wait_s: float, nth: int | None = None

@@ -111,6 +111,23 @@ class _Raw:
         self.cookie_count = 0
         #: The address the headings are read from, when not the page's own.
         self.settled_url: str | None = None
+        #: Stuck-page recovery: how many reloads it reports, what it raises, and the order of
+        #: its calls against the settle that builds the report.
+        self.reloads = 0
+        self.recover_error: Exception | None = None
+        self.recover_checks: list[Callable[[str], bool] | None] = []
+        self.quiet_waits = 0
+        self.order: list[str] = []
+
+    def recover_stuck_page(self, may_reload: Callable[[str], bool] | None = None) -> int:
+        self.order.append("recover")
+        self.recover_checks.append(may_reload)
+        if self.recover_error is not None:
+            raise self.recover_error
+        return self.reloads
+
+    def wait_network_quiet(self) -> None:
+        self.quiet_waits += 1
 
     def clear_cache(self) -> None:
         self.cache_cleared += 1
@@ -129,6 +146,7 @@ class _Raw:
         self, *, expect_heading: str | None = None, expect_wait_s: float | None = None
     ) -> PageSettled:
         self.settle_calls.append(expect_heading)
+        self.order.append("settle")
         matched = (
             None
             if expect_heading is None
@@ -5545,3 +5563,95 @@ def test_inspect_watch_without_a_page_on_an_allowed_host_listens_to_nothing(
     assert result.exit_code == EXIT_OTHER and _json(result)["error"] == "host_blocked"
     assert [call for call in raw.calls if call[0] == "watch_requests"] == []
     assert raw.net_installed == 0 and raw.closed == 1  # still detached
+
+
+def test_click_recovers_a_stuck_page_before_it_builds_the_report(raw: _Raw) -> None:
+    raw.reloads = 1
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["reloaded"] == 1
+    assert raw.order == ["recover", "settle"]
+
+
+def test_click_without_a_stuck_page_reports_no_reload(raw: _Raw) -> None:
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert "reloaded" not in _json(result)
+
+
+def test_a_reload_that_fails_after_a_click_says_the_click_was_made(raw: _Raw) -> None:
+    raw.recover_error = BrowserActionError("Expected the page to reload, got a timeout")
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_OTHER, result.output
+    message = _json(result)["message"]
+    assert "WAS made" in message
+    assert "read the page before repeating" in message
+
+
+def test_the_reload_check_refuses_an_identity_provider_page_and_allows_the_task_page(
+    raw: _Raw,
+) -> None:
+    _run("--json", "browser", "click", "expense-report", "Add line")
+    may_reload = raw.recover_checks[0]
+    assert may_reload is not None
+    assert may_reload("https://erp.example.com/expenses") is True
+    assert may_reload("https://login.microsoftonline.com/common/reprocess") is False
+
+
+def test_goto_waits_for_the_network_then_reports_a_reload(raw: _Raw) -> None:
+    raw.reloads = 1
+    result = _run("--json", "browser", "goto", "expense-report", "https://erp.example.com/expenses")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.quiet_waits == 1
+    assert _json(result)["reloaded"] == 1
+
+
+def test_a_click_on_an_identity_provider_page_runs_in_the_sign_in_pass(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'upload_dirs = ["~/receipts"]')
+    raw._url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+    result = _run("--json", "browser", "click", "expense-report", "Your products")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.sign_ins == [True]
+
+
+def test_a_click_on_the_tasks_own_application_page_never_runs_in_the_sign_in_pass(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'upload_dirs = ["~/receipts"]')
+    result = _run("--json", "browser", "click", "expense-report", "Your products")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.sign_ins == []
+
+
+def test_a_host_that_is_both_the_tasks_own_and_a_sign_in_host_keeps_the_strict_net_on_clicks(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(
+        _config_dir,
+        'allowed_hosts = ["login.microsoftonline.com"]\n'
+        'sign_in_hosts = ["login.microsoftonline.com"]\n'
+        'upload_dirs = ["~/receipts"]',
+    )
+    raw._url = "https://login.microsoftonline.com/app/page"
+    result = _run("--json", "browser", "click", "expense-report", "Your products")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.sign_ins == []
+
+
+def test_goto_refuses_a_page_a_reload_landed_on_outside_the_tasks_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nupload_dirs = ["~/receipts"]')
+    raw.reloads = 1
+    original = raw.recover_stuck_page
+
+    def land_elsewhere(may_reload: Any = None) -> int:
+        count = original(may_reload)
+        raw._url = "https://elsewhere.example.net/page"
+        return count
+
+    raw.recover_stuck_page = land_elsewhere  # type: ignore[method-assign]
+    result = _run("--json", "browser", "goto", "expense-report", "https://erp.example.com/expenses")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "host_blocked"
