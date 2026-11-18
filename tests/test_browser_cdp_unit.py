@@ -4387,3 +4387,78 @@ def test_a_form_submission_on_an_earlier_page_does_not_stop_a_reload_of_this_one
     ]
     driver = _stuck_driver(monkeypatch, page)
     assert driver.recover_stuck_page() == 1
+
+
+_SPINNER = "<div>Loading page, please wait...</div>"
+
+#: (name, page body, what the stuck-page script must answer). '' means a page that works.
+_STUCK_PAGES = [
+    ("a working page", "<h1>Billing</h1><p>Some text that is long enough.</p>", ""),
+    ("an empty page", "", "blank"),
+    ("a page with only an iframe", "<iframe srcdoc='<p>x</p>'></iframe>", ""),
+    ("a tiny page with a link", "<a href='/x'>OK</a>", ""),
+    ("a draft editor showing only a label", "<label>Name</label><input>", ""),
+    ("a spinner line", _SPINNER, "loading"),
+    ("navigation plus a spinner line", f"<nav>Home Users Devices</nav>{_SPINNER}", "loading"),
+    (
+        "a help sentence that mentions the spinner",
+        "<p>If it says Loading page, please wait, call us.</p>",
+        "",
+    ),
+    ("a failed script chunk", "<p>Loading chunk 9743 failed. (error: x.js)</p>", "chunk"),
+    ("text typed into a field", f"{_SPINNER}<input id=i><script>i.value='mine'</script>", ""),
+    (
+        "text typed into a textarea",
+        f"{_SPINNER}<textarea id=t></textarea><script>t.value='x'</script>",
+        "",
+    ),
+    (
+        "an edited field that began prefilled",
+        f"{_SPINNER}<input id=i value=a><script>i.value='b'</script>",
+        "",
+    ),
+    ("an editable area with text", f"{_SPINNER}<div contenteditable=true>draft</div>", ""),
+    (
+        "a non-editable area marked contenteditable=false",
+        f"{_SPINNER}<div contenteditable=false>text</div>",
+        "loading",
+    ),
+    ("a prefilled field left alone", f"{_SPINNER}<input value='server default'>", "loading"),
+    ("a prefilled textarea left alone", f"{_SPINNER}<textarea>server text</textarea>", "loading"),
+    ("a range slider", f"{_SPINNER}<input type=range>", "loading"),
+    ("a colour picker", f"{_SPINNER}<input type=color>", "loading"),
+    ("submit and reset buttons", f"{_SPINNER}<input type=submit><input type=reset>", "loading"),
+]
+
+
+@pytest.fixture(scope="module")
+def _real_page():
+    """A page in a real browser for running the stuck-page script, or a skip when none exists."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    manager = sync_api.sync_playwright().start()
+    browser = None
+    for options in ({}, {"channel": "chrome"}, {"channel": "msedge"}):
+        try:
+            browser = manager.chromium.launch(headless=True, **options)
+            break
+        except Exception:  # not installed here: try the next one
+            continue
+    if browser is None:
+        manager.stop()
+        pytest.skip("no Chromium, Chrome or Edge is available to run the page script in")
+    page = browser.new_page()
+    yield page
+    browser.close()
+    manager.stop()
+
+
+@pytest.mark.parametrize(
+    ("label", "body", "expected"), _STUCK_PAGES, ids=[p[0] for p in _STUCK_PAGES]
+)
+def test_the_stuck_page_script_classifies_a_real_page(
+    _real_page: Any, label: str, body: str, expected: str
+) -> None:
+    from blumkin.browser.cdp import _STUCK_JS
+
+    _real_page.set_content(f"<body>{body}</body>")
+    assert _real_page.evaluate(_STUCK_JS) == expected

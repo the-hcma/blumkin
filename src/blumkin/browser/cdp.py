@@ -421,7 +421,7 @@ _STUCK_JS = r"""() => {
   const typed = Array.from(document.querySelectorAll(fields))
     .some((el) => el.value !== el.defaultValue);
   const edited = Array.from(document.querySelectorAll('[contenteditable]'))
-    .some((el) => (el.innerText || '').trim());
+    .some((el) => el.isContentEditable && (el.innerText || '').trim());
   if (typed || edited) return '';
   if (/Loading chunk \d+ failed|ChunkLoadError/i.test(text)) return 'chunk';
   const spinner = /^\s*loading( the)? (page|content)?[.…\s]*,?\s*please wait[.…\s]*$/i;
