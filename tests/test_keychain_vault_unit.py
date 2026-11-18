@@ -416,3 +416,17 @@ def test_an_abandoned_helper_takes_the_lock_once_its_caller_has_released_it(
         time.sleep(0.05)
     assert errors == []
     assert vault.get_password(_SERVICE, account) == "v"
+
+
+def test_deleting_an_account_missing_from_the_vault_leaves_a_standalone_item_alone(
+    tmp_path: Path,
+) -> None:
+    backend = _Backend()
+    account = _account(tmp_path)
+    backend.items[(_SERVICE, account)] = "an older version wrote this"
+    vault = VaultKeyring(backend)
+
+    with pytest.raises(backend.errors.PasswordDeleteError):
+        vault.delete_password(_SERVICE, account)
+
+    assert backend.items == {(_SERVICE, account): "an older version wrote this"}

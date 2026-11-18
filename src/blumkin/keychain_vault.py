@@ -137,8 +137,15 @@ class VaultKeyring:
         return vault
 
     def _raise_not_found(self, service: str, account: str) -> None:
-        """Raise the backend's own "nothing to delete" error, as a plain ``delete`` would."""
-        self._backend.delete_password(service, account)
+        """Raise the backend's own "nothing to delete" error without touching the backend.
+
+        Asking the backend to delete ``account`` would remove a standalone item of that name, a
+        leftover of an older layout that this facade deliberately never reads or removes.
+        """
+        not_found = getattr(self.errors, "PasswordDeleteError", None)
+        if not (isinstance(not_found, type) and issubclass(not_found, Exception)):
+            not_found = KeyError
+        raise not_found(f"Item not found: {service}/{account}")
 
     def _store(self, service: str, directory: str, vault: dict[str, Any]) -> None:
         vault_account = _vault_account(directory)
