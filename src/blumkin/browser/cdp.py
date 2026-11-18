@@ -413,18 +413,22 @@ _NEVER_ENDING_REQUESTS = frozenset({"eventsource", "websocket", "ping"})
 _STUCK_JS = r"""() => {
   const text = ((document.body && document.body.innerText) || '').trim();
   // A page whose fields were changed from what the page gave them (something typed, a file
-  // chosen) or whose editable area has text is never stuck, whatever else it says:
-  // reloading it would throw that away. This also covers a help line or an example that
-  // quotes a loading or error message on a page that works. A field still holding its
-  // default (a prefilled value, a slider, a colour picker) is not evidence of anything.
+  // chosen, a box ticked, an option picked) or whose editable area has text is never stuck,
+  // whatever else it says: reloading it would throw that away. This also covers a help line
+  // or an example that quotes a loading or error message on a page that works. A field still
+  // holding its default (a prefilled value, a slider, a colour picker) is not evidence.
   const fields = 'input:not([type=hidden]):not([type=range]):not([type=color])'
     + ':not([type=reset]):not([type=image]):not([type=submit]):not([type=button])'
     + ':not([type=checkbox]):not([type=radio]),textarea';
   const typed = Array.from(document.querySelectorAll(fields))
     .some((el) => el.value !== el.defaultValue);
+  const toggled = Array.from(document.querySelectorAll('input[type=checkbox],input[type=radio]'))
+    .some((el) => el.checked !== el.defaultChecked);
+  const chosen = Array.from(document.querySelectorAll('select'))
+    .some((el) => Array.from(el.options).some((o) => o.selected !== o.defaultSelected));
   const edited = Array.from(document.querySelectorAll('[contenteditable]'))
     .some((el) => el.isContentEditable && (el.innerText || '').trim());
-  if (typed || edited) return '';
+  if (typed || toggled || chosen || edited) return '';
   if (/Loading chunk \d+ failed|ChunkLoadError/i.test(text)) return 'chunk';
   const spinner = /^\s*loading( the)? (page|content)?[.…\s]*,?\s*please wait[.…\s]*$/i;
   if (text.split('\n').some((line) => spinner.test(line))) return 'loading';

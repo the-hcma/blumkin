@@ -4427,6 +4427,23 @@ _STUCK_PAGES = [
         f"{_SPINNER}<div contenteditable=false>text</div>",
         "loading",
     ),
+    (
+        "a ticked checkbox",
+        f"{_SPINNER}<input type=checkbox id=c><script>c.checked=true</script>",
+        "",
+    ),
+    ("a selected radio", f"{_SPINNER}<input type=radio id=r><script>r.checked=true</script>", ""),
+    (
+        "a changed dropdown",
+        f"{_SPINNER}<select id=s><option>a<option>b</select><script>s.value='b'</script>",
+        "",
+    ),
+    ("a checkbox left as the page set it", f"{_SPINNER}<input type=checkbox checked>", "loading"),
+    (
+        "a dropdown left as the page set it",
+        f"{_SPINNER}<select><option>a<option selected>b</select>",
+        "loading",
+    ),
     ("a prefilled field left alone", f"{_SPINNER}<input value='server default'>", "loading"),
     ("a prefilled textarea left alone", f"{_SPINNER}<textarea>server text</textarea>", "loading"),
     ("a range slider", f"{_SPINNER}<input type=range>", "loading"),

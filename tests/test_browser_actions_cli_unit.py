@@ -115,6 +115,7 @@ class _Raw:
         #: its calls against the settle that builds the report.
         self.reloads = 0
         self.pass_active = False
+        self.navigated_from: list[str] = []
         self.recovered_in_pass: list[bool] = []
         self.on_recover: Callable[[], None] | None = None
         self.stuck_only_after_settle = False
@@ -138,6 +139,10 @@ class _Raw:
 
     def wait_network_quiet(self) -> None:
         self.quiet_waits += 1
+
+    def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
+        self.order.append("navigate")
+        self.navigated_from.append(previous_url)
 
     def clear_cache(self) -> None:
         self.cache_cleared += 1
@@ -5588,7 +5593,7 @@ def test_click_recovers_a_stuck_page_before_it_builds_the_report(raw: _Raw) -> N
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["reloaded"] == 1
     # The destination is given time to appear, then recovered, then the report is built.
-    assert raw.order == ["settle", "recover", "settle"]
+    assert raw.order == ["navigate", "settle", "recover", "settle"]
 
 
 def test_click_without_a_stuck_page_reports_no_reload(raw: _Raw) -> None:
@@ -5714,3 +5719,26 @@ def test_goto_waits_through_a_second_sign_in_when_the_reload_sends_it_back_to_th
     assert payload["reloaded"] == 1
     assert payload["waited_for_sign_in_s"] >= 1.0  # the second sign-in was waited through
     assert clock.sleeps >= 1
+
+
+def test_click_waits_for_the_navigation_it_started_from_the_page_it_was_on(raw: _Raw) -> None:
+    result = _run("--json", "browser", "click", "expense-report", "Add line")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.navigated_from == [
+        "https://erp.example.com/expenses"
+    ]  # the page left, not the new one
+    assert raw.order.index("navigate") < raw.order.index("recover")
+
+
+def test_goto_refuses_a_page_outside_the_tasks_hosts_before_waiting_on_or_reloading_it(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    from blumkin.browser.actions import HostBlockedError
+
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nupload_dirs = ["~/receipts"]')
+    raw.reloads = 1
+    raw.lands_on = "https://elsewhere.example.net/page"
+    with pytest.raises(HostBlockedError):
+        _goto(120.0, _Clock())
+    assert raw.quiet_waits == 0
+    assert raw.order == []  # nothing waited on, settled or reloaded the foreign page

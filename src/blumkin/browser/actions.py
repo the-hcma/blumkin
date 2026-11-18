@@ -279,6 +279,7 @@ def click_task(
                         lambda host: not hosts or host_allowed(host, hosts),
                     )
                 )
+            previous_url = driver.url
             found = driver.click(name, role, waited, nth=nth)
             payload: dict[str, Any] = {
                 "action": "click",
@@ -297,9 +298,11 @@ def click_task(
             # before the report, so what the report says (the address, the heading, whether an
             # expected heading showed up) describes the page the caller will actually find.
             on_allowed_host(driver.url)
-            # The click returns before the page it started has committed: let that page appear
-            # (without waiting for a heading) so recovery looks at the destination, not at the
-            # healthy page that was left.
+            # The click returns before the page it started has committed: wait (bounded) for
+            # that navigation, then let the page appear without waiting for a heading, so
+            # recovery looks at the destination, not at the healthy page that was left. A click
+            # that does not navigate goes straight on.
+            driver.wait_for_navigation(previous_url)
             driver.settle_page(expect_wait_s=0)
             on_allowed_host(driver.url)
             reloads = _recover_stuck(driver, sign_in_hosts, "click", already_done="the click")
@@ -638,6 +641,9 @@ def goto_task(
                 waited = _wait_through_sign_in(
                     driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now, on_sign_in
                 )
+                # The page must be on a host the task may use before anything waits on or
+                # reloads it.
+                _require_allowed_page(driver, task, hosts, "the action")
                 # After a sign-in has finished and the application page is up, not before: the
                 # wait and the recovery both look at the page the caller will actually use.
                 # Still inside the sign-in pass: a reload that sends the browser back to the

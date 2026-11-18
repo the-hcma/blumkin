@@ -907,6 +907,7 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "read_field",
         "read_frame_text",
         "recover_stuck_page",
+        "wait_for_navigation",
         "wait_network_quiet",
         "read_text",
         "scroll_frame_text",

@@ -477,6 +477,13 @@ class GuardedDriver:
         recover = getattr(self._raw, "recover_stuck_page", None)
         return int(recover(may_reload)) if recover is not None else 0
 
+    def wait_for_navigation(self, previous_url: str) -> None:
+        """Wait (bounded) for the navigation the last click started: the URL moving on, then the
+        load. A click that does not navigate simply returns after the short wait; reads only."""
+        settle = getattr(self._raw, "settle", None)
+        if settle is not None:
+            settle(previous_url)
+
     def wait_network_quiet(self) -> None:
         """Wait (bounded) for the page's background requests to finish; reads nothing."""
         wait = getattr(self._raw, "wait_network_quiet", None)
