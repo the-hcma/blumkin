@@ -225,9 +225,7 @@ def test_authorizing_clears_the_refusal_diagnostic(monkeypatch) -> None:
     assert keychain_unlock.explain_if_locked("x", "default") == "default"
 
 
-def test_touch_keychain_loads_the_shared_item_and_migrates_the_old_one(
-    monkeypatch, tmp_path
-) -> None:
+def test_touch_keychain_loads_the_shared_item_through_the_vault(monkeypatch, tmp_path) -> None:
     import json as _json
 
     from blumkin.keychain_vault import VaultKeyring, clear_cache
@@ -238,11 +236,13 @@ def test_touch_keychain_loads_the_shared_item_and_migrates_the_old_one(
 
         def __init__(self) -> None:
             self.items: dict[tuple[str, str], str] = {}
+            self.gets: list[str] = []
 
         def delete_password(self, service: str, account: str) -> None:
             del self.items[(service, account)]
 
         def get_password(self, service: str, account: str) -> str | None:
+            self.gets.append(account)
             return self.items.get((service, account))
 
         def set_password(self, service: str, account: str, password: str) -> None:
@@ -253,18 +253,16 @@ def test_touch_keychain_loads_the_shared_item_and_migrates_the_old_one(
     cfg = SimpleNamespace(
         config_dir=tmp_path, profile="work", token_storage="auto", keychain_unlock="off"
     )
-    old_account = secret_store._keyring_account(cfg, "auth_record")  # type: ignore[arg-type]
-    backend.items[("blumkin", old_account)] = '{"token_cache":"t"}'
+    vault_account = _json.dumps([str(tmp_path.resolve()), "vault"], separators=(",", ":"))
+    backend.items[("blumkin", vault_account)] = _json.dumps({"x": "y"})
     monkeypatch.setattr(keychain_gate, "interactive", lambda: True)
     monkeypatch.setattr(secret_store, "_backend_for", lambda _cfg: "keyring")
     monkeypatch.setattr(secret_store, "_keyring_module", lambda: VaultKeyring(backend))
 
     assert secret_store.touch_keychain(cfg) is True  # type: ignore[arg-type]
 
-    vault_account = _json.dumps([str(tmp_path.resolve()), "vault"], separators=(",", ":"))
-    assert ("blumkin", old_account) not in backend.items
-    stored = _json.loads(backend.items[("blumkin", vault_account)])
-    assert stored[old_account] == '{"token_cache":"t"}'
+    # One read of the shared item serves every account of the profile: nothing else is asked.
+    assert backend.gets == [vault_account]
 
 
 def test_auth_keychain_hint_gives_the_plain_command_and_the_agent_form(monkeypatch) -> None:

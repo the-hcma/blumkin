@@ -462,50 +462,6 @@ def test_pre_bundle_per_kind_keyring_entries_are_not_carried_over(
     assert fake.store == {pre_bundle_account: "pre-bundle-value"}
 
 
-def test_delete_purges_pre_bundle_per_kind_keyring_entries(tmp_path: Path, monkeypatch) -> None:
-    """Logout must remove legacy per-kind accounts even though reads ignore them."""
-    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
-    fake = _FakeKeyring()
-    resolved_config_dir = str(cfg.config_dir.resolve())
-    pre_bundle_account = (
-        secret_store._KEYRING_SERVICE,
-        json.dumps([resolved_config_dir, cfg.profile, "auth_record"], separators=(",", ":")),
-    )
-    fake.store[pre_bundle_account] = "pre-bundle-value"
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
-
-    secret_store.delete(cfg, "auth_record")
-
-    assert fake.store == {}
-
-
-def test_auto_delete_does_not_raise_when_legacy_per_kind_account_is_locked(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """auto logout must not fail when only the pre-bundle account is unreadable."""
-    cfg = _load(tmp_path, monkeypatch, token_storage="auto")
-    legacy_account = secret_store._legacy_per_kind_keyring_account(cfg, "auth_record")
-    fake = _LegacyAccountLockedKeyring(legacy_account)
-    fake.store[(secret_store._KEYRING_SERVICE, legacy_account)] = "pre-bundle-value"
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
-
-    secret_store.delete(cfg, "auth_record")  # must not raise
-
-
-def test_keyring_pinned_delete_raises_when_legacy_per_kind_account_is_locked(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """token_storage=keyring surfaces a failed legacy purge as SecretWriteError."""
-    cfg = _load(tmp_path, monkeypatch, token_storage="keyring")
-    legacy_account = secret_store._legacy_per_kind_keyring_account(cfg, "auth_record")
-    fake = _LegacyAccountLockedKeyring(legacy_account)
-    fake.store[(secret_store._KEYRING_SERVICE, legacy_account)] = "pre-bundle-value"
-    monkeypatch.setattr(secret_store, "_keyring_module", lambda: fake)
-
-    with pytest.raises(SecretWriteError, match="cannot delete legacy"):
-        secret_store.delete(cfg, "auth_record")
-
-
 def test_delete_removes_unparseable_value_at_shared_bundle_account(
     tmp_path: Path, monkeypatch
 ) -> None:

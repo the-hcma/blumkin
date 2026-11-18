@@ -34,10 +34,6 @@ def _force_file_secret_backend(
     # The keychain is reached through the agent by default on macOS (#773); tests that mean it
     # set this back themselves.
     monkeypatch.setenv("BLUMKIN_KEYCHAIN_VIA_AGENT", "0")
-    # Listing stale keychain items runs `security dump-keychain` on the real login keychain.
-    from blumkin import keychain_hygiene
-
-    monkeypatch.setattr(keychain_hygiene, "list_accounts", lambda: None)
     # `doctor`'s macOS-keychain-missing warning (issue #308) is about a *real*
     # absence (stale install, unreachable backend) - not this fixture's own
     # stubbing of `_keyring_module` above, which would otherwise make every

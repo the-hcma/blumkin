@@ -501,16 +501,10 @@ def _keyring_kind_present(
     try:
         keychain_unlock.ensure_unlocked(cfg.keychain_unlock)
         if kind in secret_store_mod._BUNDLED_KINDS:
-            if secret_store_mod._bundled_item_present_for_delete(keyring_module, account, kind):
-                return (True, False)
-            legacy = secret_store_mod._legacy_per_kind_keyring_account(cfg, kind)
-            return (
-                secret_store_mod._call_keyring_with_timeout(
-                    keyring_module.get_password, secret_store_mod._KEYRING_SERVICE, legacy
-                )
-                is not None,
-                False,
+            present = secret_store_mod._bundled_item_present_for_delete(
+                keyring_module, account, kind
             )
+            return (present, False)
         return (
             secret_store_mod._call_keyring_with_timeout(
                 keyring_module.get_password, secret_store_mod._KEYRING_SERVICE, account

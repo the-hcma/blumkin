@@ -83,57 +83,45 @@ def test_two_config_dirs_do_not_share_an_item(tmp_path: Path) -> None:
     assert vault.get_password(_SERVICE, _account(second)) == "two"
 
 
-def test_a_legacy_item_is_copied_in_once_and_removed(tmp_path: Path) -> None:
+def test_a_missing_account_reads_as_none_and_never_touches_an_older_standalone_item(
+    tmp_path: Path,
+) -> None:
+    """There is no migration: an item an earlier version wrote is simply not read."""
     backend = _Backend()
     account = _account(tmp_path)
-    backend.items[(_SERVICE, account)] = "legacy-secret"
+    backend.items[(_SERVICE, account)] = "an older version wrote this"
     vault = VaultKeyring(backend)
 
-    assert vault.get_password(_SERVICE, account) == "legacy-secret"
-
-    assert (_SERVICE, account) not in backend.items
-    assert json.loads(backend.items[(_SERVICE, _vault_account(tmp_path))])[account] == (
-        "legacy-secret"
-    )
-
-
-def test_an_account_that_never_existed_is_probed_once_not_on_every_miss(tmp_path: Path) -> None:
-    backend = _Backend()
-    account = _account(tmp_path, slot="client_secret")
-    assert VaultKeyring(backend).get_password(_SERVICE, account) is None
-
-    # A new process: nothing cached, only what the keychain itself remembers.
-    keychain_vault.clear_cache()
-    backend.calls.clear()
-    assert VaultKeyring(backend).get_password(_SERVICE, account) is None
+    assert vault.get_password(_SERVICE, account) is None
 
     assert ("get", account) not in backend.calls
+    assert backend.items == {(_SERVICE, account): "an older version wrote this"}
+
+
+def test_a_vault_written_by_the_previous_release_still_reads_and_loses_its_bookkeeping(
+    tmp_path: Path,
+) -> None:
+    backend = _Backend()
+    account = _account(tmp_path)
+    backend.items[(_SERVICE, _vault_account(tmp_path))] = json.dumps(
+        {account: "v", "_legacy_checked": [account]}
+    )
+    vault = VaultKeyring(backend)
+
+    assert vault.get_password(_SERVICE, account) == "v"
+    vault.set_password(_SERVICE, _account(tmp_path, slot="other"), "w")
+
+    stored = json.loads(backend.items[(_SERVICE, _vault_account(tmp_path))])
+    assert set(stored) == {account, _account(tmp_path, slot="other")}
 
 
 def test_deleting_the_last_secret_leaves_no_item_behind(tmp_path: Path) -> None:
     backend = _Backend()
     vault = VaultKeyring(backend)
     account = _account(tmp_path)
-    assert vault.get_password(_SERVICE, _account(tmp_path, slot="other")) is None
     vault.set_password(_SERVICE, account, "v")
     vault.delete_password(_SERVICE, account)
     assert backend.items == {}
-
-
-def test_a_failed_legacy_cleanup_fails_the_delete(tmp_path: Path) -> None:
-    backend = _Backend()
-    account = _account(tmp_path)
-    backend.items[(_SERVICE, account)] = "legacy"
-    real_delete = backend.delete_password
-
-    def fail_on_legacy(service: str, acct: str) -> None:
-        if acct == account:
-            raise RuntimeError("keychain refused")
-        real_delete(service, acct)
-
-    backend.delete_password = fail_on_legacy  # type: ignore[method-assign]
-    with pytest.raises(RuntimeError, match="keychain refused"):
-        VaultKeyring(backend).delete_password(_SERVICE, account)
 
 
 def test_a_failed_vault_delete_is_not_swallowed(tmp_path: Path) -> None:
@@ -181,14 +169,6 @@ def test_delete_removes_the_secret_and_the_empty_item(tmp_path: Path) -> None:
 
     assert backend.items == {}
     assert vault.get_password(_SERVICE, account) is None
-
-
-def test_delete_also_removes_a_legacy_item_that_was_never_migrated(tmp_path: Path) -> None:
-    backend = _Backend()
-    account = _account(tmp_path)
-    backend.items[(_SERVICE, account)] = "legacy"
-    VaultKeyring(backend).delete_password(_SERVICE, account)
-    assert backend.items == {}
 
 
 def test_deleting_what_is_not_there_raises_the_backends_not_found(tmp_path: Path) -> None:
@@ -320,9 +300,7 @@ def test_a_transaction_reads_what_another_process_wrote_not_the_cache(tmp_path: 
     assert mine.get_password(_SERVICE, account) == "old"  # cached
 
     # Another process rewrites the item behind this process's cache.
-    backend.items[(_SERVICE, _vault_account(tmp_path))] = json.dumps(
-        {account: "new", "_legacy_checked": [account]}
-    )
+    backend.items[(_SERVICE, _vault_account(tmp_path))] = json.dumps({account: "new"})
 
     assert mine.get_password(_SERVICE, account) == "old"  # still inside the TTL
     with mine.transaction(_SERVICE, account):
@@ -438,3 +416,17 @@ def test_an_abandoned_helper_takes_the_lock_once_its_caller_has_released_it(
         time.sleep(0.05)
     assert errors == []
     assert vault.get_password(_SERVICE, account) == "v"
+
+
+def test_deleting_an_account_missing_from_the_vault_leaves_a_standalone_item_alone(
+    tmp_path: Path,
+) -> None:
+    backend = _Backend()
+    account = _account(tmp_path)
+    backend.items[(_SERVICE, account)] = "an older version wrote this"
+    vault = VaultKeyring(backend)
+
+    with pytest.raises(backend.errors.PasswordDeleteError):
+        vault.delete_password(_SERVICE, account)
+
+    assert backend.items == {(_SERVICE, account): "an older version wrote this"}
