@@ -404,6 +404,8 @@ _GET_TRANSITIONS = frozenset(
     }
 )
 _QUIET_REQUESTS_S = 0.5
+#: Requests that stay open for as long as the page does and so never mean "still loading".
+_NEVER_ENDING_REQUESTS = frozenset({"eventsource", "websocket", "ping"})
 #: What a stuck page looks like, judged only from what is on it. A page with a field, a button,
 #: a link or an editable area is never "blank" (a draft editor may show only a label while it
 #: holds unsaved input); a loading message counts only as a line of its own (a help panel that
@@ -623,7 +625,10 @@ class PlaywrightDriver:
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
         self._timeout_s = timeout_s
-        self._inflight = 0
+        #: The requests of this page that have started and not yet finished or failed.
+        self._pending: set[Any] = set()
+        #: When a request of this page last started or finished (a monotonic time, or None).
+        self._request_activity: float | None = None
         self._track_requests(page)
 
     def _track_requests(self, page: Any) -> None:
@@ -638,10 +643,24 @@ class PlaywrightDriver:
             return
 
         def started(request: Any) -> None:
-            self._inflight += 1
+            try:
+                kind = str(request.resource_type)
+                top_level = bool(request.is_navigation_request()) and (
+                    request.frame.parent_frame is None
+                )
+            except Exception:  # a request of a closing page: nothing to track
+                return
+            if top_level:
+                # A new document: whatever the old one had in flight was cancelled with it,
+                # and the browser does not always say so.
+                self._pending.clear()
+            if kind not in _NEVER_ENDING_REQUESTS:
+                self._pending.add(request)
+            self._request_activity = time.monotonic()
 
-        def finished(_request: Any) -> None:
-            self._inflight = max(0, self._inflight - 1)
+        def finished(request: Any) -> None:
+            self._pending.discard(request)
+            self._request_activity = time.monotonic()
 
         listen("request", started)
         listen("requestfinished", finished)
@@ -656,16 +675,15 @@ class PlaywrightDriver:
         capped, and ending at the cap is not an error.
         """
         self._require_open()
-        deadline = time.monotonic() + cap_s
-        quiet_since: float | None = None
+        began = time.monotonic()
+        deadline = began + cap_s
         while time.monotonic() < deadline:
-            if self._inflight <= 0:
-                now = time.monotonic()
-                quiet_since = now if quiet_since is None else quiet_since
-                if now - quiet_since >= _QUIET_REQUESTS_S:
-                    return
-            else:
-                quiet_since = None
+            now = time.monotonic()
+            # Quiet is half a second with nothing in flight and no request having started or
+            # finished in it: a request that came and went between two looks still counts.
+            last = self._request_activity if self._request_activity is not None else began
+            if not self._pending and now - max(last, began) >= _QUIET_REQUESTS_S:
+                return
             try:
                 self._page.wait_for_timeout(_STUCK_POLL_MS // 5)
             except _playwright_error():
@@ -1134,13 +1152,20 @@ class PlaywrightDriver:
         the run, a reload that was not this recovery's own, a transition not known to be safe,
         or a history that cannot be read in the time left, leaves the page alone.
         """
+        session: Any = None
         try:
             with self._bounded(max(1.0, left()), "read the page's navigation history"):
                 session = self._context.new_cdp_session(self._page)
-                try:
-                    history = session.send("Page.getNavigationHistory")
-                finally:
-                    session.detach()
+                history = session.send("Page.getNavigationHistory")
+        except _DeadlineExpired:
+            return False  # a target that does not answer: leave it, and the session, alone
+        except Exception:  # unreadable or malformed
+            self._release_session(session, left)
+            return False
+        self._release_session(session, left)
+        if self._expired:
+            return False  # the release timed out: this connection can no longer be trusted
+        try:
             entries = history["entries"]
             current = int(history["currentIndex"])
             here = _without_fragment(str(entries[current].get("url", "")))
@@ -1149,13 +1174,21 @@ class PlaywrightDriver:
                 if _without_fragment(str(entry.get("url", ""))) != here:
                     break
                 run.append(str(entry.get("transitionType", "")))
-        except _DeadlineExpired:
-            return False  # a target that does not answer: leave the page alone
-        except Exception:  # unreadable or malformed
+        except Exception:  # malformed
             return False
         if "reload" in run and not after_our_reload:
             return False
         return all(kind in _GET_TRANSITIONS or kind == "reload" for kind in run)
+
+    def _release_session(self, session: Any, left: Callable[[], float]) -> None:
+        """Detach a CDP session in a time of its own; a session that will not detach is left."""
+        if session is None:
+            return
+        try:
+            with self._bounded(max(1.0, min(2.0, left())), "release the browser session"):
+                session.detach()
+        except Exception:  # a session that cannot be released does not change the answer
+            return
 
     def _stays_stuck(self, grace_s: float, left: Callable[[], float] | None = None) -> bool:
         """True when the page is still stuck after `grace_s` seconds of looking."""

@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +114,9 @@ class _Raw:
         #: Stuck-page recovery: how many reloads it reports, what it raises, and the order of
         #: its calls against the settle that builds the report.
         self.reloads = 0
+        self.pass_active = False
+        self.recovered_in_pass: list[bool] = []
+        self.on_recover: Callable[[], None] | None = None
         self.stuck_only_after_settle = False
         self.recover_error: Exception | None = None
         self.recover_checks: list[Callable[[str], bool] | None] = []
@@ -123,6 +126,9 @@ class _Raw:
     def recover_stuck_page(self, may_reload: Callable[[str], bool] | None = None) -> int:
         seen_the_destination = "settle" in self.order
         self.order.append("recover")
+        self.recovered_in_pass.append(self.pass_active)
+        if self.on_recover is not None:
+            self.on_recover()
         self.recover_checks.append(may_reload)
         if self.recover_error is not None:
             raise self.recover_error
@@ -367,9 +373,16 @@ class _Raw:
     def title(self) -> str:
         return self.title_text
 
-    def sign_in_pass(self, is_sign_in_host: Callable[[str], bool], is_task_host: Any = None) -> Any:
+    @contextlib.contextmanager
+    def sign_in_pass(
+        self, is_sign_in_host: Callable[[str], bool], is_task_host: Any = None
+    ) -> Iterator[None]:
         self.sign_ins.append(is_sign_in_host("login.microsoftonline.com"))
-        return contextlib.nullcontext()
+        self.pass_active = True
+        try:
+            yield
+        finally:
+            self.pass_active = False
 
     def mark_window(
         self, task: str, hosts: Sequence[str] = (), blocked: Sequence[str] = ()
@@ -5670,3 +5683,34 @@ def test_click_recovers_a_destination_that_only_turns_up_stuck_after_the_click_r
     result = _run("--json", "browser", "click", "expense-report", "Add line")
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert _json(result)["reloaded"] == 1
+
+
+def test_goto_recovers_a_stuck_page_while_the_sign_in_pass_is_still_active(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.reloads = 1
+    payload = _goto(120.0, _Clock())
+    assert raw.recovered_in_pass == [True]
+    assert payload["reloaded"] == 1
+
+
+def test_goto_waits_through_a_second_sign_in_when_the_reload_sends_it_back_to_the_provider(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]')
+    raw.reloads = 1
+    raw.url_script = [_FORM]
+
+    def reload_lands_on_the_provider() -> None:
+        raw.url_script = [_IDP, _IDP, _FORM]  # the session had expired: sign in again
+
+    raw.on_recover = reload_lands_on_the_provider
+    clock = _Clock()
+
+    payload = _goto(120.0, clock)
+
+    assert payload["url"] == _FORM
+    assert payload["reloaded"] == 1
+    assert payload["waited_for_sign_in_s"] >= 1.0  # the second sign-in was waited through
+    assert clock.sleeps >= 1

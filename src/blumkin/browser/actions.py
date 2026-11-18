@@ -638,6 +638,18 @@ def goto_task(
                 waited = _wait_through_sign_in(
                     driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now, on_sign_in
                 )
+                # After a sign-in has finished and the application page is up, not before: the
+                # wait and the recovery both look at the page the caller will actually use.
+                # Still inside the sign-in pass: a reload that sends the browser back to the
+                # identity provider must be able to finish its form post, and is waited
+                # through like the first sign-in.
+                driver.wait_network_quiet()
+                reloads = _recover_stuck(driver, sign_in_hosts, "navigation")
+                if reloads:
+                    again = _wait_through_sign_in(
+                        driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now, on_sign_in
+                    )
+                    waited = waited or again
             _require_allowed_page(driver, task, hosts, "the action")
         except BrowserActionError as exc:
             # A sign-in that loops or a navigation that times out is where the chain matters most.
@@ -645,12 +657,6 @@ def goto_task(
             if len(chain) > 1:
                 exc.chain = chain  # type: ignore[attr-defined]
             raise
-        # After a sign-in has finished and the application page is up, not before: the wait
-        # and the recovery both look at the page the caller will actually use.
-        driver.wait_network_quiet()
-        reloads = _recover_stuck(driver, sign_in_hosts, "navigation")
-        if reloads:
-            _require_allowed_page(driver, task, hosts, "the action")
         payload: dict[str, Any] = {"action": "goto", "ok": True, "task": task, "url": driver.url}
         if reloads:
             payload["reloaded"] = reloads

@@ -4104,8 +4104,9 @@ class _StuckPage(_Page):
 
 
 class _NetRequest:
-    def __init__(self, method: str = "GET", navigation: bool = False) -> None:
+    def __init__(self, method: str = "GET", navigation: bool = False, kind: str = "fetch") -> None:
         self.method = method
+        self.resource_type = kind
         self._navigation = navigation
         self.frame = SimpleNamespace(parent_frame=None)
 
@@ -4244,10 +4245,13 @@ def test_waiting_for_the_network_waits_for_a_request_in_flight_and_then_returns(
     page.fire("request", request)
     original = page.wait_for_timeout
 
+    finished: list[bool] = []
+
     def finish_after_three_seconds(ms: float) -> None:
         original(ms)
-        if page.now >= 3.0:
-            page.fire("requestfinished", request)
+        if page.now >= 3.0 and not finished:
+            finished.append(True)
+            page.fire("requestfinished", request)  # a request finishes once
 
     page.wait_for_timeout = finish_after_three_seconds  # type: ignore[method-assign]
     driver.wait_network_quiet()
@@ -4462,3 +4466,76 @@ def test_the_stuck_page_script_classifies_a_real_page(
 
     _real_page.set_content(f"<body>{body}</body>")
     assert _real_page.evaluate(_STUCK_JS) == expected
+
+
+def test_a_request_that_starts_and_finishes_between_two_looks_restarts_the_quiet_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    original = page.wait_for_timeout
+    done: list[bool] = []
+
+    def one_quick_request(ms: float) -> None:
+        original(ms)
+        if page.now >= 0.4 and not done:
+            done.append(True)  # starts and finishes inside one poll, at 0.4 seconds
+            request = _NetRequest()
+            page.fire("request", request)
+            page.fire("requestfinished", request)
+
+    page.wait_for_timeout = one_quick_request  # type: ignore[method-assign]
+    driver.wait_network_quiet()
+    # Half a second of quiet counts from the request's end (0.4), not from the start (0).
+    assert page.now >= 0.9
+
+
+def test_a_session_that_will_not_detach_does_not_stall_the_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    started = time.monotonic()
+
+    class _HungDetach:
+        def send(self, method: str) -> Any:
+            return {
+                "currentIndex": 0,
+                "entries": [{"url": "https://app.example.com/page", "transitionType": "typed"}],
+            }
+
+        def detach(self) -> None:
+            time.sleep(10)  # never comes back in time
+
+    assert page.context is not None
+    page.context.new_cdp_session = lambda target: _HungDetach()  # type: ignore[method-assign]
+    # The release is time-boxed; a connection that would not let go is not used again, so the
+    # page is left as it is and the recovery returns instead of hanging or raising.
+    assert driver.recover_stuck_page() == 0
+    assert page.reload_times == []
+    assert time.monotonic() - started < 6.0
+
+
+def test_requests_a_navigation_cancelled_do_not_keep_the_network_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    for _ in range(5):
+        page.fire("request", _NetRequest())  # the old page's requests, never reported finished
+    document = _NetRequest(navigation=True, kind="document")
+    page.fire("request", document)  # a new document: the old one's requests are gone
+    page.fire("requestfinished", document)
+    driver.wait_network_quiet()
+    assert page.now < 2.0  # not the full 10 second cap
+
+
+@pytest.mark.parametrize("kind", ["eventsource", "websocket", "ping"])
+def test_a_request_that_stays_open_for_the_life_of_the_page_is_not_waited_for(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    page = _StuckPage()
+    driver = _stuck_driver(monkeypatch, page)
+    page.fire("request", _NetRequest(kind=kind))
+    driver.wait_network_quiet()
+    assert page.now < 2.0
