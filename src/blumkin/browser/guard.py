@@ -1125,6 +1125,15 @@ def _is_cell_value(value: str) -> bool:
 #: action of filing a report.
 _FILE_NOUNS = frozenset({"name", "names", "size", "type"})
 
+#: A label with one of these words is an instruction to pay, however it is dressed (`Make a
+#: one-time pay-as-you-go payment`), so the noun and phrase exemptions below do not apply to it.
+_IMPERATIVE_PAYMENT_VERBS = frozenset({"initiate", "make", "process"})
+
+#: Phrases, as the words they tokenize to, that name a thing and not an action (`Pay-as-you-go`
+#: is a pricing model). On a navigation control they are dropped before the built-in single-word
+#: stems are looked at, so the `pay` in them is not a finalizing word.
+_NOUN_PHRASES: tuple[tuple[str, ...], ...] = (("pay", "as", "you", "go"),)
+
 #: Roles that only navigate: a click on one opens a page, it does not act on the one it is on.
 _NAVIGATION_ROLES = frozenset({"link", "tab", "treeitem"})
 
@@ -1168,6 +1177,21 @@ _NOUN_FORMS = frozenset(
 _BUILTIN_STEMS = frozenset(_deny_stems(DEFAULT_DENY_NAMES))
 
 
+def _without_phrases(words: list[str]) -> list[str]:
+    """`words` with every run that spells one of `_NOUN_PHRASES` taken out."""
+    kept: list[str] = []
+    index = 0
+    while index < len(words):
+        for phrase in _NOUN_PHRASES:
+            if tuple(words[index : index + len(phrase)]) == phrase:
+                index += len(phrase)
+                break
+        else:
+            kept.append(words[index])
+            index += 1
+    return kept
+
+
 def _is_denied(
     name: str,
     stems: tuple[str, ...],
@@ -1187,26 +1211,36 @@ def _is_denied(
     ]
     # A navigation control may carry a noun that merely starts like a finalizing stem. Phrases
     # (`make a payment`) are matched on every word below, so they still see the noun.
-    single = [w for w in words if not (navigation and w in _NOUN_FORMS)]
-    spaced = " ".join(words)
-    # The same words run together, with the offset where each word starts, so a deny word
-    # written `e-mail` also catches `Email`.
-    compact = "".join(words)
-    starts, offset = [], 0
-    for word in words:
-        starts.append(offset)
-        offset += len(word)
+    exempt = navigation and not _IMPERATIVE_PAYMENT_VERBS.intersection(words)
+    single = _without_phrases(words) if exempt else words
+    single = [w for w in single if not (exempt and w in _NOUN_FORMS)]
+    # The words a phrase stem is matched against: as written, and (on a navigation control) with
+    # the non-action phrases taken out too, so `Make a pay-as-you-go payment` still reads as
+    # `make a payment` and is refused.
+    variants = [words]
+    if exempt and (without := _without_phrases(words)) != words:
+        variants.append(without)
     for stem in stems:
         if " " in stem:
-            if re.search(rf"(?<![^\W_]){re.escape(stem)}", spaced):
-                return True
-            glued = stem.replace(" ", "")
-            if any(compact.startswith(glued, start) for start in starts):
-                return True
-        elif any(
+            for variant in variants:
+                spaced = " ".join(variant)
+                if re.search(rf"(?<![^\W_]){re.escape(stem)}", spaced):
+                    return True
+                # The same words run together, with the offset where each word starts, so a
+                # deny word written `e-mail` also catches `Email`.
+                compact = "".join(variant)
+                starts, offset = [], 0
+                for word in variant:
+                    starts.append(offset)
+                    offset += len(word)
+                glued = stem.replace(" ", "")
+                if any(compact.startswith(glued, start) for start in starts):
+                    return True
+            continue
+        if any(
             word.startswith(stem)
             for word in (
-                plain if stem == "file" else (single if navigation and stem in noun_ok else words)
+                plain if stem == "file" else (single if exempt and stem in noun_ok else words)
             )
         ):
             return True

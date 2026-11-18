@@ -2440,3 +2440,92 @@ def test_download_keeps_a_native_button_tab_outside_any_form_reachable() -> None
     raw.controls["Payment methods"] = ControlInfo(tag="button", input_type="button", in_form=False)
     driver.download("Payment methods", "tab", save_to=Path("/tmp"))
     assert any(call[0] == "download" for call in raw.calls)
+
+
+@pytest.mark.parametrize("name", ["Pay-as-you-go", "Pay as you go", "pay-as-you-go billing"])
+@pytest.mark.parametrize("role", ["treeitem", "link", "tab"])
+def test_a_navigation_item_named_pay_as_you_go_is_clickable(name: str, role: str) -> None:
+    raw, driver = _guard(name)
+    raw.present[name] = (role,)
+    raw.controls[name] = _TREE_ITEM
+    assert driver.click(name, role) == role
+
+
+@pytest.mark.parametrize("role", ["button", "menuitem"])
+def test_a_button_or_menu_item_named_pay_as_you_go_is_still_refused(role: str) -> None:
+    raw, driver = _guard("Pay-as-you-go")
+    raw.present["Pay-as-you-go"] = (role,)
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Pay-as-you-go", role)
+
+
+def test_a_tasks_own_pay_rule_still_refuses_pay_as_you_go_on_a_navigation_item() -> None:
+    raw, driver = _guard("Pay-as-you-go", deny=("pay",))
+    raw.present["Pay-as-you-go"] = ("treeitem",)
+    raw.controls["Pay-as-you-go"] = _TREE_ITEM
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Pay-as-you-go", "treeitem")
+
+
+@pytest.mark.parametrize("name", ["Pay-as-you-go pay now", "Pay now", "Make a payment"])
+def test_an_action_next_to_or_instead_of_pay_as_you_go_is_still_refused(name: str) -> None:
+    raw, driver = _guard(name)
+    raw.present[name] = ("link",)
+    raw.controls[name] = _TREE_ITEM
+    with pytest.raises(SubmitBlockedError):
+        driver.click(name, "link")
+
+
+@pytest.mark.parametrize(
+    "name", ["Make a pay-as-you-go payment", "Make your pay-as-you-go payment", "Make payment"]
+)
+def test_an_action_that_contains_pay_as_you_go_is_still_refused_on_a_navigation_item(
+    name: str,
+) -> None:
+    raw, driver = _guard(name)
+    raw.present[name] = ("link",)
+    raw.controls[name] = _TREE_ITEM
+    with pytest.raises(SubmitBlockedError):
+        driver.click(name, "link")
+
+
+def test_a_native_form_button_reporting_a_link_role_is_refused_by_its_own_vetting() -> None:
+    raw, driver = _guard("Pay-as-you-go")
+    raw.present["Pay-as-you-go"] = ("link",)
+    raw.controls["Pay-as-you-go"] = ControlInfo(tag="button", input_type="button", in_form=True)
+    with pytest.raises(SubmitBlockedError):
+        driver.click("Pay-as-you-go", "link")
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_native_button_outside_any_form_reporting_a_link_role_stays_reachable() -> None:
+    raw, driver = _guard("Pay-as-you-go")
+    raw.present["Pay-as-you-go"] = ("link",)
+    raw.controls["Pay-as-you-go"] = ControlInfo(tag="button", input_type="button", in_form=False)
+    assert driver.click("Pay-as-you-go", "link") == "link"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Make a one-time pay-as-you-go payment",
+        "Make a quick one-off payment",
+        "Process payments",
+        "Initiate payment",
+        "Process the pay-as-you-go payment",
+    ],
+)
+def test_a_label_that_tells_you_to_pay_is_refused_however_it_is_dressed(name: str) -> None:
+    raw, driver = _guard(name)
+    raw.present[name] = ("link",)
+    raw.controls[name] = _TREE_ITEM
+    with pytest.raises(SubmitBlockedError):
+        driver.click(name, "link")
+
+
+@pytest.mark.parametrize("name", ["Payment methods", "Payments report", "Pay-as-you-go billing"])
+def test_the_labels_of_things_stay_clickable_with_no_payment_verb_in_them(name: str) -> None:
+    raw, driver = _guard(name)
+    raw.present[name] = ("treeitem",)
+    raw.controls[name] = _TREE_ITEM
+    assert driver.click(name, "treeitem") == "treeitem"
