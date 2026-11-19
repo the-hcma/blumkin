@@ -127,14 +127,70 @@ def test_observe_records_a_page_in_the_draft_and_reports_what_it_kept(
     assert "login.microsoftonline.com" in driver.marks[0][2]
 
 
-def test_observe_refuses_a_task_without_allowed_hosts(driver: _Driver, _config_dir: Path) -> None:
+def test_observe_without_allowed_hosts_records_the_page(driver: _Driver, _config_dir: Path) -> None:
+    """Observing only reads, like `browser read` (#785): no hosts declared, any web page."""
     _policy(_config_dir, 'allowed_controls = ["Add line"]')
-    result = _run("browser", "explore", "observe", "expense-report", "expense-list")
+    driver.url = "https://portal.example.org/costs"
+    result = _run("browser", "explore", "observe", "expense-report", "costs")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["page"] == "costs"
+    assert _draft_path(_config_dir).is_file()
+
+
+def test_observe_without_allowed_hosts_refuses_a_page_that_is_not_http(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    driver.url = "file:///etc/hosts"
+    result = _run("browser", "explore", "observe", "expense-report", "local")
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "explore_refused"
+    assert not _draft_path(_config_dir).exists()
+
+
+def test_observe_without_allowed_hosts_refuses_a_sign_in_page(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    driver.url = "https://login.microsoftonline.com/common/oauth2"
+    result = _run("browser", "explore", "observe", "expense-report", "login")
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "explore_refused"
+    assert not _draft_path(_config_dir).exists()
+
+
+def test_observe_works_for_a_task_with_no_table_at_all(driver: _Driver, _config_dir: Path) -> None:
+    (_config_dir / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    driver.url = "https://portal.example.org/costs"
+    result = _run("browser", "explore", "observe", "expense-report", "costs")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _draft_path(_config_dir).is_file()
+
+
+def test_forget_works_without_allowed_hosts_since_it_never_touches_the_page(
+    driver: _Driver, _config_dir: Path
+) -> None:
+    _run("browser", "explore", "observe", "expense-report", "expense-list")
+    _run("browser", "explore", "observe", "expense-report", "expense-detail")
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    result = _run("browser", "explore", "forget", "expense-report", "expense-detail")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+
+
+@pytest.mark.parametrize(
+    "args", [("click", "Help", "--role", "link"), ("save", "--yes")], ids=["click", "save"]
+)
+def test_click_and_save_still_need_allowed_hosts(
+    driver: _Driver, _config_dir: Path, args: tuple[str, ...]
+) -> None:
+    """Only observing is relaxed: a click navigates and a save records the hosts."""
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    result = _run("browser", "explore", args[0], "expense-report", *args[1:])
     assert result.exit_code == EXIT_OTHER
     payload = _json(result)
     assert payload["error"] == "explore_refused"
     assert "allowed_hosts" in payload["message"]
-    assert not _draft_path(_config_dir).exists()
+    assert driver.clicks == []
 
 
 def test_observe_refuses_a_page_off_the_allowed_hosts(driver: _Driver, _config_dir: Path) -> None:

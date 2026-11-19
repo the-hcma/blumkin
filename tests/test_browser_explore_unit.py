@@ -740,6 +740,46 @@ def test_the_exploring_driver_restricts_navigation_to_the_allowed_hosts() -> Non
     assert allowed("") is False
 
 
+def test_the_exploring_driver_with_no_hosts_installs_no_navigation_restriction() -> None:
+    """An empty tuple means no host list (observing only reads), not "deny every host"."""
+    raw = _Raw()
+    ExploringDriver(raw, allowed_hosts=())
+    assert raw.restricted is None
+
+
+def test_observing_with_no_hosts_reads_any_http_page_and_refuses_other_schemes() -> None:
+    driver = _Driver()
+    driver.url = "https://portal.example.org/costs"
+    explorer = Explorer(driver, _Confirmer([]), allowed_hosts=())
+    url, _ = explorer.observe_with_url()
+    assert url == "https://portal.example.org/costs"
+    driver.url = "file:///etc/hosts"
+    with pytest.raises(ExploreRefusedError, match="http"):
+        explorer.observe_with_url()
+
+
+def test_the_address_that_is_read_is_the_one_that_was_checked() -> None:
+    """A page that moves to another scheme between the check and the read is not observed."""
+
+    class _Moves(_Driver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads = 0
+
+        @property
+        def url(self) -> str:
+            self.reads += 1
+            return "https://portal.example.org/x" if self.reads == 1 else "file:///etc/hosts"
+
+        @url.setter
+        def url(self, value: str) -> None:
+            pass
+
+    explorer = Explorer(_Moves(), _Confirmer([]), allowed_hosts=())
+    with pytest.raises(ExploreRefusedError, match="stay put"):
+        explorer.observe_with_url()
+
+
 # --- third pass: menus, hrefs, flows, stuck drafts, typed-ahead input -------------------------
 
 

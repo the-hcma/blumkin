@@ -210,13 +210,13 @@ class Explorer:
         return True
 
     def observe(self) -> tuple[ControlObservation, ...]:
-        """The named controls on the current page (which must be on an allowed host)."""
+        """The named controls on the current page (an http(s) page, on an allowed host if any)."""
         return self.observe_with_url()[1]
 
     def observe_with_url(self) -> tuple[str, tuple[ControlObservation, ...]]:
         """The page's URL and its controls; refused if the page changes while it is read."""
-        self._require_host("before observing")
         url = self._driver.url
+        self._require_host("before observing", url)
         controls = parse_aria_snapshot(self._driver.aria_snapshot())
         if self._driver.url != url:
             raise ExploreRefusedError(
@@ -224,10 +224,14 @@ class Explorer:
             )
         return url, controls
 
-    def _require_host(self, when: str) -> None:
-        parts = urlsplit(self._driver.url)
+    def _require_host(self, when: str, url: str | None = None) -> None:
+        """Refuse a page that is not http(s) or not on an allowed host; `url` is the address
+        already captured for the caller, so the one that is read is the one that was checked."""
+        parts = urlsplit(self._driver.url if url is None else url)
         host = parts.hostname or ""
-        if parts.scheme not in ("http", "https") or not host_allowed(host, self._allowed_hosts):
+        if parts.scheme not in ("http", "https") or not host:
+            raise ExploreRefusedError(f"Expected an http(s) page {when}, got {host or 'no host'!r}")
+        if self._allowed_hosts and not host_allowed(host, self._allowed_hosts):
             raise ExploreRefusedError(
                 f"Expected the page to be on an allowed host {when}, got {host or 'no host'!r}"
             )

@@ -1122,11 +1122,10 @@ def frames_task(config: BrowserSetup, task: str, wait_s: float = 0.0) -> dict[st
     `wait_s` waits for a frame that attaches late (or is reported without an address yet).
     """
     hosts = _declared_hosts(config, task)
+    allowed = _frame_allowed(hosts, sign_in_hosts_for(config, task))
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        frames = driver.frame_list(
-            lambda host: not hosts or host_allowed(host, hosts), wait_s=wait_s
-        )
+        frames = driver.frame_list(allowed, wait_s=wait_s)
         return {
             "action": "frames",
             "frames": [
@@ -1166,12 +1165,13 @@ def read_task(
     non-breaking spaces Oracle pages use) collapsed to one space and its blank lines dropped
     (the injection scan has already seen the page as it was).
 
-    `frame` reads a child frame instead (its number from `frames_task`), which needs the
-    task to declare `allowed_hosts`; `aria` returns the ARIA snapshot (roles and accessible
-    names) of the page or that frame instead of its text, with link addresses and field
-    values removed. `host` pins the frame: one on another host is refused, since frame
-    numbers shift when the page adds or reloads a frame. `wait_s` waits that long for the
-    frame to attach and to have text, so a pane that loads late is not read empty.
+    `frame` reads a child frame instead (its number from `frames_task`); with `allowed_hosts`
+    declared it must be on one of them, with none any frame host is read; `aria` returns the
+    ARIA snapshot (roles and accessible names) of the page or that frame instead of its text,
+    with link addresses and field values removed. `host` pins the frame: one on another host
+    is refused, since frame numbers shift when the page adds or reloads a frame. `wait_s`
+    waits that long for the frame to attach and to have text, so a pane that loads late is
+    not read empty.
 
     A long page is read in windows: `offset` and `limit` pick the characters, and the payload
     says whether more follows and where the next window starts. With `aria`, `within`
@@ -1196,13 +1196,14 @@ def read_task(
     sign_in_hosts = sign_in_hosts_for(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        def allowed(name: str) -> bool:
-            return not hosts or host_allowed(name, hosts)
+        allowed = _frame_allowed(hosts, sign_in_hosts)
 
         # The page itself may be a recognized sign-in page outside `allowed_hosts`: reading it
-        # lets the state be seen, and nothing else is allowed there (a frame read, every
-        # click and every fill still need an allowed host).
+        # lets the state be seen, and nothing else is allowed there (a frame read is refused
+        # there, and every click and every fill still need an allowed host).
         on_sign_in = False
+        if frame is not None:
+            _refuse_frame_on_sign_in(driver, task, hosts, sign_in_hosts)
         try:
             _require_allowed_page(driver, task, hosts, "acting")
         except HostBlockedError:
@@ -1246,6 +1247,8 @@ def read_task(
                     if frame is None
                     else driver.read_frame_text(frame, allowed, host, wait_s=wait_s)
                 )
+            if frame is not None:
+                _refuse_frame_on_sign_in(driver, task, hosts, sign_in_hosts)
             if frame is None and _page_host(driver) != start_host:
                 # The page navigated while it was read, so what was captured may belong to a page
                 # the first check never saw (this narrows the window; it cannot close it).
@@ -1319,16 +1322,19 @@ def grid_task(
         raise ValueError(f"Expected 1 to {MAX_GRID_ROWS} rows, got {max_rows}")
     grid_role, grid_name = parse_within(within) if within is not None else (None, None)
     hosts = _declared_hosts(config, task)
+    sign_in_hosts = sign_in_hosts_for(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
-        def allowed(name: str) -> bool:
-            return not hosts or host_allowed(name, hosts)
-
+        allowed = _frame_allowed(hosts, sign_in_hosts)
+        if frame is not None:
+            _refuse_frame_on_sign_in(driver, task, hosts, sign_in_hosts)
         snapshot = _redact_aria(
             driver.aria_snapshot()
             if frame is None
             else driver.frame_aria_snapshot(frame, allowed, host, wait_s=wait_s)
         )
+        if frame is not None:
+            _refuse_frame_on_sign_in(driver, task, hosts, sign_in_hosts)
         warning = scan_for_injection(snapshot, location="page.aria").to_payload()
         try:
             view = grid_view(snapshot, grid_role, grid_name, max_rows=max_rows)
@@ -2110,6 +2116,29 @@ def _expand_home(text: str, blocked: type[BrowserActionError] = UploadBlockedErr
     if text.startswith("~") and not text.startswith("~/"):
         raise blocked(f"Expected an absolute path or one starting with ~/, got {text!r}")
     return Path(text).expanduser()
+
+
+def _frame_allowed(hosts: Sequence[str], sign_in_hosts: Sequence[str]) -> Callable[[str], bool]:
+    """Which frame hosts a read may use: the task's hosts, or with none declared any host that
+    is not a sign-in host (a frame there shows the user's sign-in, which is handed over)."""
+    if hosts:
+        return lambda name: host_allowed(name, hosts)
+    return lambda name: not host_allowed(name, sign_in_hosts)
+
+
+def _refuse_frame_on_sign_in(
+    driver: GuardedDriver, task: str, hosts: Sequence[str], sign_in_hosts: Sequence[str]
+) -> None:
+    """With no hosts declared, refuse a frame read while the top page is a sign-in page.
+
+    Called before the read and again after it, so a page that moved to a sign-in host while the
+    frame was read returns nothing (its title and address would otherwise go out with it).
+    """
+    if not hosts and _on_sign_in_page(driver, sign_in_hosts):
+        raise HostBlockedError(
+            f"Expected a page that is not a sign-in page of task {task!r} for a frame read, "
+            "got one (the user signs in by hand)"
+        )
 
 
 def _one_line(text: str) -> str:
