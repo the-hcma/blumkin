@@ -331,6 +331,33 @@ def google_oauth_installed_client(path: Path) -> dict[str, Any]:
     )
 
 
+def profile_selectors(*, tags: bool) -> list[tuple[str, str]]:
+    """The values `--profile` accepts that resolve to exactly one profile: (value, its name).
+
+    Each candidate (a profile name and, with `tags`, each of its tags as written) is put through
+    the selector resolver itself, so a name that another profile's tag shadows, a tag two
+    profiles share and spellings that only differ by case or a leading `@` are left out the way
+    the command would refuse them. Raises `ProviderConfigError` when `config.toml` is unusable.
+    """
+    tables, _ = _profile_tables(_read_toml(config_dir() / "config.toml"))
+    found: list[tuple[str, str]] = []
+    for name, table in tables.items():
+        candidates = [name]
+        if tags:
+            try:
+                candidates.extend(_tags_from_table(table))
+            except ProviderConfigError:
+                pass  # a broken tags list is reported where the profile is used
+        for value in candidates:
+            try:
+                resolved = _resolve_by_selector(tables, value, source="--profile")
+            except ProviderConfigError:
+                continue
+            if resolved == name:
+                found.append((value, name))
+    return found
+
+
 def list_profiles() -> list[dict[str, Any]]:
     """Return safe summaries of configured profiles (no secrets).
 
