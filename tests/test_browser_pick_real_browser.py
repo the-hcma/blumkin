@@ -105,3 +105,25 @@ def test_the_guard_refuses_what_the_driver_reports_as_holding_a_control(_real_pa
     guarded.pick("Product F", "rowheader")
     page.wait_for_timeout(100)
     assert page.title() == "clicked handler"
+
+
+_MENU_PAGE = """<!doctype html><title>menu</title>
+<button id=more aria-haspopup=menu aria-expanded=true>More actions</button>
+<div role=menu aria-label="More actions">
+  <div role=menuitem>Rename</div><div role=menuitem>Cancel subscription</div>
+</div>
+<div role=menu aria-label="Hidden" hidden><div role=menuitem>Secret</div></div>"""
+
+
+def test_role_aria_snapshot_finds_a_visible_menu_by_role_and_by_name(_real_page: Any) -> None:
+    driver, page = _driver(_real_page)
+    page.set_content(_MENU_PAGE)
+
+    found = driver.role_aria_snapshot("menu")
+    assert found is not None
+    text, count = found
+    assert count == 1 and 'menuitem "Rename"' in text and "Secret" not in text
+    named = driver.role_aria_snapshot("menu", "More actions")
+    assert named is not None and 'menuitem "Cancel subscription"' in named[0]
+    assert driver.role_aria_snapshot("menu", "Hidden") is None
+    assert driver.role_aria_snapshot("listbox") is None

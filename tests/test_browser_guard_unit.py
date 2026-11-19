@@ -91,6 +91,13 @@ class _Raw:
         self.calls.append(("aria",))
         return '- button "Go"'
 
+    def role_aria_snapshot(self, role: str, name: str | None = None) -> tuple[str, int] | None:
+        self.calls.append(("role-aria", role, name))
+        return None
+
+    def role_count(self, role: str) -> int:
+        return 0
+
     def set_dialog_landmarks(self, groups: Sequence[Sequence[str]]) -> None:
         self.landmarks = tuple(tuple(group) for group in groups)
 
@@ -910,6 +917,8 @@ def test_the_public_surface_has_no_way_to_finalize_a_form() -> None:
         "wait_for_navigation",
         "wait_network_quiet",
         "read_text",
+        "role_aria_snapshot",
+        "role_count",
         "scroll_frame_text",
         "select",
         "settle_page",

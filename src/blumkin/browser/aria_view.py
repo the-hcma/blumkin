@@ -132,6 +132,15 @@ def scope(snapshot: str, role: str, name: str | None = None) -> tuple[str, int]:
     raise LookupError(f"Expected {asked}, got {listed + more if seen else 'none'}")
 
 
+def first_name(snapshot: str, role: str) -> str | None:
+    """The accessible name of the first node of `role` in `snapshot`, None when it has none."""
+    for line in snapshot.split("\n"):
+        node = _parse(line)
+        if node is not None and node.role == role:
+            return node.name
+    return None
+
+
 def grid_view(
     snapshot: str, role: str | None = None, name: str | None = None, *, max_rows: int = 200
 ) -> dict[str, Any]:

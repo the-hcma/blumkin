@@ -23,6 +23,7 @@ from urllib.parse import unquote, urlsplit
 
 from blumkin.browser.aria_view import (
     collapse_options,
+    first_name,
     grid_view,
     parse_within,
     scope,
@@ -1232,12 +1233,28 @@ def read_task(
                     snapshot = redact_addresses(snapshot)
                 warning = scan_for_injection(snapshot, location="page.aria").to_payload()
                 if within is not None:
+                    whole_page = snapshot
                     try:
-                        snapshot, within_matches = scope(snapshot, scope_role, scope_name)
+                        snapshot, within_matches, extra = _scoped(
+                            driver,
+                            snapshot,
+                            scope_role,
+                            scope_name,
+                            lambda text: (
+                                redact_addresses(_redact_aria(text))
+                                if on_sign_in
+                                else _redact_aria(text)
+                            ),
+                            lookup=frame is None,
+                        )
                     except LookupError as exc:
                         raise BrowserActionError(
                             _scope_failure(str(exc), scope_role, scope_name)
                         ) from exc
+                    if extra:
+                        warning = scan_for_injection(
+                            f"{whole_page}\n{extra}", location="page.aria"
+                        ).to_payload()
                 if not expand_options:
                     snapshot = collapse_options(snapshot)
                 page = PageText(text=snapshot, injection_warning=warning)
@@ -1995,7 +2012,7 @@ def _dialog_read(
     for attempt in range(polls):
         snapshot = _redact_aria(driver.aria_snapshot())
         try:
-            text, matches = scope(snapshot, role, name)
+            text, matches, extra = _scoped(driver, snapshot, role, name, _redact_aria)
         except LookupError as exc:
             if attempt == polls - 1:
                 raise BrowserActionError(_scope_failure(str(exc), role, name)) from exc
@@ -2018,7 +2035,7 @@ def _dialog_read(
                 f"Expected the {role} to finish loading within {wait_s:g} s, got one still loading",
                 text,
             )
-        warning = scan_for_injection(snapshot, location="page.aria").to_payload()
+        warning = scan_for_injection(f"{snapshot}\n{extra}", location="page.aria").to_payload()
         shown = text if expand_options else collapse_options(text)
         return shown, matches, warning, not unsettled
     raise AssertionError("unreachable")
@@ -2173,15 +2190,33 @@ def _overlay_count(driver: GuardedDriver, roles: Sequence[str]) -> int:
 
 
 def _overlay_counts(driver: GuardedDriver, roles: Sequence[str]) -> dict[str, int]:
-    """For each of `roles`, how many nodes of it (whatever their names) the page shows now."""
+    """For each of `roles`, how many nodes of it (whatever their names) the page shows now.
+
+    The larger of the page snapshot's count and a role lookup's, the way `_scoped` reads it, so
+    an overlay only the lookup can see still counts as open, from the baseline to the last check
+    (#782).
+    """
     snapshot = driver.aria_snapshot()
     counts: dict[str, int] = {}
     for role in sorted(set(roles)):
         try:
-            counts[role] = scope(snapshot, role, None)[1]
+            in_page = scope(snapshot, role, None)[1]
         except LookupError:
-            counts[role] = 0
+            in_page = 0
+        # Both sources for every role, every time, so a count never changes source between the
+        # baseline and a later check (a lookup-only menu next to one the snapshot shows).
+        counts[role] = max(in_page, _looked_up_count(driver, role))
     return counts
+
+
+def _looked_up_count(driver: GuardedDriver, role: str) -> int:
+    """How many visible elements of `role` a role lookup finds.
+
+    A failure is not turned into 0: that would report an overlay as gone when it is only not
+    countable, so it reaches the caller: before any click it stops the command, and
+    `_dialog_close` reports an overlay it cannot count as not closed.
+    """
+    return driver.role_count(role)
 
 
 def _overlays_at_baseline(
@@ -2249,6 +2284,73 @@ def _redact_aria(snapshot: str) -> str:
             continue
         kept.append(_ARIA_FIELD_VALUE.sub(r"\1", line))
     return "\n".join(kept)
+
+
+def _scoped(
+    driver: GuardedDriver,
+    snapshot: str,
+    role: str,
+    name: str | None,
+    prepare: Callable[[str], str],
+    *,
+    lookup: bool = True,
+) -> tuple[str, int, str]:
+    """`scope`, and when the page snapshot lacks the role, the role locator's own snapshot.
+
+    A menu or listbox a page draws outside its own tree is missing from the body snapshot but
+    still found by role (#782). The fallback text goes through `prepare` (the same redaction
+    as the page's) and is returned as the third item so the caller can scan it for injection;
+    it is empty when the page snapshot held the role. Raises the original `LookupError` when
+    neither has it. `lookup=False` skips the role lookup, which only sees the top page: a read
+    of a child frame must not answer with what the top page shows.
+    """
+    try:
+        text, matches = scope(snapshot, role, name)
+    except LookupError as first:
+        if not lookup:
+            raise
+        try:
+            found = driver.role_aria_snapshot(role, name)
+        except BrowserActionError:
+            found = None  # a role the browser cannot look up: report what the page snapshot had
+        if found is None:
+            if name is not None and not _has_role(snapshot, role):
+                other = _looked_up_name(driver, role, prepare)
+                if other is not None:
+                    asked = f"a {role} named {name!r}"
+                    raise LookupError(f"Expected {asked}, got {other!r}") from None
+            raise first from None
+        extra = prepare(found[0])
+        try:
+            text, _ = scope(extra, role, None)
+        except LookupError:
+            raise first from None
+        return text, found[1], extra
+    return text, matches, ""
+
+
+def _has_role(snapshot: str, role: str) -> bool:
+    """Whether the page snapshot holds any node of `role` (whatever its name)."""
+    try:
+        scope(snapshot, role, None)
+    except LookupError:
+        return False
+    return True
+
+
+def _looked_up_name(driver: GuardedDriver, role: str, prepare: Callable[[str], str]) -> str | None:
+    """The accessible name of the first visible `role` a role lookup finds, if it has one.
+
+    The name passes through `prepare`, the same redaction as the text it would have been read in.
+    """
+    try:
+        found = driver.role_aria_snapshot(role, None)
+    except BrowserActionError:
+        return None
+    if found is None:
+        return None
+    name = first_name(found[0], role)
+    return _one_line(prepare(name)) if name else None
 
 
 def _scope_failure(message: str, role: str, name: str | None) -> str:
