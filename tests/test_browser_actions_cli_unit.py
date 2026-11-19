@@ -75,6 +75,8 @@ class _Raw:
         #: What `read_field` finds.
         self.reading = FieldReading("read", "4111 1111")
         self.controls: dict[str, ControlInfo] = {}
+        #: What the page says about the Nth match of a repeated name, keyed (name, nth).
+        self.nth_controls: dict[tuple[str, int | None], ControlInfo] = {}
         self.page_text = PageText(text="Total due 12.50", injection_warning=None)
         self._url = "https://erp.example.com/expenses"
         #: Successive answers for `url` once a goto ran (the last one repeats): a sign-in redirect.
@@ -189,7 +191,10 @@ class _Raw:
         self, name: str, role: str, vet: Callable[[ControlInfo], None], nth: int | None = None
     ) -> None:
         default = ControlInfo(tag="button", input_type="button", in_form=False)
-        vet(self.controls.get(name, default))
+        # A page that repeats a name can describe each match differently: the vetting must see
+        # the match that was chosen, not the first.
+        info = self.nth_controls.get((name, nth)) or self.controls.get(name, default)
+        vet(info)
         self.calls.append(("click", role, name) if nth is None else ("click", role, name, nth))
         if self.lands_on is not None:
             self.url = self.lands_on
@@ -5816,3 +5821,174 @@ def test_refresh_tab_on_a_task_with_no_table_still_needs_declared_tabs(raw: _Raw
     assert result.exit_code == EXIT_OTHER, result.output
     assert _json(result)["error"] == "submit_blocked"
     assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_dialog_nth_picks_the_match_of_a_repeated_name_for_that_step_only(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    result = _run(
+        "browser", "dialog", "expense-report", "--open", "Templates", "--open", "Apply",
+        "--nth", "2:3", "--close", "Cancel",
+    )  # fmt: skip
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    clicks = [call for call in raw.calls if call[0] == "click"]
+    assert clicks == [
+        ("click", "button", "Templates"),
+        ("click", "button", "Apply", 3),
+        ("click", "button", "Cancel"),
+    ]
+
+
+def test_dialog_nth_can_pick_among_two_same_named_buttons(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["More actions", "Apply"]')
+    _dialog_page(raw)
+    result = _run(
+        "browser", "dialog", "expense-report", "--open", "button:More actions", "--nth", "1:2",
+        "--open", "Apply",
+    )  # fmt: skip
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert ("click", "button", "More actions", 2) in raw.calls
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        ("2", "STEP:N"),
+        ("a:2", "STEP:N"),
+        ("1:x", "STEP:N"),
+        ("1:0", "1 or more"),
+        ("3:1", "step from 1 to 2"),
+        ("0:1", "step from 1 to 2"),
+        ("close:1", "close control takes none"),
+        ("close:2", "close control takes none"),
+        ("1:\u00b2", "STEP:N"),  # superscript two: str.isdigit() accepts it, int() does not
+        ("\u0661:\u0661", "STEP:N"),  # Arabic-Indic one
+        ("\u00b9:1", "STEP:N"),
+        (":1", "STEP:N"),
+        ("1:", "STEP:N"),
+        ("-1:1", "STEP:N"),
+        ("1:-1", "STEP:N"),
+        ("1.5:1", "STEP:N"),
+    ],
+)
+def test_dialog_nth_refuses_a_bad_spec_before_touching_the_page(
+    raw: _Raw, _config_dir: Path, spec: str, message: str
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply"]')
+    result = _run(
+        "browser", "dialog", "expense-report", "--open", "Templates", "--open", "Apply",
+        "--nth", spec,
+    )  # fmt: skip
+    assert result.exit_code == 2, result.output
+    assert message in result.output
+    assert raw.calls == []
+
+
+def test_dialog_nth_twice_for_one_step_is_refused(raw: _Raw, _config_dir: Path) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates"]')
+    result = _run(
+        "browser", "dialog", "expense-report", "--open", "Templates", "--nth", "1:1",
+        "--nth", "1:2",
+    )  # fmt: skip
+    assert result.exit_code == 2, result.output
+    assert raw.calls == []
+
+
+def test_dialog_nth_does_not_declare_a_control_that_is_not_declared(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates"]')
+    undeclared = _run(
+        "browser", "dialog", "expense-report", "--open", "Templates", "--open", "Apply",
+        "--nth", "2:2",
+    )  # fmt: skip
+    assert undeclared.exit_code == EXIT_OTHER, undeclared.output
+    assert _json(undeclared)["error"] == "submit_blocked"
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_dialog_nth_does_not_let_a_finalizing_name_through_in_open_mode(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    """Open mode declares nothing, so only the finalizing words can refuse `Submit` here."""
+    _policy(_config_dir, 'upload_dirs = ["~/receipts"]')  # a table that says nothing on controls
+    without_nth = _run("browser", "dialog", "expense-report", "--open", "Submit")
+    with_nth = _run("browser", "dialog", "expense-report", "--open", "Submit", "--nth", "1:2")
+    for refused in (without_nth, with_nth):
+        assert refused.exit_code == EXIT_OTHER, refused.output
+        assert _json(refused)["error"] == "submit_blocked"
+        assert "finalizing" in _json(refused)["message"]
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_the_close_control_never_gets_an_nth_it_is_pressed_only_when_the_dialog_shows_it(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Templates", "Apply", "Cancel"]')
+    _dialog_page(raw)
+    result = _run(
+        "browser", "dialog", "expense-report", "--open", "Templates", "--open", "Apply",
+        "--close", "Cancel", "--nth", "2:1",
+    )  # fmt: skip
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert ("click", "button", "Cancel") in raw.calls
+    assert not any(len(call) == 4 and call[2] == "Cancel" for call in raw.calls)
+
+
+@pytest.mark.parametrize(
+    ("nth", "message"),
+    [
+        ({0: 1}, "step from 1 to 2"),
+        ({3: 1}, "step from 1 to 2"),
+        ({-1: 1}, "step from 1 to 2"),
+        ({1: 0}, "positive whole number"),
+        ({1: -2}, "positive whole number"),
+        ({1: True}, "positive whole number"),
+        ({1: 1.5}, "positive whole number"),
+        ({1: "2"}, "positive whole number"),
+    ],
+)
+def test_dialog_task_validates_nth_before_it_touches_the_browser(
+    tmp_path: Path, nth: dict[Any, Any], message: str
+) -> None:
+    from blumkin.browser.actions import dialog_task
+    from blumkin.config import BrowserConfig, BrowserSetup
+
+    setup = BrowserSetup(browser=BrowserConfig(), config_dir=tmp_path)
+    with pytest.raises(ValueError, match=message):
+        dialog_task(setup, "expense-report", [("Templates", None), ("Apply", None)], nth=nth)
+
+
+def test_dialog_nth_vets_the_match_it_chose_so_a_second_submit_button_is_refused(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    """Two `More actions` buttons, only the second a submit control: `--nth 1:2` is refused."""
+    _policy(_config_dir, 'allowed_controls = ["More actions"]')
+    _dialog_page(raw)
+    raw.nth_controls[("More actions", 2)] = ControlInfo(
+        tag="button", input_type="submit", in_form=True
+    )
+    refused = _run(
+        "browser", "dialog", "expense-report", "--open", "button:More actions", "--nth", "1:2"
+    )
+    assert refused.exit_code == EXIT_OTHER, refused.output
+    assert _json(refused)["error"] == "submit_blocked"
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_dialog_nth_still_clicks_the_other_match_of_the_same_name(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["More actions", "Apply"]')
+    _dialog_page(raw)
+    raw.nth_controls[("More actions", 2)] = ControlInfo(
+        tag="button", input_type="submit", in_form=True
+    )
+    allowed = _run(
+        "browser", "dialog", "expense-report", "--open", "button:More actions", "--nth", "1:1",
+        "--open", "Apply",
+    )  # fmt: skip
+    assert allowed.exit_code == EXIT_SUCCESS, allowed.output
+    assert ("click", "button", "More actions", 1) in raw.calls
