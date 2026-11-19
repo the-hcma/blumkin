@@ -310,7 +310,7 @@ Branch on the **exit code first** — it is the only signal present on every fai
 | 2 | `usage_error`, `booking_blocked`, `too_soon`, `stale_or_unread`, `event_cancelled`, or none | Bad arguments; **`wo1162425_scopes` switched off**; **an emit skill (`mail send-draft`, `chat send`, `chat edit`, `calendar update` adding/replacing attendees) called before its confirm cooldown elapsed** (`too_soon` - carries `agent_instructions` and `retry_after_seconds`; do not retry automatically, get real user confirmation first); **a single-`--event-id` `calendar accept`/`decline`/`tentative`/`cancel` called without a fresh `calendar get` first** (`stale_or_unread` - carries `agent_instructions`; re-run `calendar get`, show the user the current state, then retry); **`calendar accept`/`decline`/`tentative` on a meeting the organizer cancelled** (`event_cancelled` - nothing is sent, on Microsoft and Google; in a `--today-pending` batch the meeting is listed under `skipped`); or **`people resolve` ambiguous** (`ok: false` + `ambiguous: true` + candidates on **stdout**, no stderr envelope) |
 | 3 | `auth_required`, `keychain_not_authorized` | Run `blumkin auth login` on this machine; for `keychain_not_authorized` (macOS, no terminal to answer the keychain prompt) run `blumkin auth keychain` in your own terminal once |
 | 4 | `missing_scope` | A scope is unavailable — the tenant has not granted it, or `files_scopes` is off |
-| 5 | `not_found` | The named thing does not exist |
+| 5 | `not_found` | The named thing does not exist (for `chat last --with --allow-partial`, only when `partial` is false: with `partial: true` some chats could not be checked, so the chat may exist) |
 
 The config opt-ins do **not** share an exit code, so do not treat "opt-in is off" as a single condition:
 
@@ -364,7 +364,7 @@ Two commands exit non-zero with their normal JSON payload on **stdout** and noth
 | Command | Exit | What stdout carries |
 |---------|------|---------------------|
 | `blumkin doctor --json` | 3 | `ok: false` and a `problems` array naming what is wrong |
-| `blumkin chat last --json` | 5 | `ok: false`, `chat: null`, plus `query`, `partial`, and `skipped`, showing how far the search got |
+| `blumkin chat last --json` | 5 | `ok: false`, `chat: null`, plus `query`, `partial`, `skipped`, and `skip_reasons`, showing how far the search got (`--allow-partial` accepts a unique match despite skipped chats) |
 | `blumkin people resolve --json` | 2 | `ok: false`, `ambiguous: true`, and the candidate list |
 
 So the rule is: **on a non-zero exit, if stderr is empty, parse stdout.** Do not report "no output" — the explanation is there, in the stream you did not read.

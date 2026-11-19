@@ -28,6 +28,7 @@ from blumkin.attachments import (
     unique_filename,
     write_new_private_file,
 )
+from blumkin.chat_match import partial_message, skip_reasons
 from blumkin.compose_state import record_composed
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.message_policy import validate_outbound_text
@@ -94,6 +95,7 @@ async def chat_find(
         "items": matches,
         "partial": skipped > 0,
         "query": with_name,
+        "skip_reasons": skip_reasons(_http_status(exc) for exc in skip_errors),
         "skipped": skipped,
     }
 
@@ -104,6 +106,7 @@ async def chat_last(
     chat_id: str | None = None,
     contains: str | None = None,
     n: int = 3,
+    allow_partial: bool = False,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     if n < 1:
@@ -121,12 +124,8 @@ async def chat_last(
         assert name is not None
         found = await chat_find(with_name=name, config=cfg)
         items = found["items"]
-        if found["partial"]:
-            raise ValueError(
-                f"chat match for {name!r} is partial "
-                f"(skipped {int(found['skipped'])} chat(s)); "
-                "retry later or pass --chat-id from `chat find`"
-            )
+        if found["partial"] and not allow_partial:
+            raise ValueError(partial_message(name, found, allow_hint=True))
         if not items:
             return {
                 "chat": None,
@@ -134,6 +133,7 @@ async def chat_last(
                 "items": [],
                 "partial": found["partial"],
                 "query": name,
+                "skip_reasons": found.get("skip_reasons"),
                 "skipped": found["skipped"],
             }
         if len(items) > 1:
@@ -191,6 +191,7 @@ async def chat_last(
         "items": selected,
         "partial": found["partial"],
         "query": name,
+        "skip_reasons": found.get("skip_reasons"),
         "skipped": found["skipped"],
     }
 
@@ -445,6 +446,17 @@ def _chat_service(cfg: BlumkinConfig, *, required_scopes: frozenset[str] = CHAT_
     return build_api_service("chat", "v1", creds=creds, config=cfg)
 
 
+def _http_status(exc: HttpError) -> int | None:
+    """The HTTP status of a failed Google call, when it carries one."""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "resp", None), "status", None)
+    try:
+        return int(status) if status is not None else None
+    except TypeError, ValueError:
+        return None
+
+
 def _chat_type(space: Mapping[str, Any]) -> str | None:
     """Google spaceType in the Graph vocabulary the --json contract already uses."""
     raw = str(space.get("spaceType") or "")
@@ -643,11 +655,7 @@ async def _resolve_chat_target(
     found = await chat_find(with_name=name, config=config)
     items = found["items"]
     if found["partial"]:
-        raise ValueError(
-            f"chat match for {name!r} is partial "
-            f"(skipped {int(found['skipped'])} chat(s)); "
-            "retry later or pass --chat-id from `chat find`"
-        )
+        raise ValueError(partial_message(name, found))
     if not items:
         raise LookupError(f"no chat matched {name!r}")
     if len(items) > 1:

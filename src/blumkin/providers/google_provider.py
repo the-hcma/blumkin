@@ -371,9 +371,15 @@ class GoogleWorkspaceProvider:
         chat_id: str | None = None,
         contains: str | None = None,
         n: int = 3,
+        allow_partial: bool = False,
     ) -> dict[str, Any]:
         return await google_chat.chat_last(
-            with_name=with_name, chat_id=chat_id, contains=contains, n=n, config=self._config
+            with_name=with_name,
+            chat_id=chat_id,
+            contains=contains,
+            n=n,
+            allow_partial=allow_partial,
+            config=self._config,
         )
 
     async def chat_send(self, *, draft_id: str) -> dict[str, Any]:

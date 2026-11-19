@@ -211,6 +211,7 @@ class WorkspaceProvider(Protocol):
         chat_id: str | None = None,
         contains: str | None = None,
         n: int = 3,
+        allow_partial: bool = False,
     ) -> dict[str, Any]: ...
 
     async def chat_send(self, *, draft_id: str) -> dict[str, Any]: ...

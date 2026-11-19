@@ -1930,6 +1930,10 @@ Example:
 
 Lists chats whose members match the substring. Use it to get a `--chat-id` when a
 display name matches more than one chat.
+
+A chat whose members cannot be fetched is skipped, and the result says `partial: true`
+with `skipped` (how many) and `skip_reasons` (`forbidden` for a 403, which a retry does
+not fix, `throttled` for a 429, 503 or 504 that a retry may fix, and `other`).
 """
 
 CHAT_LAST_EPILOG = """
@@ -1951,9 +1955,16 @@ local scan (Graph has no $search on chat messages), the same shape as
 recent N", not "does not exist". Without `--contains`, `filters.scanned` and
 `filters.complete` stay null.
 
-Exit 5 (not_found) means no chat matched `--with`. Exit 2 (usage_error) means
+Exit 5 (not_found) means no chat matched `--with` (with `partial: true` some chats could not
+be checked, so one may still exist). Exit 2 (usage_error) means
 `--with` matched several chats - the message lists their ids, so re-run with
 `--chat-id <id>` rather than guessing which one you got.
+
+When `chat find` had to skip chats (see `skip_reasons`), a skipped chat might match the
+same name, so `--with` is refused. `--allow-partial` accepts a unique match anyway (several
+or none stay as above), for a read when a 403 skips the same chats on every run; the
+result still says `partial`, `skipped` and `skip_reasons`. `chat send`, `edit` and
+`delete` have no such flag: they never act on a partial match.
 """
 
 CHAT_SEND_EPILOG = """
