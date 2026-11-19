@@ -416,19 +416,22 @@ Examples:
   blumkin browser dialog time-sheet --open Templates --open menuitem:Apply
   blumkin browser dialog time-sheet --open Templates --open Apply --close Cancel --json
   blumkin browser dialog time-sheet --open "More actions" --within menu
+  blumkin browser dialog time-sheet --open "button:More actions" --nth 1:2 --within menu
 
 Opens a dialog (or a menu, with `--within menu`) by clicking the declared controls given with
 `--open`, in order, then reads the subtree the way `browser read --aria --within` does (field
 values and addresses removed) and lists its controls and whether each is disabled. Nothing
-inside is clicked. Each control must be declared in `allowed_controls` and a finalizing name
-is refused, as for `browser click`; give a role as `ROLE:NAME` when a name exists in more than
-one (a menu item and a button called `Apply`). A menu item is never covered by a `*` pattern.
-Every control is vetted before the first click, and any dialog already open is refused, not
-touched; `--close` is used only if the dialog that was read shows that control. It is always
-closed afterwards, even when a step or the read failed: with the declared `--close` control if
-given, otherwise with Escape (neither is used when nothing opened).
-`closed` is false when it could not be closed (look at the page before going on). The text is
-page content, marked untrusted.
+inside is clicked. Each control must be declared in `allowed_controls` and a finalizing name is
+refused, as for `browser click`; give a role as `ROLE:NAME` when a name exists in more than one
+(a menu item and a button called `Apply`). When the page repeats a name (two `More actions`
+buttons), `--nth STEP:N` picks the Nth match in DOM order for the STEP-th `--open` (1-based); it
+narrows the lookup and nothing else, and the `--close` control takes none. A menu item
+is never covered by a `*` pattern. Every control is vetted before the first click, and any
+dialog already open is refused, not touched; `--close` is used only if the dialog that was read
+shows that control. It is always closed afterwards, even when a step or the read failed: with
+the declared `--close` control if given, otherwise with Escape (neither is used when nothing
+opened). `closed` is false when it could not be closed (look at the page before going on). The
+text is page content, marked untrusted.
 """
 
 BROWSER_DOWNLOAD_EPILOG = """

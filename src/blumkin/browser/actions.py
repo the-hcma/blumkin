@@ -16,7 +16,7 @@ import shutil
 import stat
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -350,10 +350,17 @@ def dialog_task(
     *,
     close: tuple[str, str | None] | None = None,
     expand_options: bool = False,
+    nth: Mapping[int, int] | None = None,
     wait_s: float = 5.0,
     within: str = "dialog",
 ) -> dict[str, Any]:
     """Open a dialog (or menu) through declared controls, read what it shows and close it.
+
+    A name the page repeats (two `More actions` buttons) is chosen by `nth`: step number
+    (1-based, as given) to the match wanted (1-based, DOM order), exactly as `click --nth`
+    narrows a lookup. It narrows the lookup and nothing else: the control is still declared,
+    vetted and refused as any other. The close control takes none: it is pressed only when the
+    dialog that was read shows it, and a position on the whole page could not tell that.
 
     Each of `steps` (a control name and optional role) is clicked in order, exactly as
     `click_task` clicks it, so each must be declared and a finalizing name is refused. The
@@ -368,6 +375,12 @@ def dialog_task(
     """
     if not steps or len(steps) > MAX_DIALOG_STEPS:
         raise ValueError(f"Expected 1 to {MAX_DIALOG_STEPS} controls to open, got {len(steps)}")
+    picked = dict(nth or {})
+    for step, match in picked.items():
+        if not 1 <= step <= len(steps):
+            raise ValueError(f"Expected an nth for a step from 1 to {len(steps)}, got {step}")
+        if isinstance(match, bool) or not isinstance(match, int) or match < 1:
+            raise ValueError(f"Expected nth to be a positive whole number, got {match!r}")
     scope_role, scope_name = parse_within(within)
     controls = (*steps, *([close] if close is not None else []))
     hosts = _declared_hosts(config, task)
@@ -388,8 +401,8 @@ def dialog_task(
         text, matches, loaded = "", 0, True
         warning: dict[str, Any] | None = None
         try:
-            for name, role in steps:
-                opened.append(driver.click(name, role, _default_wait(role)))
+            for number, (name, role) in enumerate(steps, start=1):
+                opened.append(driver.click(name, role, _default_wait(role), nth=picked.get(number)))
                 _require_allowed_page(driver, task, hosts, f"opening {name!r}")
             text, matches, warning, loaded = _dialog_read(
                 driver, scope_role, scope_name, wait_s, expand_options
@@ -400,7 +413,11 @@ def dialog_task(
                 text = exc.text  # so the declared close control is still found among its controls
         if _on_allowed_page(driver, hosts):
             closed, via = _dialog_close(
-                driver, (*_OVERLAY_ROLES, scope_role), baseline, close, _dialog_controls(text)
+                driver,
+                (*_OVERLAY_ROLES, scope_role),
+                baseline,
+                close,
+                _dialog_controls(text),
             )
         else:
             # Nothing is pressed on a page outside the task's hosts.

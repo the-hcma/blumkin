@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1763,6 +1763,38 @@ def _dispatch_local(
     raise SystemExit(EXIT_SUCCESS)
 
 
+_ASCII_NUMBER = re.compile(r"[0-9]+")
+
+
+def _dialog_nth(specs: Sequence[str], steps: int) -> dict[int, int]:
+    """Parse `--nth STEP:N` (STEP a 1-based `--open` position) for `browser dialog`.
+
+    Plain ASCII digits only: `str.isdigit` also accepts `²` and other Unicode digits, which
+    `int` then refuses. The close control takes no nth (it is pressed only when the dialog
+    that was read shows it, which a position on the whole page cannot tell).
+    """
+    by_step: dict[int, int] = {}
+    for spec in specs:
+        head, sep, tail = spec.partition(":")
+        head, tail = head.strip(), tail.strip()
+        if head.lower() == "close":
+            raise click.UsageError(
+                f"Expected --nth for an --open step, got {spec!r}: the close control takes "
+                "none (it is pressed only when the dialog shows it; Escape closes otherwise)"
+            )
+        if not sep or not _ASCII_NUMBER.fullmatch(head) or not _ASCII_NUMBER.fullmatch(tail):
+            raise click.UsageError(f"Expected --nth as STEP:N (for example 1:2), got {spec!r}")
+        step, match = int(head), int(tail)
+        if match < 1:
+            raise click.UsageError(f"Expected an nth of 1 or more, got {spec!r}")
+        if not 1 <= step <= steps:
+            raise click.UsageError(f"Expected a step from 1 to {steps} in --nth, got {spec!r}")
+        if step in by_step:
+            raise click.UsageError(f"Expected one --nth for step {step}, got {spec!r} as well")
+        by_step[step] = match
+    return by_step
+
+
 def _control_spec(spec: str) -> tuple[str, str | None]:
     """`NAME` or `ROLE:NAME` as (name, role); only a known role before the colon is a role."""
     head, sep, tail = spec.partition(":")
@@ -3397,6 +3429,13 @@ def browser_explore_show(ctx: click.Context, task: str, as_json_flag: bool) -> N
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.option(
+    "--nth",
+    "nth_specs",
+    multiple=True,
+    help="Which match to use when the page repeats a name, as STEP:N: STEP is the 1-based "
+    "--open position, N the 1-based match in DOM order (for example `--nth 1:2`); repeatable.",
+)
+@click.option(
     "--open",
     "open_specs",
     multiple=True,
@@ -3426,12 +3465,14 @@ def browser_dialog(
     close_spec: str | None,
     expand_options: bool,
     as_json_flag: bool,
+    nth_specs: tuple[str, ...],
     open_specs: tuple[str, ...],
     wait_s: float,
     within: str,
 ) -> None:
     """Open a dialog through declared controls, read what it shows and close it again."""
     as_json = _as_json(ctx, as_json_flag)
+    step_nth = _dialog_nth(nth_specs, len(open_specs))
     try:
         payload = dialog_task(
             load_browser_setup(),
@@ -3439,6 +3480,7 @@ def browser_dialog(
             [_control_spec(spec) for spec in open_specs],
             close=_control_spec(close_spec) if close_spec is not None else None,
             expand_options=expand_options,
+            nth=step_nth,
             wait_s=wait_s,
             within=within,
         )
