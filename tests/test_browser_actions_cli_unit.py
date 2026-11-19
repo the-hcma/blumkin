@@ -827,13 +827,35 @@ def test_click_of_a_declared_submit_input_is_refused(raw: _Raw) -> None:
     assert raw.calls == []
 
 
-def test_click_for_a_task_without_a_declared_policy_is_refused_with_a_hint(raw: _Raw) -> None:
+def test_click_for_a_task_with_no_table_is_in_open_mode(raw: _Raw) -> None:
     result = _run("browser", "click", "time-sheet", "Add line")
-    assert result.exit_code == EXIT_OTHER
-    payload = _json(result)
-    assert payload["error"] == "submit_blocked"
-    assert "[browser.tasks.time-sheet]" in payload["message"]
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert raw.calls == [("click", "button", "Add line")]
+
+
+@pytest.mark.parametrize(
+    "name", ["Purchase", "Delete user", "Submit", "Pay now", "Cancel subscription"]
+)
+def test_a_task_with_no_table_still_refuses_what_open_mode_refuses(raw: _Raw, name: str) -> None:
+    result = _run("browser", "click", "time-sheet", name)
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "submit_blocked"
     assert raw.calls == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Add line", "Your products", "Purchase", "Delete user", "Submit", "Payment methods"],
+)
+def test_a_missing_table_and_an_empty_one_behave_the_same(
+    raw: _Raw, _config_dir: Path, name: str
+) -> None:
+    no_table = _run("browser", "click", "time-sheet", name)
+    no_table_calls = list(raw.calls)
+    raw.calls.clear()
+    _policy(_config_dir, 'upload_dirs = ["~/receipts"]')  # a table that says nothing on controls
+    empty_table = _run("browser", "click", "expense-report", name)
+    assert (no_table.exit_code, no_table_calls) == (empty_table.exit_code, raw.calls)
 
 
 def test_the_other_actions_still_work_for_a_task_without_a_policy(raw: _Raw) -> None:
@@ -5742,3 +5764,55 @@ def test_goto_refuses_a_page_outside_the_tasks_hosts_before_waiting_on_or_reload
         _goto(120.0, _Clock())
     assert raw.quiet_waits == 0
     assert raw.order == []  # nothing waited on, settled or reloaded the foreign page
+
+
+def test_pick_on_a_task_with_no_table_chooses_a_plain_row(raw: _Raw) -> None:
+    result = _run("browser", "pick", "time-sheet", "Boston, MA, United States")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert ("pick", "row", "Boston, MA, United States") in raw.calls
+
+
+def test_pick_on_a_task_with_no_table_never_clicks_a_row_that_holds_a_control(raw: _Raw) -> None:
+    """A row with a `Delete user` button of its own is refused whatever the task declares."""
+    raw.controls["Ada Lovelace"] = ControlInfo(
+        tag="tr", input_type="", in_form=False, holds_controls=True
+    )
+    result = _run("browser", "pick", "time-sheet", "Ada Lovelace")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "submit_blocked"
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+def test_pick_on_a_task_with_no_table_refuses_text_that_is_a_finalizing_action(
+    raw: _Raw,
+) -> None:
+    result = _run("browser", "pick", "time-sheet", "Submit")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+def test_dialog_on_a_task_with_no_table_opens_and_closes_in_open_mode(raw: _Raw) -> None:
+    _dialog_page(raw)
+    result = _run(
+        "browser", "dialog", "time-sheet", "--open", "Templates", "--open", "Apply",
+        "--close", "Cancel",
+    )  # fmt: skip
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert [call[2] for call in raw.calls if call[0] == "click"] == ["Templates", "Apply", "Cancel"]
+
+
+def test_dialog_on_a_task_with_no_table_still_refuses_a_destructive_name(raw: _Raw) -> None:
+    _dialog_page(raw)
+    result = _run("browser", "dialog", "time-sheet", "--open", "Templates", "--open", "Delete")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "submit_blocked"
+    # The menu may be opened first; the destructive item itself is never clicked.
+    assert "Delete" not in [call[2] for call in raw.calls if call[0] == "click"]
+
+
+def test_refresh_tab_on_a_task_with_no_table_still_needs_declared_tabs(raw: _Raw) -> None:
+    raw.roles_present.update({"Notes": ("tab",), "Transcript": ("tab",)})
+    result = _run("browser", "refresh-tab", "time-sheet", "Transcript", "--via", "Notes")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "submit_blocked"
+    assert not any(call[0] == "click" for call in raw.calls)

@@ -51,7 +51,6 @@ from blumkin.browser.guard import (
     CLICKABLE_ROLES,
     GuardedDriver,
     GuardPolicy,
-    SubmitBlockedError,
     attach_guarded,
     validate_control_patterns,
     validate_dialog_confirm,
@@ -248,7 +247,6 @@ def click_task(
     saying the click WAS made, so the caller reads the page instead of clicking again.
     """
     waited = wait_s if wait_s is not None else _default_wait(role)
-    _require_declared_controls(config, task, name)
     if expect_heading is not None:
         expect_heading = " ".join(expect_heading.split())
         if not expect_heading or len(expect_heading) > EXPECT_HEADING_CHARS:
@@ -372,9 +370,6 @@ def dialog_task(
         raise ValueError(f"Expected 1 to {MAX_DIALOG_STEPS} controls to open, got {len(steps)}")
     scope_role, scope_name = parse_within(within)
     controls = (*steps, *([close] if close is not None else []))
-    for name, _ in controls:
-        _require_declared_controls(config, task, name)
-
     hosts = _declared_hosts(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
@@ -981,7 +976,6 @@ def pick_task(
     the row holds a control of its own. `nth` (1-based, DOM order) picks one of several rows
     with the same text. Confirming the dialog is still an ordinary declared `click`.
     """
-    _require_declared_controls(config, task, text)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
         driver.pick(text, role, nth, prefix)
@@ -1325,7 +1319,6 @@ def refresh_tab_task(
     """
     if tab == via:
         raise BrowserActionError(f"Expected --via to name a different tab than {tab!r}, got it")
-    _require_declared_controls(config, task, f"{via} / {tab}")
     waited = wait_s if wait_s is not None else _default_wait("tab")
     hosts = _declared_hosts(config, task)
 
@@ -2125,7 +2118,9 @@ def _overlays_at_baseline(
 def _policy_for(config: BrowserSetup, task: str) -> GuardPolicy:
     declared = config.browser.tasks.get(task)
     if declared is None:
-        return GuardPolicy()
+        # No table is the same as an empty one: the task says nothing about controls, so it is
+        # in open mode (#784), with the same refusals as a task that declares none (#768).
+        return GuardPolicy(open_controls=True)
     # Before any browser is touched: a finalizing name cannot be a dialog confirm.
     validate_dialog_confirm(declared.dialog_confirm, declared.extra_deny_names)
     for group in declared.dialog_landmarks:
@@ -2160,15 +2155,6 @@ def _declares_no_controls(declared: BrowserTaskPolicy) -> bool:
         or declared.dialog_landmarks
         or declared.draft_controls
     )
-
-
-def _require_declared_controls(config: BrowserSetup, task: str, what: str) -> None:
-    if task not in config.browser.tasks:
-        raise SubmitBlockedError(
-            f"Refused to click {what!r}: Expected a [browser.tasks.{task}] table with "
-            "allowed_controls in config.toml, got none. A browser task never submits; "
-            "stop and hand the final step to the user"
-        )
 
 
 def _redact_aria(snapshot: str) -> str:
