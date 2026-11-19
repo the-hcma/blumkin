@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import stat
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httplib2
@@ -130,6 +131,54 @@ def test_chat_last_fails_closed_on_ambiguity_and_partial_scans(tmp_path: Path) -
     )
     with _patched(partial), pytest.raises(ValueError, match="is partial"):
         asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).chat_last(with_name="vivek", n=1))
+
+
+def _partial_vivek_service() -> Any:
+    return _service(
+        spaces=[_space("spaces/AAA"), _space("spaces/BBB")],
+        members={"spaces/BBB": ["Vivek Kumar"]},
+        member_errors={"spaces/AAA": HttpError(httplib2.Response({"status": 403}), b"{}", uri="x")},
+    )
+
+
+def test_chat_find_says_a_refused_membership_was_forbidden(tmp_path: Path) -> None:
+    with _patched(_partial_vivek_service()):
+        payload = asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).chat_find(with_name="vivek"))
+    assert payload["skip_reasons"] == {"forbidden": 1, "other": 0, "throttled": 0}
+
+
+def test_chat_last_refusal_names_the_cause_and_the_way_out(tmp_path: Path) -> None:
+    with (
+        _patched(_partial_vivek_service()),
+        pytest.raises(ValueError, match=r"1 forbidden.*--allow-partial"),
+    ):
+        asyncio.run(GoogleWorkspaceProvider(_cfg(tmp_path)).chat_last(with_name="vivek", n=1))
+
+
+def test_chat_last_allow_partial_reads_the_unique_match(tmp_path: Path) -> None:
+    with _patched(_partial_vivek_service()):
+        payload = asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_last(
+                with_name="vivek", n=1, allow_partial=True
+            )
+        )
+    assert payload["chat"]["id"] == "spaces/BBB"
+    assert payload["partial"] is True and payload["skipped"] == 1
+    assert payload["skip_reasons"]["forbidden"] == 1
+
+
+def test_chat_last_allow_partial_still_refuses_an_ambiguous_match(tmp_path: Path) -> None:
+    service = _service(
+        spaces=[_space("spaces/AAA"), _space("spaces/BBB"), _space("spaces/CCC")],
+        members={"spaces/AAA": ["Vivek Kumar"], "spaces/BBB": ["Vivek Rao"]},
+        member_errors={"spaces/CCC": HttpError(httplib2.Response({"status": 403}), b"{}", uri="x")},
+    )
+    with _patched(service), pytest.raises(ValueError, match="ambiguous chat match"):
+        asyncio.run(
+            GoogleWorkspaceProvider(_cfg(tmp_path)).chat_last(
+                with_name="vivek", n=1, allow_partial=True
+            )
+        )
 
 
 def test_chat_last_no_match_stays_a_stdout_result(tmp_path: Path) -> None:

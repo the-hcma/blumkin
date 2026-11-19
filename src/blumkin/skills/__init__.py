@@ -910,6 +910,12 @@ SKILLS: list[SkillSpec] = [
                 "type": "string",
                 "note": "exactly one of --with or --chat-id; refuses if multiple matches",
             },
+            {
+                "name": "--allow-partial",
+                "required": False,
+                "type": "flag",
+                "note": "accept a unique --with match although some chats could not be checked",
+            },
         ],
     ),
     SkillSpec(

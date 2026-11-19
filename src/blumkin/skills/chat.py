@@ -32,6 +32,7 @@ from blumkin.attachments import (
     write_new_private_file,
 )
 from blumkin.auth import effective_scopes
+from blumkin.chat_match import partial_message, skip_reasons, skipped_summary
 from blumkin.compose_state import composed_content, record_composed
 from blumkin.config import BlumkinConfig, load_config
 from blumkin.graph import create_graph_client, request_config
@@ -378,6 +379,9 @@ async def chat_find(
         "items": matches,
         "partial": skipped > 0,
         "query": with_name,
+        "skip_reasons": skip_reasons(
+            getattr(exc, "response_status_code", None) for exc in skip_errors
+        ),
         "skipped": skipped,
     }
 
@@ -388,6 +392,7 @@ async def chat_last(
     chat_id: str | None = None,
     contains: str | None = None,
     n: int = 3,
+    allow_partial: bool = False,
     config: BlumkinConfig | None = None,
 ) -> dict[str, Any]:
     """Last ``n`` ordinary messages from one chat, selected by name or explicit id.
@@ -396,6 +401,11 @@ async def chat_last(
     matching ``chat send`` / ``edit`` / ``delete``: picking an arbitrary one would
     quietly return another person's conversation. ``--chat-id`` is the escape
     hatch, and skips the member-name scan entirely.
+
+    A ``--with`` scan that skipped chats (Graph refused their members) is refused too, since a
+    skipped chat might match the same name; ``allow_partial`` accepts a unique match anyway,
+    for a read (a 403 skips the same chats on every run). The result still says ``partial``,
+    ``skipped`` and ``skip_reasons``. Writes (send, edit, delete) never accept a partial match.
 
     ``contains`` filters message bodies case-insensitively over a newest-first
     local scan, the same shape ``mail list --from`` / ``--subject`` use: Graph has
@@ -418,15 +428,11 @@ async def chat_last(
         assert name is not None
         found = await chat_find(with_name=name, config=cfg)
         items = found["items"]
-        if found["partial"]:
+        if found["partial"] and not allow_partial:
             # A skipped chat (403 / throttle on the member fetch) may match the same
             # name, so neither "exactly one" nor "none" is trustworthy here. Same
-            # guard, and same wording, as _resolve_chat_target.
-            raise ValueError(
-                f"chat match for {name!r} is partial "
-                f"(skipped {int(found['skipped'])} chat(s)); "
-                "retry later or pass --chat-id from `chat find`"
-            )
+            # guard as _resolve_chat_target, plus the way out for a read.
+            raise ValueError(partial_message(name, found, allow_hint=True))
         if not items:
             # No-match stays a stdout result (chat: null / ok: false), not an
             # exception — pinned by test_diagnostic_commands_report_failure_on_stdout.
@@ -436,6 +442,7 @@ async def chat_last(
                 "items": [],
                 "partial": found["partial"],
                 "query": name,
+                "skip_reasons": found.get("skip_reasons"),
                 "skipped": found["skipped"],
             }
         if len(items) > 1:
@@ -492,6 +499,7 @@ async def chat_last(
         "items": selected,
         "partial": found["partial"],
         "query": name,
+        "skip_reasons": found.get("skip_reasons"),
         "skipped": found["skipped"],
     }
 
@@ -590,7 +598,10 @@ def format_find_human(payload: dict[str, Any]) -> list[str]:
     lines = [f"Chats matching {payload['query']!r}: {len(payload['items'])}"]
     skipped = int(payload.get("skipped") or 0)
     if skipped:
-        lines.append(f"  (skipped {skipped} chat(s) due to Graph errors; results may be partial)")
+        lines.append(
+            f"  (skipped {skipped} chat(s) due to Graph errors{skipped_summary(payload)}; "
+            "results may be partial)"
+        )
     if not payload["items"]:
         lines.append("  (none)")
         return lines
@@ -609,13 +620,17 @@ def format_last_human(payload: dict[str, Any]) -> list[str]:
         lines = [f"No chat matched {payload['query']!r}"]
         if skipped:
             lines.append(
-                f"  (skipped {skipped} chat(s) due to Graph errors; results may be partial)"
+                f"  (skipped {skipped} chat(s) due to Graph errors{skipped_summary(payload)}; "
+                "results may be partial)"
             )
         return lines
     topic = sanitize_terminal(str(chat.get("topic") or "(no topic)"))
     lines = [f"Last messages in {topic!r} ({chat.get('id')}):"]
     if skipped:
-        lines.append(f"  (skipped {skipped} chat(s) while matching; results may be partial)")
+        lines.append(
+            f"  (skipped {skipped} chat(s) while matching{skipped_summary(payload)}; "
+            "results may be partial)"
+        )
     lines.extend(_contains_notes(payload.get("filters") or {}))
     if not payload["items"]:
         lines.append("  (none)")
@@ -900,11 +915,7 @@ async def _resolve_chat_target(
     found = await chat_find(with_name=name, config=config)
     items = found["items"]
     if found["partial"]:
-        raise ValueError(
-            f"chat match for {name!r} is partial "
-            f"(skipped {int(found['skipped'])} chat(s)); "
-            "retry later or pass --chat-id from `chat find`"
-        )
+        raise ValueError(partial_message(name, found))
     if not items:
         raise LookupError(f"no chat matched {name!r}")
     if len(items) > 1:

@@ -8230,6 +8230,12 @@ def chat_find_cmd(ctx: click.Context, with_name: str, as_json_flag: bool) -> Non
     help="Case-insensitive substring filter over message bodies (local scan, max 500).",
 )
 @click.option("--n", "n", default=3, show_default=True, type=int, help="How many messages to show.")
+@click.option(
+    "--allow-partial",
+    "allow_partial",
+    is_flag=True,
+    help="Accept a unique --with match although some chats could not be checked (reads only).",
+)
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def chat_last_cmd(
@@ -8238,17 +8244,26 @@ def chat_last_cmd(
     chat_id: str | None,
     contains: str | None,
     n: int,
+    allow_partial: bool,
     as_json_flag: bool,
 ) -> None:
     """Show the last N messages from one chat (by --with name or --chat-id).
 
-    Exit 5 (not_found) means no chat matched --with. An ambiguous --with is exit
-    2 (usage_error) listing the candidate ids - pass one back as --chat-id.
+    Exit 5 (not_found) means no chat matched --with among the chats that could be
+    checked: when the result says partial, some could not be, so check it before
+    concluding no such chat exists. An ambiguous --with is exit 2 (usage_error)
+    listing the candidate ids - pass one back as --chat-id.
     """
     _dispatch_soft(
         ctx,
         "chat.last",
-        {"with": with_name, "chat_id": chat_id, "contains": contains, "n": n},
+        {
+            "with": with_name,
+            "chat_id": chat_id,
+            "contains": contains,
+            "n": n,
+            "allow_partial": allow_partial,
+        },
         human=format_last_human,
         as_json_flag=as_json_flag,
         is_failure=lambda payload: payload.get("chat") is None,
