@@ -718,7 +718,9 @@ def test_the_policy_line_is_valid_toml_for_a_name_with_a_backslash_or_quote_free
 def _fake_click(monkeypatch: pytest.MonkeyPatch, role: str = "button") -> list[str]:
     clicked: list[str] = []
 
-    def fake(config: Any, task: str, name: str, role_arg: Any, *rest: Any) -> dict[str, Any]:
+    def fake(
+        config: Any, task: str, name: str, role_arg: Any, *rest: Any, **options: Any
+    ) -> dict[str, Any]:
         clicked.append(name)
         return {"action": "click", "name": name, "ok": True, "role": role, "task": task}
 

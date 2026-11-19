@@ -231,6 +231,7 @@ def click_task(
     wait_s: float | None = None,
     nth: int | None = None,
     expect_heading: str | None = None,
+    wrong_role_fast: bool = False,
 ) -> dict[str, Any]:
     """Click a control the task declared (never a submit control or a finalizing name).
 
@@ -246,6 +247,10 @@ def click_task(
     which is page text and so untrusted) and `settled`. `expect_heading` waits up to
     `EXPECT_HEADING_WAIT_S` for a heading containing that text and, when none shows, fails
     saying the click WAS made, so the caller reads the page instead of clicking again.
+
+    `wrong_role_fast` is for a role a person typed (the `browser click` command): a control
+    that is in another role but not in that one fails after a short grace time. A caller with a
+    recorded role (a ledger `apply` step) leaves it off and gets the whole wait.
     """
     waited = wait_s if wait_s is not None else _default_wait(role)
     if expect_heading is not None:
@@ -279,7 +284,7 @@ def click_task(
                     )
                 )
             previous_url = driver.url
-            found = driver.click(name, role, waited, nth=nth)
+            found = driver.click(name, role, waited, nth=nth, wrong_role_fast=wrong_role_fast)
             payload: dict[str, Any] = {
                 "action": "click",
                 "name": name,
