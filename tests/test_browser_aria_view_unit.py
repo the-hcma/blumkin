@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from blumkin.browser.aria_view import collapse_options, parse_within, scope, window
+from blumkin.browser.aria_view import collapse_options, first_name, parse_within, scope, window
 
 _PAGE = """\
 - heading "Expenses"
@@ -201,3 +201,11 @@ def test_a_selected_token_in_an_options_text_does_not_select_it() -> None:
     )
 
     assert collapse_options(page).strip() == '- combobox "T" (3 options, selected "B")'
+
+
+def test_first_name_reads_a_plain_a_quoted_and_a_missing_name() -> None:
+    assert first_name('- menu "Plain":\n  - menuitem "A"\n', "menu") == "Plain"
+    assert first_name('- \'menu "More: actions"\':\n  - menuitem "A"\n', "menu") == "More: actions"
+    assert first_name('- menu:\n  - menuitem "A"\n', "menu") is None
+    assert first_name('- button "X"\n', "menu") is None
+    assert first_name('- menu "First"\n- menu "Second"\n', "menu") == "First"

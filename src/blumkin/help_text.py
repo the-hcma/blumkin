@@ -1266,8 +1266,10 @@ characters, and the JSON says `truncated`, `total_chars` and the `next_offset` t
 from. With `--aria`, a combobox or listbox that only holds options is summarized
 (`combobox "Type" (27 options, selected "Lodging")`; `--options` lists them), and
 `--within ROLE[:NAME]` keeps one subtree, for example `--within dialog` for the open
-dialog or `--within "dialog:Manage Attachments"`. The page is scanned for injection before
-it is narrowed, so a warning outside the subtree still shows.
+dialog or `--within "dialog:Manage Attachments"`. A role the page's own snapshot lacks (a
+menu a page draws outside its own tree) is read through a role lookup instead (not with
+`--frame`). The page is
+scanned for injection before it is narrowed, so a warning outside the subtree still shows.
 """
 
 BROWSER_REFRESH_TAB_EPILOG = """

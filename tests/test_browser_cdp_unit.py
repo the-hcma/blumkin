@@ -169,6 +169,8 @@ class _Locator:
         if self._label in self._page.missing:
             raise PlaywrightTimeout("page gone")
         self._page.calls.append(("aria_snapshot", self._label, timeout))
+        if self._role and (self._role, self._label) in self._page.role_snapshots:
+            return self._page.role_snapshots[(self._role, self._label)]
         return '- button "Add line"\n'
 
 
@@ -194,6 +196,7 @@ class _Page:
         self.default_timeout: float | None = None
         #: (role, name) -> successive counts; the last one repeats.
         self.role_counts: dict[tuple[str, str], list[int]] = {}
+        self.role_snapshots: dict[tuple[str, str], str] = {}
         self.waits = 0
         self.wait_error: Exception | None = None
         #: How many fields carry a label (default one).
@@ -241,9 +244,9 @@ class _Page:
         self.calls.append(("locator", selector))
         return _Locator(self, selector)
 
-    def get_by_role(self, role: str, *, name: str, exact: bool) -> _Locator:
+    def get_by_role(self, role: str, *, name: str | None = None, exact: bool = False) -> _Locator:
         self.calls.append(("get_by_role", role, name, exact))
-        return _Locator(self, name, role)
+        return _Locator(self, name or "", role)
 
     def evaluate(self, script: str, arg: Any = None) -> Any:
         self.calls.append(("evaluate", arg))
@@ -1224,6 +1227,61 @@ def test_aria_snapshot_describes_the_page_body_with_the_action_timeout() -> None
     pw, driver = _driver()
     assert driver.aria_snapshot() == '- button "Add line"\n'
     assert ("aria_snapshot", "body", 30000.0) in pw.page.calls
+
+
+def test_role_aria_snapshot_describes_the_first_element_of_a_role_and_counts_them() -> None:
+    pw, driver = _driver()
+    pw.page.role_counts[("menu", "")] = [2]
+    pw.page.role_snapshots[("menu", "")] = '- menu:\n  - menuitem "Rename"\n'
+
+    assert driver.role_aria_snapshot("menu") == ('- menu:\n  - menuitem "Rename"\n', 2)
+    assert ("get_by_role", "menu", None, False) in pw.page.calls
+    assert ("aria_snapshot", "", 30000.0) in pw.page.calls
+
+
+def test_role_aria_snapshot_with_a_name_asks_for_an_exact_name() -> None:
+    pw, driver = _driver()
+    pw.page.role_counts[("menu", "More actions")] = [1]
+
+    assert driver.role_aria_snapshot("menu", "More actions") is not None
+    assert ("get_by_role", "menu", "More actions", True) in pw.page.calls
+
+
+def test_role_aria_snapshot_is_none_when_no_element_has_the_role() -> None:
+    pw, driver = _driver()
+    pw.page.role_counts[("menu", "")] = [0]
+
+    assert driver.role_aria_snapshot("menu") is None
+    assert not any(call[0] == "aria_snapshot" for call in pw.page.calls)
+
+
+def test_role_count_counts_without_building_a_snapshot() -> None:
+    pw, driver = _driver()
+    pw.page.role_counts[("menu", "")] = [3]
+
+    assert driver.role_count("menu") == 3
+    assert not any(call[0] == "aria_snapshot" for call in pw.page.calls)
+
+
+def test_a_failed_role_count_is_an_action_error() -> None:
+    pw, driver = _driver()
+
+    def refuse(role: str, **kwargs: Any) -> Any:
+        raise PlaywrightTimeout("page gone")
+
+    pw.page.get_by_role = refuse  # type: ignore[method-assign]
+
+    with pytest.raises(BrowserActionError, match="count the menu"):
+        driver.role_count("menu")
+
+
+def test_a_failed_role_aria_snapshot_is_an_action_error() -> None:
+    pw, driver = _driver()
+    pw.page.role_counts[("menu", "")] = [1]
+    pw.page.missing.add("")
+
+    with pytest.raises(BrowserActionError, match="describe the menu"):
+        driver.role_aria_snapshot("menu")
 
 
 def test_a_failed_aria_snapshot_is_an_action_error() -> None:

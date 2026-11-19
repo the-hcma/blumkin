@@ -97,6 +97,10 @@ class BrowserDriver(Protocol):
 
     def aria_snapshot(self) -> str: ...
 
+    def role_aria_snapshot(self, role: str, name: str | None = None) -> tuple[str, int] | None: ...
+
+    def role_count(self, role: str) -> int: ...
+
     def click(
         self, name: str, role: str | None = None, wait_s: float = DEFAULT_CLICK_WAIT_S
     ) -> str: ...
@@ -781,6 +785,35 @@ class PlaywrightDriver:
             return str(self._page.locator("body").aria_snapshot(timeout=self._timeout_ms))
         except _playwright_error() as exc:
             raise self._action_error("describe the page", exc) from exc
+
+    def role_aria_snapshot(self, role: str, name: str | None = None) -> tuple[str, int] | None:
+        """The ARIA snapshot of the first visible element of `role` (and exact `name`).
+
+        Returns it with how many such elements there are, or None when there is none. The body
+        snapshot can leave out what a page draws outside its own tree (a menu rendered in a
+        portal), which a role locator still finds.
+        """
+        self._require_open()
+        try:
+            locator = (
+                self._page.get_by_role(role, name=name, exact=True)
+                if name is not None
+                else self._page.get_by_role(role)
+            )
+            count = int(locator.count())
+            if count == 0:
+                return None
+            return str(locator.first.aria_snapshot(timeout=self._timeout_ms)), count
+        except _playwright_error() as exc:
+            raise self._action_error(f"describe the {role}", exc) from exc
+
+    def role_count(self, role: str) -> int:
+        """How many visible elements of `role` the page has (a count only, no snapshot)."""
+        self._require_open()
+        try:
+            return int(self._page.get_by_role(role).count())
+        except _playwright_error() as exc:
+            raise self._action_error(f"count the {role} elements", exc) from exc
 
     def block_form_submission(self, *, background_writes: bool = False) -> None:
         """Swallow every non-GET navigation while attached (a form POST), whatever triggers it.
@@ -2735,6 +2768,8 @@ _DEADLINE_METHODS = (
     "raw_press",
     "read_field",
     "read_text",
+    "role_aria_snapshot",
+    "role_count",
     "select",
     "title",
     "upload",
@@ -2758,6 +2793,10 @@ class RawBrowserDriver(Protocol):
     """The unguarded surface `GuardedDriver` wraps (`PlaywrightDriver` implements it)."""
 
     def aria_snapshot(self) -> str: ...
+
+    def role_aria_snapshot(self, role: str, name: str | None = None) -> tuple[str, int] | None: ...
+
+    def role_count(self, role: str) -> int: ...
 
     def block_form_submission(self, *, background_writes: bool = False) -> None: ...
 

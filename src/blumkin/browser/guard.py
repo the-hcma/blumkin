@@ -206,6 +206,12 @@ class GuardedDriver:
     def aria_snapshot(self) -> str:
         return self._raw.aria_snapshot()
 
+    def role_aria_snapshot(self, role: str, name: str | None = None) -> tuple[str, int] | None:
+        return self._raw.role_aria_snapshot(role, name)
+
+    def role_count(self, role: str) -> int:
+        return self._raw.role_count(role)
+
     def check_click(
         self,
         name: str,
