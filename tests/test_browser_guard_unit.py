@@ -1030,13 +1030,94 @@ def test_click_without_a_role_fails_when_no_role_has_the_control() -> None:
     assert [probe[0::2] for probe in raw.probes] == [("Notes", 2.0), ("Notes", 0.0)]
 
 
-def test_click_with_a_role_probes_only_that_role_and_fails_fast_when_it_is_absent() -> None:
+def test_a_typed_role_fails_at_once_when_the_name_is_in_another_role() -> None:
     raw, driver = _guard("Notes")
     raw.present["Notes"] = ("tab",)
-    with pytest.raises(BrowserActionError, match="link named 'Notes'"):
-        driver.click("Notes", "link", wait_s=3.0)
-    assert raw.probes == [("Notes", ("link",), 3.0)]
+    with pytest.raises(
+        BrowserActionError, match="link named 'Notes'.*a tab named 'Notes'.*--role tab"
+    ):
+        driver.click("Notes", "link", wait_s=30.0, wrong_role_fast=True)
+    # a short grace in the role given, then one look at the other roles: not the whole wait
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 5.0), ("Notes", 0.0)]
+    assert raw.probes[0][1] == ("link",) and "link" not in raw.probes[1][1]
     assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_recorded_role_waits_the_whole_wait_and_then_names_the_other_role() -> None:
+    """A slow page can legitimately show the same name in two roles, one of them late."""
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ("tab",)
+    with pytest.raises(
+        BrowserActionError, match="within 30 seconds, got none; a tab named 'Notes' exists"
+    ) as error:
+        driver.click("Notes", "link", wait_s=30.0)
+    assert "--role" not in str(error.value)  # the caller has no option to change
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 30.0), ("Notes", 0.0)]
+
+
+def test_a_typed_role_keeps_waiting_when_the_name_is_in_no_role_yet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import guard
+
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ()
+    clock = iter([0.0, 5.0])  # the grace probe spent its 5 seconds
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(clock))
+    with pytest.raises(BrowserActionError, match="within 30 seconds, got none") as error:
+        driver.click("Notes", "link", wait_s=30.0, wrong_role_fast=True)
+    assert "--role" not in str(error.value)
+    assert [probe[0::2] for probe in raw.probes] == [
+        ("Notes", 5.0),
+        ("Notes", 0.0),  # nothing under another role either, so it waits on
+        ("Notes", 25.0),
+        ("Notes", 0.0),
+    ]
+
+
+def test_the_look_at_the_other_roles_counts_toward_the_wait_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser import guard
+
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ()
+    clock = iter([100.0, 106.0])  # the first probe and the look at the other roles took 6 s
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(BrowserActionError, match="within 7 seconds"):
+        driver.click("Notes", "link", wait_s=7.0, wrong_role_fast=True)
+
+    waits = [probe[2] for probe in raw.probes if probe[2] > 0.0]
+    assert waits == [5.0, pytest.approx(1.0)]  # 7 s asked for, 6 s already spent
+
+
+def test_a_typed_role_that_shows_in_the_grace_time_does_not_look_further() -> None:
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ("link",)
+
+    driver.click("Notes", "link", wait_s=30.0, wrong_role_fast=True)
+
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 5.0)]
+    assert any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_typed_role_with_nth_waits_the_whole_wait_in_one_probe() -> None:
+    """A list still rendering has fewer than `nth` matches for a while: that is waited out."""
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ("link",)
+
+    driver.click("Notes", "link", wait_s=30.0, nth=3, wrong_role_fast=True)
+
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 30.0)]
+
+
+def test_click_with_a_role_and_a_short_wait_probes_once_then_hints() -> None:
+    raw, driver = _guard("Notes")
+    raw.present["Notes"] = ("tab",)
+    with pytest.raises(BrowserActionError, match="a tab named 'Notes' exists"):
+        driver.click("Notes", "link", wait_s=1.0, wrong_role_fast=True)
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 1.0), ("Notes", 0.0)]
 
 
 def test_the_policy_is_checked_before_the_page_is_probed() -> None:

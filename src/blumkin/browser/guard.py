@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import unicodedata
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
@@ -266,6 +267,7 @@ class GuardedDriver:
         wait_s: float = DEFAULT_CLICK_WAIT_S,
         *,
         nth: int | None = None,
+        wrong_role_fast: bool = False,
     ) -> str:
         """Click a declared control and return the role it was found in.
 
@@ -276,10 +278,15 @@ class GuardedDriver:
         A name the page legitimately repeats is refused unless `nth` (1-based, DOM order) says
         which match is meant. That narrows the lookup only: the name must still be declared,
         a finalizing name is still refused, and the chosen element is vetted before the click.
+
+        With a `role` and `wrong_role_fast` (a person typed the role), a control that is not in
+        that role after a short grace time but is in another one fails at once with the role to
+        use, rather than after the whole wait. Without it the whole wait is spent (a recorded
+        role on a slow page is normal) and the failure still names the other role.
         """
         if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
             raise ValueError(f"Expected nth to be a positive whole number, got {nth!r}")
-        chosen, action = self._locate(name, role, wait_s, nth)
+        chosen, action = self._locate(name, role, wait_s, nth, wrong_role_fast=wrong_role_fast)
         self._raw.checked_click(
             name, chosen, lambda info: self._vet_control(action, info, name, chosen), nth=nth
         )
@@ -629,6 +636,7 @@ class GuardedDriver:
         *,
         confirm_ok: bool = True,
         declared_only: bool = False,
+        wrong_role_fast: bool = False,
     ) -> tuple[str, str]:
         """Check the policy, then find `name` on the page: (the role it is in, the action)."""
         action = f"click {name!r}"
@@ -636,13 +644,29 @@ class GuardedDriver:
             name, role, confirm_ok=confirm_ok, declared_only=declared_only, resolving=True
         )
         roles = (role,) if role is not None else tuple(sorted(CLICKABLE_ROLES))
-        found = self._raw.matching_roles(name, roles, wait_s, nth=nth)
         label = role if role is not None else "control"
+        if wrong_role_fast and role is not None and nth is None and wait_s > _ROLE_GRACE_S:
+            # The page gets a short time to show the control in the role given. If it does not
+            # but the name is there in another role, the role is wrong: say so now, rather
+            # than after the whole wait (#797). Not with `nth`: a list that is still rendering
+            # has fewer than `nth` matches for a while, and that is waited out, not refused.
+            began = time.monotonic()
+            found = self._raw.matching_roles(name, roles, _ROLE_GRACE_S, nth=nth)
+            if not found:
+                hint = self._other_role_hint(name, role, flag=True)
+                if hint:
+                    raise BrowserActionError(f"Expected a {label} named {name!r}, got none{hint}")
+                # What the look at the other roles took counts toward the wait asked for.
+                left = wait_s - (time.monotonic() - began)
+                found = self._raw.matching_roles(name, roles, max(left, 0.0), nth=nth)
+        else:
+            found = self._raw.matching_roles(name, roles, wait_s, nth=nth)
         if not found:
             tried = "" if role is not None else f" in any of {', '.join(roles)}"
             raise BrowserActionError(
                 f"Expected a {label} named {name!r} within {wait_s:g} seconds{tried}, got none"
                 f"{self._pick_hint(name, role)}"
+                f"{self._other_role_hint(name, role, flag=wrong_role_fast)}"
             )
         if len(found) > 1:
             raise BrowserActionError(
@@ -652,6 +676,27 @@ class GuardedDriver:
         if role is None:
             self.check_click(name, resolved, confirm_ok=confirm_ok, declared_only=declared_only)
         return resolved, action
+
+    def _other_role_hint(self, name: str, role: str | None, *, flag: bool = False) -> str:
+        """Say so when `name` exists in a clickable role other than the `role` that was asked.
+
+        A control is often a link where a button was expected (`Create Report`). With `flag`
+        (the person typed the role, so `--role` is theirs to change) it names the option to
+        pass; callers with a fixed or recorded role only say which role has the control. Looks
+        only (a count, never a click, no wait) and never raises.
+        """
+        if role is None:
+            return ""
+        others = tuple(sorted(CLICKABLE_ROLES - {role}))
+        try:
+            found = self._raw.matching_roles(name, others, 0.0, nth=1)
+        except BrowserActionError:
+            return ""
+        if not found:
+            return ""
+        shown = " and ".join(found)
+        suffix = f", so try --role {found[0]}" if flag else ""
+        return f"; a {shown} named {name!r} exists{suffix}"
 
     def _pick_hint(self, name: str, role: str | None) -> str:
         """Say so when `name` is a grid row, cell or row header, which `pick` chooses.
@@ -892,6 +937,9 @@ _BUTTON_LIKE_INPUT_TYPES = frozenset({"button", "image", "reset", "submit"})
 #: Roles a dropdown has; `select` never goes through a button, link or other clickable role.
 _SELECT_ROLES = frozenset({"combobox", "listbox", "searchbox", "textbox"})
 
+#: How long a typed role gets to show the control before the name is looked up in the other roles
+#: (a wrong role is then reported at once); see `GuardedDriver.click`.
+_ROLE_GRACE_S = 5.0
 CLICKABLE_ROLES = frozenset(
     {
         "button",

@@ -1606,13 +1606,27 @@ def test_click_without_a_role_on_an_ambiguous_name_exits_with_the_roles(raw: _Ra
     assert "link, tab" in _json(result)["message"]
 
 
-def test_click_with_a_role_and_a_wait_probes_that_role_for_that_long(raw: _Raw) -> None:
+def test_click_with_a_role_that_shows_within_the_grace_time_is_probed_only_that_long(
+    raw: _Raw,
+) -> None:
     raw.roles_present["Add line"] = ("link",)
     payload = _json(
         _run("browser", "click", "expense-report", "Add line", "--role", "link", "--wait", "7")
     )
     assert payload["role"] == "link"
-    assert ("Add line", 7.0) in raw.probes
+    assert raw.probes == [("Add line", 5.0)]  # shown within the grace time: no more waiting
+
+
+def test_click_with_a_role_that_is_absent_waits_out_the_rest_of_the_wait(
+    raw: _Raw, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = iter([0.0, 5.0])  # the grace probe spent its 5 seconds
+    monkeypatch.setattr("blumkin.browser.guard.time.monotonic", lambda: next(clock))
+    raw.roles_present["Add line"] = ()
+    result = _run("browser", "click", "expense-report", "Add line", "--role", "link", "--wait", "7")
+    assert result.exit_code != 0
+    waits = [waited for _, waited in raw.probes if waited > 0.0]
+    assert waits == [5.0, 2.0]  # the whole 7 seconds, in two parts
 
 
 def test_click_wait_defaults_to_a_few_seconds(raw: _Raw) -> None:
@@ -1681,9 +1695,29 @@ def test_a_wait_that_is_not_a_sane_number_of_seconds_is_a_usage_error(
     assert raw.probes == []
 
 
-def test_a_click_with_an_explicit_role_keeps_the_long_action_wait(raw: _Raw) -> None:
+def test_a_click_with_an_explicit_role_keeps_the_long_action_wait(
+    raw: _Raw, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = iter([0.0, 5.0])  # the grace probe spent its 5 seconds
+    monkeypatch.setattr("blumkin.browser.guard.time.monotonic", lambda: next(clock))
+    raw.roles_present["Add line"] = ()
     _run("browser", "click", "expense-report", "Add line", "--role", "button")
-    assert raw.probes == [("Add line", 30.0)]
+    assert [waited for _, waited in raw.probes if waited > 0.0] == [5.0, 25.0]
+
+
+def test_click_task_spends_the_whole_wait_unless_the_role_was_typed(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    """A recorded role (a ledger step) on a slow page gets the whole wait; the name still
+    shows the other role at the end."""
+    from blumkin.browser.actions import click_task
+    from blumkin.cli import load_browser_setup
+
+    raw.roles_present["Add line"] = ("tab",)
+    with pytest.raises(BrowserActionError, match="a tab named 'Add line' exists") as error:
+        click_task(load_browser_setup(), "expense-report", "Add line", "link", 6.0)
+    assert "--role" not in str(error.value)
+    assert [waited for _, waited in raw.probes if waited > 0.0] == [6.0]
 
 
 def test_a_click_without_a_role_uses_the_short_wait(raw: _Raw) -> None:

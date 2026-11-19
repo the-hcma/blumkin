@@ -3123,7 +3123,9 @@ def browser_click(
             require_recordable_click(
                 setup, task, record_page, name, expect_heading=expect_heading, nth=nth, role=role
             )
-        payload = click_task(setup, task, name, role, wait_s, nth, expect_heading)
+        payload = click_task(
+            setup, task, name, role, wait_s, nth, expect_heading, wrong_role_fast=True
+        )
     except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
         _browser_fail(exc, as_json=as_json, task=task)
     if record_page is not None:

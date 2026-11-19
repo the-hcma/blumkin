@@ -256,6 +256,27 @@ def test_a_recorded_click_step_keeps_the_button_lookup(
     assert seen == [("Add line", "button"), ("Add line", "button")]
 
 
+def test_a_ledger_click_step_keeps_the_whole_wait_for_its_recorded_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a role a person typed fails fast when it is wrong: a recorded one waits (#797)."""
+    from blumkin.browser import actions, ledger_ops
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+    kwargs: list[dict[str, Any]] = []
+
+    def fake_click(config: Any, task: str, name: str, role: str | None = None, **rest: Any) -> dict:
+        kwargs.append(rest)
+        return {}
+
+    monkeypatch.setattr(actions, "click_task", fake_click)
+    run = ledger_ops._default_run_step("expense-report")
+    run(FlowStep(action="click", control="Add line", expect=None, page="form"), {})
+
+    assert kwargs and not any(item.get("wrong_role_fast") for item in kwargs)
+
+
 def _handoff_model() -> SiteModel:
     base = _model()
     flow = Flow(
