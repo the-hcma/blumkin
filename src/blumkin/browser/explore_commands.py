@@ -4,7 +4,8 @@ An exploration is a draft site model kept on disk between commands: `observe` ad
 the browser is on, `click` follows a link (or, after the user says yes at their own
 terminal, presses a control that may change state), `show` summarizes the draft, `save`
 stores it as the next version of the task's model once the user has seen it and `discard`
-drops it. Exploration needs the task to declare `allowed_hosts` and never leaves them.
+drops it. `observe` and `forget` only read or edit the draft, so they need no `allowed_hosts`;
+`click` and `save` need the task to declare them, and exploration never leaves them.
 """
 
 from __future__ import annotations
@@ -119,7 +120,7 @@ def explore_forget(config: BrowserSetup, task: str, page_id: str) -> dict[str, A
     model can be removed in the next version. The last page cannot be forgotten: that is what
     `discard` is for.
     """
-    _, extra_deny = explore_policy(config, task)
+    _, extra_deny = explore_policy(config, task, require_hosts=False)
     if not is_logical_name(page_id):
         # A stored model may hold ids exploration would not make (`expense-item-2`).
         raise PageIdError(f"Expected the id of a page in the draft or model, got {page_id!r}")
@@ -179,7 +180,7 @@ def explore_observe(
         raise PageIdError("Expected --landmark only with --kind dialog, got it with another kind")
     if kind == "dialog" and not landmarks and not _recorded_dialog(config, task, page_id):
         raise PageIdError("Expected at least two --landmark controls for a dialog page, got none")
-    hosts, extra_deny = explore_policy(config, task)
+    hosts, extra_deny = explore_policy(config, task, require_hosts=False)
     if landmarks:
         validate_dialog_landmarks(landmarks, extra_deny)
     profile = require_profile(config.config_dir, task)
@@ -187,6 +188,15 @@ def explore_observe(
         driver.mark_window(task, hosts, sign_in_hosts_for(config, task))
         explorer = Explorer(driver, TerminalConfirmer(), allowed_hosts=hosts, extra_deny=extra_deny)
         url, controls = explorer.observe_with_url()
+        # Checked on the address the controls were read from, so a sign-in redirect that lands
+        # between a check and the read cannot be recorded.
+        if not hosts and host_allowed(
+            urlsplit(url).hostname or "", sign_in_hosts_for(config, task)
+        ):
+            raise ExploreRefusedError(
+                "Expected a page that is not a sign-in page to observe, got one "
+                "(the user signs in by hand)"
+            )
     seen: dict[str, Any] = {}
 
     def change(current: SiteModel | None) -> SiteModel:
@@ -232,10 +242,15 @@ def explore_observe(
     return payload
 
 
-def explore_policy(config: BrowserSetup, task: str) -> tuple[Sequence[str], Sequence[str]]:
+def explore_policy(
+    config: BrowserSetup, task: str, *, require_hosts: bool = True
+) -> tuple[Sequence[str], Sequence[str]]:
+    """The task's hosts and extra deny names; `require_hosts=False` is for read-only observing."""
     validate_task_name(task)
     declared = config.browser.tasks.get(task)
-    if declared is None or not declared.allowed_hosts:
+    if declared is None and not require_hosts:
+        return (), ()
+    if declared is None or (require_hosts and not declared.allowed_hosts):
         raise ExploreRefusedError(
             f"Expected [browser.tasks.{task}] to declare allowed_hosts in config.toml before "
             "exploring, got none"

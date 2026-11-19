@@ -465,7 +465,9 @@ Examples:
   blumkin browser explore save expense-report --yes
 
 Explores a site once and records its structure (pages, controls, flows) as a model that
-later runs reuse. The task must declare `allowed_hosts`; exploration never leaves them.
+later runs reuse. `observe` only reads, so with no `allowed_hosts` declared it works on
+any web page (never a sign-in page); `click` and `save` need the task to declare
+`allowed_hosts`, and exploration never leaves them.
 Links and tabs are followed without asking. A control that may change state, including a
 menu item, is clicked only after you answer yes at your own terminal (the default is no,
 and an agent without a terminal gets no answer). A finalizing control (submit, send, pay, ...) is
@@ -1250,7 +1252,8 @@ injection scan has already read the page as it was, and `--offset` and `--limit`
 compacted text.
 
 `--frame N` reads child frame N instead (numbers come from `blumkin browser frames`). The
-task must declare `allowed_hosts` and the frame must be on one of them; frame numbers shift
+task needs no `allowed_hosts` (a read changes nothing), but when it declares them the frame
+must be on one of them; frame numbers shift
 when the page adds or reloads a frame, so add `--host HOST` to refuse any other frame, and
 `--wait SECONDS` waits for a frame that attaches late to attach and (as text) have text.
 `--aria` returns the ARIA snapshot (roles and accessible names) of the page, or of the

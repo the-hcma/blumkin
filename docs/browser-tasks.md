@@ -122,7 +122,7 @@ Limits to know: the host check uses the address the download was started from (a
 
 ## Explore a site once
 
-A task can record the structure of its website once, so later runs do not have to explore it again. The record is a site model: the pages (a URL template and a fingerprint of their landmark controls), the controls on each page (a logical name, a kind, whether it looks finalizing and ordered ways to find it) and the flows that chain them. It holds structure only: nothing you type, no cookie and no personal data, and a label that looks like typed data is skipped and counted. Exploration needs the task to declare `allowed_hosts` and never leaves them.
+A task can record the structure of its website once, so later runs do not have to explore it again. The record is a site model: the pages (a URL template and a fingerprint of their landmark controls), the controls on each page (a logical name, a kind, whether it looks finalizing and ordered ways to find it) and the flows that chain them. It holds structure only: nothing you type, no cookie and no personal data, and a label that looks like typed data is skipped and counted. `explore observe` only reads, so it works with no `allowed_hosts` declared on any http(s) page that is not a sign-in page; `explore click` and `explore save` need the task to declare `allowed_hosts`, and exploration never leaves them.
 
 ```bash
 blumkin browser explore observe expense-report expense-list
@@ -261,7 +261,7 @@ A link, a tab or a tree item whose name is a noun that only starts like a finali
 | `window_raise_failed` | 1 | `browser raise` could not raise the window: not macOS, no Accessibility permission for your terminal, or no window. Raise it by hand; the browser keeps running. |
 | `browser_close_failed` | 1 | `browser close` asked the browser to quit and it was still running after `--wait`. Close its window by hand, or retry with `--force` to kill it. |
 | `profile_in_use` | 1 | Raised when the task's browser is running or a launch for it is in progress; close it or wait, then try again. |
-| `explore_refused` | 1 | Exploration needs `allowed_hosts` for the task, or the page is (or a click led) outside them. |
+| `explore_refused` | 1 | `explore click`, `explore save`, `model check` or `model flow add` needs `allowed_hosts` for the task, `explore observe` was asked on a sign-in page or on a page that is not http(s), or the page is (or a click led) outside the declared hosts. |
 | `model_invalid` | 1 | The draft or the stored model was rejected: a field outside the schema, a value that looks like typed data, a symlink or a file that is too large. |
 | `reply_failed` | 1 | `blumkin loop finish` could not send its reply; the item's documents are kept, so run it again. |
 | `ledger_invalid` | 1 | A task instance journal has a damaged line (not just a torn last one); restore it from a backup or discard the instance. |

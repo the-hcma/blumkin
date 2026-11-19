@@ -728,7 +728,10 @@ def _field_options[F: Callable[..., Any]](command: F) -> F:
             "--frame",
             type=click.IntRange(min=1),
             default=None,
-            help="Work inside child frame N (see `browser frames`); needs allowed_hosts.",
+            help=(
+                "Work inside child frame N (see `browser frames`); with allow"
+                "ed_hosts declared it must be on one."
+            ),
         ),
         click.option(
             "--host",
@@ -4683,7 +4686,9 @@ def browser_cell(
     "frame",
     type=click.IntRange(min=1),
     default=None,
-    help="Read child frame N (see `browser frames`); needs allowed_hosts.",
+    help=(
+        "Read child frame N (see `browser frames`); with allowed_hosts declared it must be on one."
+    ),
 )
 @click.option(
     "--host",
@@ -4765,7 +4770,10 @@ def browser_grid(
     "frame",
     type=click.IntRange(min=1),
     default=None,
-    help="Read child frame N (see `browser frames`) instead of the page; needs allowed_hosts.",
+    help=(
+        "Read child frame N (see `browser frames`) instead of the pag"
+        "e; with allowed_hosts declared it must be on one."
+    ),
 )
 @click.option(
     "--host",

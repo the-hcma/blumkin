@@ -87,6 +87,10 @@ class _Raw:
         self.frame_chunks: tuple[str, ...] = ()
         #: Child frames as (origin, text); what `frame_list` and `read_frame_text` serve.
         self.child_frames: list[tuple[str, str]] = []
+        #: Where the top page is after a frame read (a redirect that lands while it is read).
+        self.moves_to_after_frame_read: str | None = None
+        #: What the frame predicate answered for the first child frame, per frame read.
+        self.frame_allowed_answers: list[bool] = []
         self.aria_text = '- button "Add line"'
         self.pins: list[str | None] = []
         self.waits: list[float] = []
@@ -257,6 +261,10 @@ class _Raw:
         wait_s: float = 0.0,
     ) -> str:
         self.calls.append(("frame-aria", index))
+        if self.child_frames:
+            self.frame_allowed_answers.append(is_allowed(self.child_frames[0][0][8:]))
+        if self.moves_to_after_frame_read is not None:
+            self.url = self.moves_to_after_frame_read
         return self.aria_text
 
     def frame_list(
@@ -285,6 +293,8 @@ class _Raw:
         self.waits.append(wait_s)
         self.pins.append(expect_host)
         self.calls.append(("frame-text", index, is_allowed(self.child_frames[index - 1][0][8:])))
+        if self.moves_to_after_frame_read is not None:
+            self.url = self.moves_to_after_frame_read
         return PageText(text=self.child_frames[index - 1][1], injection_warning=None)
 
     def describe_field(self, label: str, target: Any = None) -> ControlInfo:
@@ -4326,6 +4336,74 @@ def test_a_frame_read_and_every_action_still_need_an_allowed_host_on_a_sign_in_p
         assert result.exit_code == EXIT_OTHER
         assert _json(result)["error"] == "host_blocked"
     assert [call for call in raw.calls if call[0] in ("click", "fill")] == []
+
+
+def test_a_frame_read_without_declared_hosts_is_refused_on_a_sign_in_page(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    raw.url = "https://login.microsoftonline.com/common/oauth2/authorize"
+    raw.child_frames = [("https://tenant.example.org", "secret")]
+    result = _run("browser", "read", "expense-report", "--frame", "1")
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+    assert "secret" not in result.output
+
+
+_SIGN_IN_URL = "https://login.microsoftonline.com/common/oauth2/authorize?client_id=secret"
+_SIGN_IN_FRAME = ("https://login.microsoftonline.com", "sign-in text")
+
+
+def test_frames_without_declared_hosts_mark_a_sign_in_frame_not_allowed(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    raw.child_frames = [_PANE, _SIGN_IN_FRAME]
+    payload = _json(_run("browser", "frames", "expense-report"))
+    assert [frame["allowed"] for frame in payload["frames"]] == [True, False]
+
+
+def test_read_and_grid_without_declared_hosts_do_not_read_a_sign_in_frame(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    raw.child_frames = [_SIGN_IN_FRAME]
+    raw.aria_text = _GRID_SNAPSHOT
+    _run("browser", "read", "expense-report", "--frame", "1")
+    _run("browser", "read", "expense-report", "--frame", "1", "--aria")
+    _run("browser", "grid", "expense-report", "--frame", "1")
+    answers = [call[2] for call in raw.calls if call[0] == "frame-text"]
+    assert answers == [False] and raw.frame_allowed_answers == [False, False]
+
+
+@pytest.mark.parametrize(
+    "args", [("read", "--frame", "1"), ("grid", "--frame", "1")], ids=["read", "grid"]
+)
+def test_a_frame_read_returns_nothing_when_the_top_page_moves_to_sign_in(
+    raw: _Raw, _config_dir: Path, args: tuple[str, ...]
+) -> None:
+    """The title and address that would go out with the frame belong to the sign-in page."""
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    raw.child_frames = [_PANE]
+    raw.aria_text = _GRID_SNAPSHOT
+    raw.moves_to_after_frame_read = _SIGN_IN_URL
+    result = _run("browser", *args[:1], "expense-report", *args[1:])
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+    assert "client_id" not in result.output
+
+
+def test_a_grid_frame_read_is_refused_on_a_sign_in_page_without_declared_hosts(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_controls = ["Add line"]')
+    raw.url = _SIGN_IN_URL
+    raw.child_frames = [_PANE]
+    raw.aria_text = _GRID_SNAPSHOT
+    result = _run("browser", "grid", "expense-report", "--frame", "1")
+    assert result.exit_code == EXIT_OTHER
+    assert _json(result)["error"] == "host_blocked"
+    assert ("frame-aria", 1) not in raw.calls
 
 
 def test_where_reports_host_path_and_title_without_the_query_or_fragment(
