@@ -1017,7 +1017,8 @@ def test_click_without_a_role_fails_when_no_role_has_the_control() -> None:
     raw.present["Notes"] = ()
     with pytest.raises(BrowserActionError, match="named 'Notes'"):
         driver.click("Notes", wait_s=2.0)
-    assert [probe[0::2] for probe in raw.probes] == [("Notes", 2.0)]
+    # The wait for a control, then one look with no wait at the grid roles (for the `pick` hint).
+    assert [probe[0::2] for probe in raw.probes] == [("Notes", 2.0), ("Notes", 0.0)]
 
 
 def test_click_with_a_role_probes_only_that_role_and_fails_fast_when_it_is_absent() -> None:
@@ -2529,3 +2530,72 @@ def test_the_labels_of_things_stay_clickable_with_no_payment_verb_in_them(name: 
     raw.present[name] = ("treeitem",)
     raw.controls[name] = _TREE_ITEM
     assert driver.click(name, "treeitem") == "treeitem"
+
+
+_HEADER_CELL = ControlInfo(tag="th", input_type="", in_form=False)
+
+
+@pytest.mark.parametrize("role", ["row", "gridcell", "cell", "rowheader"])
+def test_pick_chooses_a_grid_row_cell_or_row_header_by_its_text(role: str) -> None:
+    raw, driver = _guard()
+    raw.controls["Microsoft Entra ID P1"] = _HEADER_CELL
+    driver.pick("Microsoft Entra ID P1", role)
+    assert raw.calls == [("pick", role, "Microsoft Entra ID P1")]
+
+
+@pytest.mark.parametrize("role", ["columnheader", "listitem", "grid", "table"])
+def test_pick_still_takes_only_rows_cells_and_row_headers(role: str) -> None:
+    raw, driver = _guard()
+    with pytest.raises(SubmitBlockedError):
+        driver.pick("Microsoft Entra ID P1", role)
+    assert raw.calls == []
+
+
+def test_pick_refuses_a_row_header_that_holds_a_control_of_its_own() -> None:
+    raw, driver = _guard()
+    raw.controls["Ada Lovelace"] = ControlInfo(
+        tag="th", input_type="", in_form=False, holds_controls=True
+    )
+    with pytest.raises(SubmitBlockedError):
+        driver.pick("Ada Lovelace", "rowheader")
+    assert raw.calls == []
+
+
+def test_pick_refuses_a_row_header_whose_text_is_a_finalizing_action() -> None:
+    raw, driver = _guard()
+    with pytest.raises(SubmitBlockedError):
+        driver.pick("Submit report", "rowheader")
+    assert raw.calls == []
+
+
+def test_a_click_that_finds_nothing_points_at_pick_when_a_grid_element_has_the_text() -> None:
+    from blumkin.browser.cdp import BrowserActionError
+
+    raw, driver = _guard("Microsoft Entra ID P1")
+    raw.present["Microsoft Entra ID P1"] = ("rowheader",)
+    with pytest.raises(BrowserActionError) as error:
+        driver.click("Microsoft Entra ID P1")
+    message = str(error.value)
+    assert "got none" in message
+    assert "blumkin browser pick TASK TEXT --role rowheader" in message
+    assert not any(call[0] == "click" for call in raw.calls)
+
+
+def test_a_click_that_finds_nothing_says_nothing_about_pick_when_no_grid_element_matches() -> None:
+    from blumkin.browser.cdp import BrowserActionError
+
+    raw, driver = _guard("Nothing here")
+    raw.present["Nothing here"] = ()
+    with pytest.raises(BrowserActionError) as error:
+        driver.click("Nothing here")
+    assert "pick" not in str(error.value)
+
+
+def test_a_click_with_a_role_given_adds_no_pick_hint() -> None:
+    from blumkin.browser.cdp import BrowserActionError
+
+    raw, driver = _guard("Microsoft Entra ID P1")
+    raw.present["Microsoft Entra ID P1"] = ("rowheader",)
+    with pytest.raises(BrowserActionError) as error:
+        driver.click("Microsoft Entra ID P1", "button")
+    assert "pick" not in str(error.value)

@@ -118,6 +118,8 @@ class _Raw:
         self.reloads = 0
         self.pass_active = False
         self.navigated_from: list[str] = []
+        #: Where the page ends up once `wait_for_navigation` has let the navigation commit.
+        self.navigates_to: str | None = None
         self.recovered_in_pass: list[bool] = []
         self.on_recover: Callable[[], None] | None = None
         self.stuck_only_after_settle = False
@@ -145,6 +147,8 @@ class _Raw:
     def settle(self, previous_url: str, timeout_s: float = 5.0) -> None:
         self.order.append("navigate")
         self.navigated_from.append(previous_url)
+        if self.navigates_to is not None:
+            self.url = self.navigates_to  # the navigation commits during the wait
 
     def clear_cache(self) -> None:
         self.cache_cleared += 1
@@ -5992,3 +5996,126 @@ def test_dialog_nth_still_clicks_the_other_match_of_the_same_name(
     )  # fmt: skip
     assert allowed.exit_code == EXIT_SUCCESS, allowed.output
     assert ("click", "button", "More actions", 1) in raw.calls
+
+
+@pytest.mark.parametrize("role", ["row", "gridcell", "cell", "rowheader"])
+def test_pick_accepts_every_grid_role(raw: _Raw, role: str) -> None:
+    raw.controls["Microsoft Entra ID P1"] = ControlInfo(tag="th", input_type="", in_form=False)
+    result = _run("browser", "pick", "expense-report", "Microsoft Entra ID P1", "--role", role)
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["role"] == role
+    assert ("pick", role, "Microsoft Entra ID P1") in raw.calls
+
+
+@pytest.mark.parametrize("role", ["columnheader", "button", "listitem"])
+def test_pick_still_refuses_a_role_that_is_not_a_row_or_a_cell(raw: _Raw, role: str) -> None:
+    result = _run("browser", "pick", "expense-report", "Microsoft Entra ID P1", "--role", role)
+    assert result.exit_code == 2, result.output
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+def test_pick_on_a_row_header_that_holds_a_control_is_refused(raw: _Raw) -> None:
+    raw.controls["Ada Lovelace"] = ControlInfo(
+        tag="th", input_type="", in_form=False, holds_controls=True
+    )
+    result = _run("browser", "pick", "expense-report", "Ada Lovelace", "--role", "rowheader")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "submit_blocked"
+    assert [call for call in raw.calls if call[0] == "pick"] == []
+
+
+def test_pick_waits_for_its_navigation_then_recovers_a_stuck_destination(raw: _Raw) -> None:
+    raw.controls["Microsoft Entra ID P1"] = ControlInfo(tag="th", input_type="", in_form=False)
+    raw.reloads = 1
+    raw.stuck_only_after_settle = True
+    result = _run(
+        "browser", "pick", "expense-report", "Microsoft Entra ID P1", "--role", "rowheader"
+    )
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert _json(result)["reloaded"] == 1
+    assert raw.order[:3] == ["navigate", "settle", "recover"]
+    assert raw.navigated_from == ["https://erp.example.com/expenses"]  # the page it left
+
+
+def test_a_pick_that_leaves_a_healthy_page_reports_no_reload(raw: _Raw) -> None:
+    raw.controls["Boston"] = ControlInfo(tag="tr", input_type="", in_form=False)
+    result = _run("browser", "pick", "expense-report", "Boston")
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "reloaded" not in _json(result)
+
+
+def test_a_reload_that_fails_after_a_pick_says_the_pick_was_made(raw: _Raw) -> None:
+    raw.controls["Boston"] = ControlInfo(tag="tr", input_type="", in_form=False)
+    raw.recover_error = BrowserActionError("Expected the page to reload, got a timeout")
+    result = _run("browser", "pick", "expense-report", "Boston")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert "the pick WAS made" in _json(result)["message"]
+
+
+def test_a_pick_that_ends_off_the_tasks_hosts_is_refused_before_it_is_recovered(
+    raw: _Raw, _config_dir: Path
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nupload_dirs = ["~/receipts"]')
+    raw.controls["Boston"] = ControlInfo(tag="tr", input_type="", in_form=False)
+    raw.lands_on = "https://elsewhere.example.net/page"
+    raw.reloads = 1
+    result = _run("browser", "pick", "expense-report", "Boston")
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "host_blocked"
+    # Refused on arrival: nothing waited on, settled or reloaded the foreign page.
+    assert raw.order == []
+
+
+@pytest.mark.parametrize("command", ["pick", "click"])
+def test_a_navigation_that_commits_to_a_foreign_host_is_refused_before_the_page_is_settled(
+    raw: _Raw, _config_dir: Path, command: str
+) -> None:
+    _policy(_config_dir, 'allowed_hosts = ["erp.example.com"]\nupload_dirs = ["~/receipts"]')
+    raw.controls["Boston"] = ControlInfo(tag="tr", input_type="", in_form=False)
+    raw.navigates_to = "https://elsewhere.example.net/page"
+    raw.reloads = 1
+    args = (
+        ["pick", "expense-report", "Boston"]
+        if command == "pick"
+        else ["click", "expense-report", "Add line"]
+    )
+    result = _run("browser", *args)
+    assert result.exit_code == EXIT_OTHER, result.output
+    assert _json(result)["error"] == "host_blocked"
+    # The wait ran (that is when it committed); the foreign page was never settled on or reloaded.
+    assert raw.order == ["navigate"]
+
+
+def _recovery_check_for(raw: _Raw, command: str, _config_dir: Path, hosts: str) -> Any:
+    """Run `command` on a task whose table is `hosts` and return the reload check it passed."""
+    _policy(_config_dir, f'{hosts}allowed_controls = ["Add line"]')
+    raw.controls["Boston"] = ControlInfo(tag="tr", input_type="", in_form=False)
+    args = {
+        "click": ["click", "expense-report", "Add line"],
+        "pick": ["pick", "expense-report", "Boston"],
+        "goto": ["goto", "expense-report", "https://erp.example.com/expenses"],
+    }[command]
+    result = _run("browser", *args)
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    check = raw.recover_checks[0]
+    assert check is not None
+    return check
+
+
+@pytest.mark.parametrize("command", ["click", "pick", "goto"])
+def test_the_reload_check_refuses_a_page_a_redirect_took_off_the_tasks_hosts(
+    raw: _Raw, _config_dir: Path, command: str
+) -> None:
+    check = _recovery_check_for(raw, command, _config_dir, 'allowed_hosts = ["erp.example.com"]\n')
+    assert check("https://erp.example.com/expenses") is True  # recovery stays on allowed hosts
+    assert check("https://elsewhere.example.net/page") is False
+    assert check("https://login.microsoftonline.com/common/reprocess") is False  # sign-in too
+
+
+@pytest.mark.parametrize("command", ["click", "pick", "goto"])
+def test_with_no_allowed_hosts_the_reload_check_refuses_only_sign_in_pages(
+    raw: _Raw, _config_dir: Path, command: str
+) -> None:
+    check = _recovery_check_for(raw, command, _config_dir, "")
+    assert check("https://anywhere.example.org/page") is True
+    assert check("https://login.microsoftonline.com/common/reprocess") is False

@@ -1153,15 +1153,18 @@ Examples:
   blumkin browser pick expense-report "Boston, MA, United States"
   blumkin browser pick expense-report "Boston, MA, United States" --nth 2 --json
   blumkin browser pick expense-report "Boston MA" --role gridcell
+  blumkin browser pick m365-billing "Microsoft Entra ID P1" --role rowheader
 
-Chooses one row (or cell, with `--role gridcell`) by its exact text, the way you choose a search
-result in a list-of-values dialog: fill the search field, read the rows with `browser grid` or
-`browser read --aria`, then pick one. Rows are page data, so they are not declared in
+Chooses one row (or a cell, a grid cell or a row header, with `--role cell|gridcell|rowheader`)
+by its exact text, the way you choose a search result in a list-of-values dialog: fill the
+search field, read the rows with `browser grid` or `browser read --aria`, then pick one. A list
+page often opens an item by clicking its row (an admin console's product list, where the name is
+a row header): that is page data too. Rows are page data, so they are not declared in
 `allowed_controls`; instead a row whose text is a finalizing action is refused (so is a place
-that merely starts with such a word, such as Payne: fill the exact value instead), the element is
-vetted like a click, and anything that is, holds or sits inside a button, link, field or other
-control is refused (click that control by its own declared name instead). An option or a tree
-item is never picked this way: `click` makes the task declare those. `--nth` picks one of
+that merely starts with such a word, such as Payne: fill the exact value instead), the element
+is vetted like a click, and anything that is, holds or sits inside a button, link, field or
+other control is refused (click that control by its own declared name instead). An option or a
+tree item is never picked this way: `click` makes the task declare those. `--nth` picks one of
 several rows with the same text. Confirming the dialog is still an ordinary declared `click`.
 """
 
