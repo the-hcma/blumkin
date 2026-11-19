@@ -62,6 +62,7 @@ Always implement in `.worktrees/<stack-name>-wt`.
 - Tests live under `tests/`.
 - Prefer `uv run pytest` (or a small `./test` wrapper once added).
 - New behavior needs tests. Do not merge if the suite fails.
+- A new, renamed or removed CLI command or option keeps three things in step, and `tests/test_docs_cli_sync_unit.py` fails until they are: the skills and guides (every command is named in one, and every `blumkin ...` they show exists), the skills registry in `src/blumkin/skills/__init__.py` (its arguments match the command's options), and tab completion (`completion_values.wire` attaches the value completers by name, and the README says what completes).
 - **CI:** mocked / offline only — `uv run pytest -m 'not live'`.
 - **Local (required for auth / Graph / live tests):** with `~/.config/blumkin/` configured, also run `BLUMKIN_LIVE=1 uv run pytest -m live` (includes silent refresh after forced access-token expiry). See `.agents/rules/local-live-graph-tests.md`.
 - **Never verify with a skill that notifies others** — no invites, sends, or chats to test something. Verify with reads, or with a draft you delete. See `.agents/rules/no-third-party-side-effects.md`.

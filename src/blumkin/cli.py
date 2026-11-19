@@ -10474,5 +10474,7 @@ def tasks_update_cmd(
     )
 
 
+completion_values.wire(main)  # value completers for every matching parameter, in one place
+
 if __name__ == "__main__":
     main(obj={})
