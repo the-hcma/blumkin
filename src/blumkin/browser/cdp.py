@@ -17,6 +17,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import dataclasses
+import decimal
 import functools
 import json
 import math
@@ -61,7 +62,23 @@ class BrowserActionError(RuntimeError):
 
 
 class CellEditedError(BrowserActionError):
-    """A grid cell was edited, but the cell could not be read again afterwards."""
+    """A grid cell was edited, but its state afterwards is not what the edit should have left.
+
+    Either the cell could not be read again, or it was read again and the page had not kept the
+    typed value (it reads empty, or shows something else). The edit was made, so the caller
+    checks the cell before going on; a ledger step keeps its item resumable, and running the step
+    again types the value again.
+    """
+
+
+class CellNotCommittedError(BrowserActionError):
+    """A grid cell edit was refused or cancelled before anything was committed.
+
+    Nothing was committed (no dropdown list showed, no one option matched, two lists were
+    open, or an editor stayed open and was cancelled), so the step was not made: a ledger step
+    stays resumable at that step, where a plain failure would mark its item failed. An editor
+    may be left open with the typed text; running the step again replaces that text.
+    """
 
 
 class AmbiguousFieldError(BrowserActionError):
@@ -1018,11 +1035,13 @@ class PlaywrightDriver:
         afterwards.
         """
         self._require_open()
+        wrote = False
+        expected: tuple[str, bool] | None = None
         try:
             handle, meta = self._find_cell(row, column, grid)
             vet(self._describe(handle))
             if value is not None:
-                self._write_cell(
+                expected = self._write_cell(
                     handle,
                     value,
                     grid,
@@ -1030,9 +1049,21 @@ class PlaywrightDriver:
                     vet_name,
                     lambda: self._neighbour_cell(row, int(meta["column"]), grid),
                 )
+                wrote = True
                 handle, meta = self._read_cell_after_edit(row, column, grid)
             text = str(handle.evaluate(_CELL_TEXT_JS))
+            if expected is not None and not _same_cell_text(expected[0], text, option=expected[1]):
+                handle, meta, text = self._reread_unkept_cell(row, column, grid, expected, text)
         except _playwright_error() as exc:
+            if wrote:
+                # After the value was typed and committed, a failure to look at the cell must
+                # not read as a failed edit: the caller checks the cell, and a ledger step keeps
+                # its item resumable (the message names no text, which could be the typed value).
+                raise CellEditedError(
+                    f"Expected to read the cell at row {row!r}, column {column!r} after the "
+                    "edit, got a browser error; the edit itself was made, so check the cell "
+                    "before editing it again"
+                ) from None
             raise self._action_error(
                 f"edit the cell at row {row!r}, column {column!r}", exc
             ) from exc
@@ -2078,7 +2109,8 @@ class PlaywrightDriver:
         value: str,
         vet: Callable[[ControlInfo], None],
         vet_name: Callable[[str], None],
-    ) -> None:
+        grid: int,
+    ) -> tuple[str, bool]:
         """Commit typed text: pick the matching option of a search-select, else press Tab.
 
         A list-of-values cell (a project, a time reporting code) opens a dropdown of matches
@@ -2094,19 +2126,40 @@ class PlaywrightDriver:
         refused too, since the options could belong to another widget. A plain cell (hours)
         shows no dropdown and is committed with Tab, and so is a value with nothing to match on
         (only punctuation). Enter is never pressed.
+
+        Returns what the cell should show afterwards and whether that is the text of the option
+        that was chosen (which can differ from what was typed): else it is the typed value.
         """
         wanted = _option_key(value)
         drops = self._page.locator(".oj-listbox-drop:visible")
-        if wanted:
-            try:
-                drops.first.wait_for(state="visible", timeout=_CELL_DROP_WAIT_MS)
-            except _playwright_error():
-                wanted = ""
+        # Asked once, before any waiting: an editor that closes or is replaced during the wait
+        # must not turn a search-select into a "plain cell" that Tab then commits with its old text.
+        search_select = bool(wanted) and bool(self._page.evaluate(_CELL_SEARCH_SELECT_JS))
+        if wanted and not self._drop_shown(drops, search_select):
+            if search_select:
+                # A search-select that lists no matches is not a plain cell: Tab would drop the
+                # typed text and leave the cell empty, reported as an edit that worked.
+                # Escape goes only to the grid's own editor: if focus has moved (a dialog opened
+                # during the wait) it would close that instead, so it is not pressed then. And
+                # with focus gone, leaving the editor may already have committed or dropped the
+                # text, so nothing is claimed about the cell.
+                if self._cell_focus(grid) != "editor":
+                    raise CellEditedError(
+                        f"Expected a dropdown list of matches for {value!r} and the editor in "
+                        "focus, got neither; focus left the cell's editor, so it is not known "
+                        "whether the value was kept, so check the cell before going on"
+                    )
+                self._page.keyboard.press("Escape")
+                raise CellNotCommittedError(
+                    f"Expected a dropdown list of matches for {value!r}, got none; "
+                    "the value was not committed, so check the cell before going on"
+                )
+            wanted = ""
         if not wanted:
             self._page.keyboard.press("Tab")
-            return
+            return value, False
         if int(drops.count()) > 1:
-            raise BrowserActionError(
+            raise CellNotCommittedError(
                 f"Expected one dropdown list for the cell, got {int(drops.count())} on the page"
             )
         rows = drops.first.locator("li[role=row]")
@@ -2133,15 +2186,28 @@ class PlaywrightDriver:
                     # The chosen option stays in the editor until focus leaves the cell, so the
                     # commit is finished with Tab, as for a plain cell.
                     self._page.keyboard.press("Tab")
-                    return
+                    return text, True
             if texts and len(exact) > 1:
                 break
             previous = texts
             self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
         shown = "; ".join(repr(_printable(t)[:60]) for t in texts[:5]) or "none"
-        raise BrowserActionError(
+        raise CellNotCommittedError(
             f"Expected one dropdown option matching {value!r}, got {len(texts)}: {shown}"
         )
+
+    def _drop_shown(self, drops: Any, search_select: bool) -> bool:
+        """Whether a dropdown list shows after typing: briefly for any cell, and longer when the
+        editor is a search-select, whose list of matches loads from the server."""
+        for wait_ms in (_CELL_DROP_WAIT_MS, _CELL_DROP_LONG_WAIT_MS):
+            try:
+                drops.first.wait_for(state="visible", timeout=wait_ms)
+                return True
+            except _playwright_error():
+                pass
+            if not search_select:
+                return False
+        return False
 
     def _editor_open(self, grid: int) -> bool:
         """Whether a text editor is still open in the grid, after a commit had time to land."""
@@ -2150,6 +2216,33 @@ class PlaywrightDriver:
                 return False
             self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
         return True
+
+    def _reread_unkept_cell(
+        self,
+        row: str,
+        column: str,
+        grid: int,
+        expected: tuple[str, bool],
+        shown: str,
+    ) -> tuple[Any, dict[str, Any], str]:
+        """A cell that does not show what was typed right after the commit: look again, then say so.
+
+        The page may need a moment to show what it kept. If the cell still reads empty, or reads
+        something else than the typed value (or, for a dropdown, the option that was chosen), the
+        value was not kept (Oracle drops a project that did not resolve, and the cells that
+        depend on it), which must not be reported as an edit that worked.
+        """
+        for _ in range(_CELL_KEPT_POLLS):
+            self._page.wait_for_timeout(_CELL_KEPT_POLL_MS)
+            handle, meta = self._read_cell_after_edit(row, column, grid)
+            shown = str(handle.evaluate(_CELL_TEXT_JS))
+            if _same_cell_text(expected[0], shown, option=expected[1]):
+                return handle, meta, shown
+        what = "an empty cell" if not shown.strip() else "a different value"
+        raise CellEditedError(
+            f"Expected the cell at row {row!r}, column {column!r} to hold the typed value, got "
+            f"{what}; the page did not keep it, so check the cell before going on"
+        )
 
     def _find_cell(self, row: str, column: str, grid: int) -> tuple[Any, dict[str, Any]]:
         """The cell element at `row` and `column` of the `grid`-th data grid, and its position."""
@@ -2226,7 +2319,7 @@ class PlaywrightDriver:
                 raise
         if self._editor_open(grid):
             self._page.keyboard.press("Escape")
-            raise BrowserActionError(
+            raise CellNotCommittedError(
                 "Expected the cell to be committed, got an editor still open; "
                 "the edit was cancelled"
             )
@@ -2239,8 +2332,11 @@ class PlaywrightDriver:
         vet: Callable[[ControlInfo], None],
         vet_name: Callable[[str], None],
         neighbour: Callable[[], Any | None] | None = None,
-    ) -> None:
+    ) -> tuple[str, bool] | None:
         """Select the cell, type `value` into its editor and commit; clear it when empty.
+
+        Returns what the cell should show afterwards (see `_commit_typed_cell`), or None for a
+        clear, which has nothing to compare with.
 
         Nothing is clicked if a control (a button, a link, a checkbox) is what the click would
         hit inside the cell, or if something else covers it. Typing starts only when the cell
@@ -2271,7 +2367,7 @@ class PlaywrightDriver:
                 self._page.keyboard.press("Delete")
             self._page.keyboard.press("Tab")
             self._require_committed(grid, vet, neighbour)
-            return
+            return None
         self._page.keyboard.type(value[0])
         if self._cell_focus(grid) != "editor":
             raise BrowserActionError(
@@ -2280,8 +2376,9 @@ class PlaywrightDriver:
             )
         if len(value) > 1:
             self._page.keyboard.type(value[1:])
-        self._commit_typed_cell(value, vet, vet_name)
+        expected = self._commit_typed_cell(value, vet, vet_name, grid)
         self._require_committed(grid, vet, neighbour)
+        return expected
 
     def _headings(self) -> tuple[str, tuple[str, ...]]:
         """The document's address and its visible headings, read in one evaluation."""
@@ -2787,6 +2884,25 @@ def _with_deadline(method: Callable[..., Any], name: str) -> Callable[..., Any]:
 
 for _name in _DEADLINE_METHODS:
     setattr(PlaywrightDriver, _name, _with_deadline(getattr(PlaywrightDriver, _name), _name))
+
+
+def _same_cell_text(expected: str, shown: str, *, option: bool) -> bool:
+    """Whether a cell shows what was typed (or, with `option`, the option that was chosen).
+
+    Spaces and case do not matter and two numbers are equal when their values are (`8` shows as
+    `8.00`). An option's text can be a longer line of columns than the cell shows, so for an
+    option either may contain the other. Nothing else is tolerated: `4` is not `8`.
+    """
+    left = " ".join(expected.split()).casefold()
+    right = " ".join(shown.split()).casefold()
+    if left == right:
+        return True
+    try:
+        if decimal.Decimal(left) == decimal.Decimal(right):
+            return True
+    except decimal.InvalidOperation:
+        pass
+    return option and bool(left) and bool(right) and (left in right or right in left)
 
 
 class RawBrowserDriver(Protocol):
@@ -3359,6 +3475,24 @@ _CELL_CLICK_TARGET_JS = """
 
 #: How long a typed cell value waits for a dropdown to appear before it is committed as plain text.
 _CELL_DROP_WAIT_MS = 1500
+#: How much longer a cell whose editor is a search-select waits: its list of matches loads from
+#: the server, and a cell that never shows one is refused, not committed with Tab (which drops
+#: the typed text and leaves the cell empty).
+_CELL_DROP_LONG_WAIT_MS = 6000
+#: How often, and how long apart, a typed cell is read again when it reads empty, or shows
+#: something else than what was typed, after the commit.
+_CELL_KEPT_POLLS = 4
+_CELL_KEPT_POLL_MS = 250
+
+#: Whether the focused element is a search-select (a combobox that lists matches while typing):
+#: a project, a task, a time reporting code. A plain number cell is not one.
+_CELL_SEARCH_SELECT_JS = """
+() => {
+  const a = document.activeElement;
+  return !!(a && a.closest && a.closest(
+    '.oj-combobox, .oj-select, oj-combobox-one, oj-combobox-many, oj-select-one, [role=combobox]'));
+}
+"""
 
 #: Whether a visible text editor is open inside the `grid`-th data grid.
 _CELL_EDITING_JS = """
