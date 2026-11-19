@@ -15,7 +15,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from blumkin.browser.cdp import FIELD_ROLES, BrowserActionError, BrowserAttachError, CellEditedError
+from blumkin.browser.cdp import (
+    FIELD_ROLES,
+    BrowserActionError,
+    BrowserAttachError,
+    CellEditedError,
+    CellNotCommittedError,
+)
 from blumkin.browser.flow_params import validate_cell_values, validate_params
 from blumkin.browser.guard import SubmitBlockedError
 from blumkin.browser.handoff import HandoffResult
@@ -708,6 +714,10 @@ def _default_run_step(task: str, site: SiteModel | None = None) -> StepRunner:
             except CellEditedError as exc:
                 # The edit was made: the item must stay resumable, not be marked failed.
                 raise StepConditionError(_scrubbed(str(exc), step, values)) from None
+            except CellNotCommittedError as exc:
+                # Refused or cancelled before anything was committed: the step was not made, so
+                # the item stays resumable at this step and is not marked failed.
+                raise StepNotMadeError(_scrubbed(str(exc), step, values)) from None
             except BrowserActionError as exc:
                 # What a parameter supplied (a header, a value) is the user's data: it is named
                 # by its parameter in the error, not echoed.

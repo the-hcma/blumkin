@@ -87,6 +87,11 @@ class _Drop:
         return self
 
     def wait_for(self, *, state: str, timeout: float) -> None:
+        self._page.drop_waits.append(timeout)
+        if self._page.drop_after_waits is not None:
+            if len(self._page.drop_waits) <= self._page.drop_after_waits:
+                raise PlaywrightTimeout("not yet")
+            return
         if not self._page.drop_visible:
             raise PlaywrightTimeout("no dropdown")
 
@@ -114,7 +119,15 @@ class _Handle:
         if script is cdp._CELL_CLICK_TARGET_JS:
             return self._page.click_target
         if script is cdp._CELL_TEXT_JS:
-            return self._page.cell_text
+            self._page.text_reads += 1
+            if (
+                self._page.text_error_from is not None
+                and self._page.text_reads >= self._page.text_error_from
+            ):
+                raise PlaywrightTimeout("the page went away")
+            if len(self._page.cell_texts) > 1:
+                return self._page.cell_texts.pop(0)
+            return self._page.cell_texts[0] if self._page.cell_texts else self._page.shown_text()
         raise AssertionError(f"unexpected handle script: {script[:40]!r}")
 
 
@@ -150,12 +163,22 @@ class _Page:
         #: What the dropdown option element reports when it is described.
         self.option_info: dict[str, Any] = {**_CELL_INFO, "tag": "li"}
         self.cell_text = "8"
+        #: Successive reads of the cell's text after an edit (the last repeats), when set.
+        self.cell_texts: list[str] = []
         self.click_target = "ok"
         #: Successive answers to the focus question; the last one repeats.
         self.focus: list[str] = ["cell", "editor"]
         #: Successive answers to "is an editor still open?"; the last one repeats.
         self.editing: list[bool] = [False]
         self.drop_visible = False
+        #: Whether the focused editor is a search-select (a project, a code), not a plain cell.
+        self.search_select = False
+        #: Successive answers to "is the focused editor a search-select?" when set (the last
+        #: repeats): an editor that closes during the wait answers differently the second time.
+        self.search_select_answers: list[bool] = []
+        #: The call (1-based) of the cell text read from which it fails with a browser error.
+        self.text_error_from: int | None = None
+        self.text_reads = 0
         self.drop_count = 1
         #: Successive polls of the dropdown rows; the last one repeats.
         self.options: list[list[str]] = [[]]
@@ -166,10 +189,22 @@ class _Page:
         #: The error `_find_cell` reports from this call on (1-based), if any.
         self.find_error_from: int | None = None
         self.waits = 0
+        #: When set, the dropdown shows only after this many waits for it have timed out.
+        self.drop_after_waits: int | None = None
+        #: The timeouts the dropdown was waited for with, in order.
+        self.drop_waits: list[float] = []
         #: Whether a Delete left an editor open behind the cell that can be given focus.
         self.editor_behind_cell = False
         self.focused_editors = 0
         self._polls = 0
+
+    def shown_text(self) -> str:
+        """What the cell shows: the option that was clicked, else what was typed, else its text."""
+        clicked = [index for kind, index in self.events if kind == "option-click"]
+        if clicked:
+            return self.current_options()[int(clicked[-1])]
+        typed = "".join(text for kind, text in self.events if kind == "type")
+        return typed or self.cell_text
 
     def current_options(self) -> list[str]:
         return self.options[min(self._polls, len(self.options)) - 1]
@@ -185,6 +220,18 @@ class _Page:
             return value
         if script is cdp._CELL_EDITING_JS:
             return self.editing.pop(0) if len(self.editing) > 1 else self.editing[0]
+        if script is cdp._CELL_SEARCH_SELECT_JS:
+            answer = (
+                self.search_select_answers.pop(0)
+                if len(self.search_select_answers) > 1
+                else (
+                    self.search_select_answers[0]
+                    if self.search_select_answers
+                    else self.search_select
+                )
+            )
+            self.events.append(("search-select", str(answer)))
+            return answer
         if script is cdp._CELL_FOCUS_EDITOR_JS:
             if self.editor_behind_cell:
                 self.focused_editors += 1
@@ -587,3 +634,215 @@ def test_a_keyboard_interrupt_in_the_neighbour_step_presses_no_key() -> None:
     with pytest.raises(KeyboardInterrupt):
         _driver(page).edit_cell("2", "5", "8", 1, vet, _refuse_name)
     assert ("press", "Escape") not in page.events
+
+
+# --- a search-select that shows no list, and a typed value the page did not keep (#796) --------
+
+
+def test_a_search_select_that_shows_no_list_is_refused_not_committed_with_tab() -> None:
+    page = _Page()
+    page.search_select = True
+    with pytest.raises(BrowserActionError) as excinfo:
+        _edit(page, "Regular Pay")
+    assert "dropdown list of matches" in str(excinfo.value)
+    assert "Regular Pay" in str(excinfo.value)  # the typed value is the user's own words here
+    assert ("press", "Escape") in page.events
+    assert ("press", "Tab") not in page.events
+    # the short wait, then the longer one a search-select gets
+    assert page.drop_waits == [cdp._CELL_DROP_WAIT_MS, cdp._CELL_DROP_LONG_WAIT_MS]
+
+
+def test_a_plain_cell_that_shows_no_list_is_still_committed_with_tab_after_the_short_wait() -> None:
+    page = _Page()
+    page.search_select = False
+    _edit(page, "8")
+    assert ("press", "Tab") in page.events
+    assert page.drop_waits == [cdp._CELL_DROP_WAIT_MS]
+
+
+def test_a_search_select_whose_list_loads_late_is_waited_for_and_its_option_chosen() -> None:
+    page = _Page()
+    page.search_select = True
+    page.drop_after_waits = 1  # the short wait times out, the longer one sees the list
+    page.options = [["Regular Pay", "Holiday"]]
+    _edit(page, "Regular Pay")
+    assert any(kind == "option-click" for kind in _kinds(page))
+    assert page.drop_waits == [cdp._CELL_DROP_WAIT_MS, cdp._CELL_DROP_LONG_WAIT_MS]
+
+
+def test_a_typed_value_that_reads_empty_is_read_again_and_accepted_once_it_shows() -> None:
+    page = _Page()
+    page.cell_texts = ["", "", "8"]
+    edit = _edit(page, "8")
+    assert edit.text == "8"
+    assert page.waits >= 2
+
+
+def test_a_typed_value_the_page_did_not_keep_is_an_error_not_an_edit_that_worked() -> None:
+    page = _Page()
+    page.cell_texts = [""]
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "8")
+    message = str(excinfo.value)
+    assert "empty cell" in message and "did not keep it" in message
+    assert "8" not in message.replace("row '2'", "").replace("column '5'", "")  # not the value
+
+
+def test_clearing_a_cell_and_reading_one_are_not_held_to_the_typed_value_check() -> None:
+    for value in ("", None):
+        page = _Page()
+        page.cell_texts = [""]
+        page.editing = [False]
+        assert _edit(page, value).text == ""
+
+
+def test_an_editor_that_closes_during_the_wait_is_still_treated_as_a_search_select() -> None:
+    """The editor type is decided once, before waiting: not re-read from whatever has focus."""
+    page = _Page()
+    page.search_select_answers = [True, False]  # focus has left the editor by the second look
+    with pytest.raises(BrowserActionError) as excinfo:
+        _edit(page, "Regular Pay")
+    assert "dropdown list of matches" in str(excinfo.value)
+    assert ("press", "Tab") not in page.events
+    assert page.events.count(("search-select", "True")) == 1  # asked once
+
+
+def test_a_browser_error_reading_the_cell_after_the_edit_says_the_edit_was_made() -> None:
+    page = _Page()
+    page.text_error_from = 1  # the very first read of the cell after the commit fails
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "8")
+    assert "the edit itself was made" in str(excinfo.value)
+    assert "8" not in str(excinfo.value).replace("row '2'", "").replace("column '5'", "")
+
+
+def test_a_browser_error_in_the_second_look_at_an_empty_cell_says_the_edit_was_made() -> None:
+    page = _Page()
+    page.cell_texts = [""]
+    page.text_error_from = 2  # the first read is empty, the re-read fails
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "8")
+    assert "the edit itself was made" in str(excinfo.value)
+
+
+def test_a_browser_error_before_the_value_is_typed_is_still_a_plain_action_error() -> None:
+    page = _Page()
+    page.text_error_from = 1
+    with pytest.raises(BrowserActionError) as excinfo:
+        _edit(page, None)  # a read: nothing was typed
+    assert not isinstance(excinfo.value, cdp.CellEditedError)
+
+
+# --- a cell that keeps something other than what was typed (#796) --------------------------------
+
+
+def test_a_cell_that_keeps_a_different_value_is_an_error_not_an_edit_that_worked() -> None:
+    page = _Page()
+    page.cell_texts = ["4"]
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "8")
+    message = str(excinfo.value)
+    assert "a different value" in message and "did not keep it" in message
+    assert "4" not in message.replace("row '2'", "").replace("column '5'", "")  # no cell text
+
+
+def test_a_cell_that_catches_up_to_the_typed_value_is_accepted() -> None:
+    page = _Page()
+    page.cell_texts = ["4", "4", "8"]
+    assert _edit(page, "8").text == "8"
+
+
+@pytest.mark.parametrize(
+    ("typed", "shown"), [("8", "8.00"), ("7.5", "7.50"), ("8", " 8 "), ("Abc", "abc")]
+)
+def test_a_number_shown_in_another_format_or_another_case_is_the_value_that_was_typed(
+    typed: str, shown: str
+) -> None:
+    page = _Page()
+    page.cell_texts = [shown]
+    assert _edit(page, typed).text == shown
+
+
+def test_a_dropdown_is_checked_against_the_option_that_was_chosen_not_the_typed_text() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["Regular Pay", "Holiday"]]
+    page.cell_texts = ["Regular Pay"]
+    assert _edit(page, "Regular").text == "Regular Pay"  # typed `Regular`, chose the option
+
+
+def test_an_option_that_is_a_longer_line_than_the_cell_shows_is_still_the_option_chosen() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["INDADM01 90200-Non-Specific Project Work"]]
+    page.cell_texts = ["INDADM01"]
+    assert _edit(page, "INDADM01").text == "INDADM01"
+
+
+def test_a_dropdown_cell_that_keeps_another_option_is_an_error() -> None:
+    page = _Page()
+    page.drop_visible = True
+    page.options = [["Regular Pay", "Holiday"]]
+    page.cell_texts = ["Holiday"]
+    with pytest.raises(cdp.CellEditedError):
+        _edit(page, "Regular")
+
+
+def test_a_number_is_not_matched_loosely_the_way_an_option_is() -> None:
+    from blumkin.browser.cdp import _same_cell_text
+
+    assert _same_cell_text("8", "88", option=False) is False
+    assert _same_cell_text("8", "88", option=True) is True  # an option's text may hold the cell's
+    assert _same_cell_text("", "8", option=True) is False
+    assert _same_cell_text("8", "", option=True) is False
+
+
+def test_escape_is_not_pressed_and_nothing_is_claimed_when_focus_has_left_the_grid_editor() -> None:
+    """A dialog took focus during the long wait: Escape would close it, and the blur may already
+    have committed or dropped the text, so it is a cell to check, not a step that was not made."""
+    page = _Page()
+    page.search_select = True
+    page.focus = ["cell", "editor", "outside"]
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "Regular Pay")
+    assert not isinstance(excinfo.value, cdp.CellNotCommittedError)
+    assert "not known whether the value was kept" in str(excinfo.value)
+    assert ("press", "Escape") not in page.events
+    assert ("press", "Tab") not in page.events
+
+
+def test_every_refusal_that_commits_nothing_is_a_cell_not_committed_error() -> None:
+    """The ledger maps this type to a step that was not made, so the item stays resumable."""
+
+    def refused(page: _Page, value: str) -> BaseException:
+        with pytest.raises(cdp.CellNotCommittedError) as excinfo:
+            _edit(page, value)
+        return excinfo.value
+
+    no_list = _Page()
+    no_list.search_select = True
+    refused(no_list, "Regular Pay")
+
+    two_lists = _Page()
+    two_lists.drop_visible = True
+    two_lists.drop_count = 2
+    two_lists.options = [["Paid Time Off"]]
+    refused(two_lists, "Paid Time Off")
+
+    no_match = _Page()
+    no_match.drop_visible = True
+    no_match.options = [["Regular Pay", "Holiday"]]
+    refused(no_match, "Paid Time Off")
+
+    still_open = _Page()
+    still_open.editing = [True]
+    refused(still_open, "8")
+
+
+def test_a_cell_the_page_did_not_keep_is_not_a_cell_not_committed_error() -> None:
+    """That one was committed (and then lost), so it keeps the other, made-but-unchecked meaning."""
+    page = _Page()
+    page.cell_texts = [""]
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "8")
+    assert not isinstance(excinfo.value, cdp.CellNotCommittedError)

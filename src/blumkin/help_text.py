@@ -1394,7 +1394,12 @@ begins with a finalizing word (`Submit`, `Pay now`), or that is a submit control
 so is a value that begins that way, while `Regular Pay` is fine. A value
 is checked after the
 commit: if an editor is still open the
-edit is cancelled and the command fails. A number is a position; a header whose text is only
+edit is cancelled and the command fails. A cell whose editor is a search-select (a project, a task,
+a time reporting code) waits up to about eight seconds for its list of matches and is refused when
+none shows (the text is not committed with Tab, which would drop it), and a typed value that reads
+as an empty cell, or shows something else than what was typed (or, for a dropdown, the option that
+was chosen), even after a second look, fails saying the page did not keep it instead of reporting
+an edit that worked. A number is a position; a header whose text is only
 digits (a year, a day number) is named by its text with a `text:` prefix (`text:2027`), and a
 header that itself begins with `text:` is `text:text:...` (the prefix is removed once). Rows and
 columns count what the grid has drawn, and a grid inside a frame is not supported. `--grid N`

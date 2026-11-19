@@ -1036,6 +1036,35 @@ def test_an_edit_that_was_made_but_could_not_be_read_back_leaves_the_item_resuma
     assert [i.state for i in instance_status_items(tmp_path)] == [ItemState.STAGED]
 
 
+def test_a_cell_edit_refused_before_anything_was_committed_leaves_the_item_resumable_at_that_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin.browser import actions, ledger_ops
+    from blumkin.browser.cdp import CellNotCommittedError
+    from blumkin.browser.ledger_ops import StepNotMadeError
+
+    monkeypatch.setenv("BLUMKIN_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[profiles.default]\nclient_id = "abc-123"\n')
+
+    def refused(*_a: Any, **_k: Any) -> dict:
+        raise CellNotCommittedError("Expected a dropdown list of matches, got none")
+
+    monkeypatch.setattr(actions, "cell_task", refused)
+    runner = ledger_ops._default_run_step("expense-report")
+    begin_instance(tmp_path, "expense-report", "trip-1")
+
+    with pytest.raises(StepNotMadeError, match="step 2 .*was not made.*--from-step 2"):
+        apply_item(
+            tmp_path, "expense-report", "trip-1", ItemKind.DAY, "2026-10-01",
+            flow_name="day", values={"hours": "8", "project": "Alpha"},
+            model=_cell_flow_model(),
+            run_step=lambda s, v: runner(s, v) if s.action == "cell" else None,
+        )  # fmt: skip
+
+    # not marked failed, and the way on is the same step (the place is remembered)
+    assert [i.state for i in instance_status_items(tmp_path)] == [ItemState.STAGED]
+
+
 def test_the_default_runner_picks_a_row_by_a_bound_text_or_a_literal_and_hides_the_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
