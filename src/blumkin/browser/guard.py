@@ -636,6 +636,7 @@ class GuardedDriver:
             tried = "" if role is not None else f" in any of {', '.join(roles)}"
             raise BrowserActionError(
                 f"Expected a {label} named {name!r} within {wait_s:g} seconds{tried}, got none"
+                f"{self._pick_hint(name, role)}"
             )
         if len(found) > 1:
             raise BrowserActionError(
@@ -645,6 +646,26 @@ class GuardedDriver:
         if role is None:
             self.check_click(name, resolved, confirm_ok=confirm_ok, declared_only=declared_only)
         return resolved, action
+
+    def _pick_hint(self, name: str, role: str | None) -> str:
+        """Say so when `name` is a grid row, cell or row header, which `pick` chooses.
+
+        A list page often opens an item by clicking its row, and that row is page data, not a
+        control a task declares. Looks only (a count, never a click) and never raises.
+        """
+        if role is not None:
+            return ""
+        try:
+            found = self._raw.matching_roles(name, tuple(sorted(PICK_ROLES)), 0.0, nth=1)
+        except BrowserActionError:
+            return ""
+        if not found:
+            return ""
+        shown = ", ".join(found)
+        return (
+            f"; a grid {shown} with that text exists, which "
+            f"`blumkin browser pick TASK TEXT --role {found[0]}` chooses"
+        )
 
     def _declared_hint(self) -> str:
         """The task's declared control names and patterns, for a refusal that lists them."""
@@ -883,7 +904,7 @@ CLICKABLE_ROLES = frozenset(
 
 #: What `pick` may choose: data in a result list, never a control. An option or a tree item
 #: is something `click` makes the task declare, so neither is here.
-PICK_ROLES = frozenset({"gridcell", "row"})
+PICK_ROLES = frozenset({"cell", "gridcell", "row", "rowheader"})
 _PICK_CONTROL_TAGS = frozenset({"a", "button", "input", "select", "summary", "textarea"})
 _NAVIGATION_KEYS = frozenset(
     {

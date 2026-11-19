@@ -299,11 +299,15 @@ def click_task(
             # The click returns before the page it started has committed: wait (bounded) for
             # that navigation, then let the page appear without waiting for a heading, so
             # recovery looks at the destination, not at the healthy page that was left. A click
-            # that does not navigate goes straight on.
+            # that does not navigate goes straight on. The host is checked again as soon as the
+            # navigation has committed, before the settle reads anything from the new page.
             driver.wait_for_navigation(previous_url)
+            on_allowed_host(driver.url)
             driver.settle_page(expect_wait_s=0)
             on_allowed_host(driver.url)
-            reloads = _recover_stuck(driver, sign_in_hosts, "click", already_done="the click")
+            reloads = _recover_stuck(
+                driver, sign_in_hosts, "click", already_done="the click", allowed_hosts=hosts
+            )
             if reloads:
                 payload["reloaded"] = reloads
 
@@ -319,17 +323,23 @@ def _recover_stuck(
     what: str,
     *,
     already_done: str | None = None,
+    allowed_hosts: Sequence[str] = (),
 ) -> int:
     """Reload a page the action left stuck; how many reloads it took.
 
     Asked again before every reload, with the address the page is on then, so a page that has
     moved to an identity provider is left alone (reloading its form-post step would fire the
-    sign-in handshake a second time). When the reload itself fails, `already_done` says the
+    sign-in handshake a second time), and so is one that a redirect has taken off the task's
+    `allowed_hosts` while the recovery waited (the check after it would refuse that page, but
+    only once it had been reloaded). When the reload itself fails, `already_done` says the
     action was made, so the caller reads the page before repeating it.
     """
 
     def may_reload(url: str) -> bool:
-        return not host_allowed(urlsplit(url).hostname or "", sign_in_hosts)
+        host = urlsplit(url).hostname or ""
+        if allowed_hosts and not host_allowed(host, allowed_hosts):
+            return False
+        return not host_allowed(host, sign_in_hosts)
 
     try:
         return driver.recover_stuck_page(may_reload)
@@ -662,7 +672,7 @@ def goto_task(
                 # identity provider must be able to finish its form post, and is waited
                 # through like the first sign-in.
                 driver.wait_network_quiet()
-                reloads = _recover_stuck(driver, sign_in_hosts, "navigation")
+                reloads = _recover_stuck(driver, sign_in_hosts, "navigation", allowed_hosts=hosts)
                 if reloads:
                     again = _wait_through_sign_in(
                         driver, hosts, sign_in_hosts, sign_in_wait_s, pause, now, on_sign_in
@@ -992,9 +1002,17 @@ def pick_task(
     when it names a finalizing action, when the element is one a click would refuse, and when
     the row holds a control of its own. `nth` (1-based, DOM order) picks one of several rows
     with the same text. Confirming the dialog is still an ordinary declared `click`.
+
+    A row of a list page opens an item when it is picked, so a pick navigates like a click: it
+    waits (bounded) for that navigation, checks the page is on an allowed host, and reloads a
+    page it left stuck (`reloaded` says how many times), as `click` does.
     """
+    declared = config.browser.tasks.get(task)
+    hosts = declared.allowed_hosts if declared else ()
+    sign_in_hosts = sign_in_hosts_for(config, task)
 
     def act(driver: GuardedDriver) -> dict[str, Any]:
+        previous_url = driver.url
         driver.pick(text, role, nth, prefix)
         payload: dict[str, Any] = {
             "action": "pick",
@@ -1005,6 +1023,19 @@ def pick_task(
         }
         if nth is not None:
             payload["nth"] = nth
+        # The page is on a host the task may use before it is waited on, again once the wait
+        # has let the navigation commit and before anything reads it (the settle reads its
+        # headings), and once more when it has settled.
+        _require_allowed_url(driver.url, task, hosts, "the pick")
+        driver.wait_for_navigation(previous_url)
+        _require_allowed_url(driver.url, task, hosts, "the pick")
+        driver.settle_page(expect_wait_s=0)
+        _require_allowed_url(driver.url, task, hosts, "the pick")
+        reloads = _recover_stuck(
+            driver, sign_in_hosts, "pick", already_done="the pick", allowed_hosts=hosts
+        )
+        if reloads:
+            payload["reloaded"] = reloads
         return payload
 
     return _with_driver(config, task, act, check_after=True)

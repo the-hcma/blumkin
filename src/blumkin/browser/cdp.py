@@ -880,6 +880,10 @@ class PlaywrightDriver:
     ) -> None:
         """Choose a row (or cell) by its text; `vet` also learns whether it holds a control.
 
+        `role` is any ARIA role the page exposes (`row`, `cell`, `gridcell`, `rowheader`): the
+        lookup is `get_by_role`, so a native `<td>` and a `<th scope=row>` resolve with no code
+        of their own per role (`tests/test_browser_pick_real_browser.py` runs it on both).
+
         Like `checked_click`, the very element that was vetted is the one clicked. A click on a
         row lands in its middle, where a control of its own could sit, and a control around
         it would take the click too, so `holds_controls` tells the guard when the row holds,
