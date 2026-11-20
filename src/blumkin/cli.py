@@ -100,6 +100,12 @@ from blumkin.browser.actions import (
     where_task,
 )
 from blumkin.browser.aria_view import parse_within
+from blumkin.browser.capture import (
+    SCREENSHOT_MAX_WIDTH,
+    clean_captures,
+    list_captures,
+    screenshot_task,
+)
 from blumkin.browser.cdp import (
     MAX_WAIT_S,
     MAX_WATCH_S,
@@ -190,6 +196,14 @@ from blumkin.browser.receipt_rehome import (
     UnconfirmedError,
     file_sha256,
     rehome_receipt,
+)
+from blumkin.browser.recording import (
+    RECORD_FORMATS,
+    RECORD_MAX_SECONDS,
+    clip_recording,
+    recording_status,
+    start_recording,
+    stop_recording,
 )
 from blumkin.browser.transcript import parse_duration
 from blumkin.browser.window import WindowRaiseError, window_title
@@ -2866,7 +2880,28 @@ def agent_stop(ctx: click.Context, as_json_flag: bool, stop_all: bool) -> None:
         emit_lines(["stopped: no agent was running", *_stopped_orphan_lines(payload)])
 
 
-@main.group(epilog=help_text.BROWSER_EPILOG)
+class _CaptionedCommand(click.Command):
+    """A browser command that leaves a caption in the task's recording, when one is running."""
+
+    def invoke(self, ctx: click.Context) -> Any:
+        from blumkin.browser.recording import note_command
+
+        task = ctx.params.get("task")
+        if isinstance(task, str) and self.name is not None:
+            try:
+                note_command(config_dir(), task, self.name, dict(ctx.params))
+            except Exception:  # noqa: BLE001 - a caption is a courtesy: the command reports its own errors
+                pass
+        return super().invoke(ctx)
+
+
+class _BrowserGroup(click.Group):
+    """The `browser` group: its direct commands caption a running recording."""
+
+    command_class = _CaptionedCommand
+
+
+@main.group(cls=_BrowserGroup, epilog=help_text.BROWSER_EPILOG)
 def browser() -> None:
     """Browser-assisted tasks: per-task profiles you sign in to yourself.
 
@@ -3708,6 +3743,287 @@ def browser_raise(ctx: click.Context, task: str, as_json_flag: bool) -> None:
         return
     title = sanitize_terminal(payload["title"]) if payload["title"] else "(untitled)"
     emit_lines([f"{task}: raised the window {title!r} (process {payload['pid']})"])
+
+
+@browser.group("captures", epilog=help_text.BROWSER_CAPTURES_EPILOG)
+def browser_captures() -> None:
+    """List or remove the screenshots and recordings the task browsers wrote."""
+
+
+@browser_captures.command("clean", epilog=help_text.BROWSER_CAPTURES_CLEAN_EPILOG)
+@click.argument("task", required=False)
+@click.option("--all", "everything", is_flag=True, help="Remove the captures of every task.")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_captures_clean(
+    ctx: click.Context, task: str | None, everything: bool, as_json_flag: bool
+) -> None:
+    """Remove one task's captures (or, with --all, every task's)."""
+    as_json = _as_json(ctx, as_json_flag)
+    if (task is None) == (not everything):
+        raise click.UsageError("Expected a TASK or --all, got " + ("both" if task else "neither"))
+    try:
+        removed = clean_captures(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task or "")
+    payload = {"ok": True, "removed": removed, "task": task}
+    if as_json:
+        emit_json(payload)
+        return
+    emit_lines([f"removed {removed} capture file(s) for {task or 'every task'}"])
+
+
+@browser_captures.command("list", epilog=help_text.BROWSER_CAPTURES_LIST_EPILOG)
+@click.argument("task", required=False)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_captures_list(ctx: click.Context, task: str | None, as_json_flag: bool) -> None:
+    """List the captures on disk (one task's, or all), newest first."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        found = list_captures(config_dir(), task)
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task=task or "")
+    if as_json:
+        emit_json({"captures": found, "count": len(found), "ok": True})
+        return
+    emit_lines(
+        [f"{len(found)} capture(s)"]
+        + [
+            f"  {item['path']}  ({item['bytes']} bytes"
+            + (f", {item['files']} files" if "files" in item else "")
+            + f", {item['age_s']}s old)"
+            for item in found
+        ]
+    )
+
+
+@browser.group("record", epilog=help_text.BROWSER_RECORD_EPILOG)
+def browser_record() -> None:
+    """Record TASK's browser as a video you can watch and forward, at the speed it happened."""
+
+
+def _record_encode_options[F: Callable[..., Any]](command: F) -> F:
+    """The options `record stop` and `record clip` share for the file they write."""
+    for option in reversed(
+        [
+            click.option(
+                "--format",
+                "fmt",
+                type=click.Choice(list(RECORD_FORMATS)),
+                default="mp4",
+                show_default=True,
+                help="MP4 (plays anywhere; needs ffmpeg) or a short GIF.",
+            ),
+            click.option(
+                "--out",
+                type=click.Path(path_type=Path, dir_okay=False),
+                help="Write here (the file must not exist yet) instead of the captures folder.",
+            ),
+            click.option(
+                "--speed",
+                type=click.FloatRange(min=0.1, max=50.0),
+                callback=_finite_wait,
+                default=1.0,
+                show_default=True,
+                help="Play back this many times faster than it happened (1 is real speed).",
+            ),
+            click.option(
+                "--trim-idle",
+                "trim_idle",
+                type=click.FloatRange(min=0.1),
+                callback=_finite_wait,
+                default=None,
+                help="Show no one stretch longer than this many seconds (a long wait).",
+            ),
+            click.option(
+                "--keep-frames", is_flag=True, help="Keep the numbered JPEG frames and index."
+            ),
+        ]
+    ):
+        command = option(command)
+    return command
+
+
+def _record_notes(p: dict[str, Any]) -> list[str]:
+    cards = f", {p['cards']} left out" if p["cards"] else ""
+    captions = f", {p['captions']} captions" if p["captions"] else ""
+    return [
+        f"  {p['path']}  ({p['seconds']} s, {p['bytes']} bytes, {p['frames']} frames"
+        f"{cards}{captions}, ended: {p['ended']})",
+        *([f"  frames: {p['frames_dir']}"] if p["frames_dir"] else []),
+        f"  {p['untrusted']}",
+    ]
+
+
+@browser_record.command("start", epilog=help_text.BROWSER_RECORD_START_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_record_start(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Start recording TASK's page until `record stop` (it only looks)."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: start_recording(load_browser_setup(), task),
+        "recording started",
+        notes=lambda p: [f"  stop it with: blumkin browser record stop {task}"],
+    )
+
+
+@browser_record.command("stop", epilog=help_text.BROWSER_RECORD_STOP_EPILOG)
+@click.argument("task")
+@_record_encode_options
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_record_stop(
+    ctx: click.Context,
+    task: str,
+    fmt: str,
+    out: Path | None,
+    speed: float,
+    trim_idle: float | None,
+    keep_frames: bool,
+    as_json_flag: bool,
+) -> None:
+    """Stop TASK's recording and write the video."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: stop_recording(
+            load_browser_setup(),
+            task,
+            fmt=fmt,
+            out=out,
+            speed=speed,
+            trim_idle_s=trim_idle,
+            keep_frames=keep_frames,
+        ),
+        "recording written",
+        notes=_record_notes,
+    )
+
+
+@browser_record.command("status", epilog=help_text.BROWSER_RECORD_STATUS_EPILOG)
+@click.argument("task")
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_record_status(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+    """Say whether TASK is being recorded, and for how long."""
+
+    def notes(p: dict[str, Any]) -> list[str]:
+        if p["recording"]:
+            return [f"  recording for {p['seconds']} s"]
+        if p.get("unfinished"):
+            return [
+                f"  an unfinished recording is waiting: run `blumkin browser record stop {task}`"
+            ]
+        return ["  not recording"]
+
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: recording_status(load_browser_setup(), task),
+        "recording status",
+        notes=notes,
+    )
+
+
+@browser_record.command("clip", epilog=help_text.BROWSER_RECORD_CLIP_EPILOG)
+@click.argument("task")
+@click.option(
+    "--seconds",
+    type=click.FloatRange(min=1.0, max=RECORD_MAX_SECONDS),
+    callback=_finite_wait,
+    required=True,
+    help=f"How long to record, 1 to {RECORD_MAX_SECONDS:g} seconds.",
+)
+@_record_encode_options
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_record_clip(
+    ctx: click.Context,
+    task: str,
+    seconds: float,
+    fmt: str,
+    out: Path | None,
+    speed: float,
+    trim_idle: float | None,
+    keep_frames: bool,
+    as_json_flag: bool,
+) -> None:
+    """Record TASK's page for a fixed number of seconds and write the video."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: clip_recording(
+            load_browser_setup(),
+            task,
+            seconds=seconds,
+            fmt=fmt,
+            out=out,
+            speed=speed,
+            trim_idle_s=trim_idle,
+            keep_frames=keep_frames,
+        ),
+        "recording written",
+        notes=_record_notes,
+    )
+
+
+@browser.command("screenshot", epilog=help_text.BROWSER_SCREENSHOT_EPILOG)
+@click.argument("task")
+@click.option(
+    "--within",
+    help="Capture one element, as ROLE or ROLE:NAME (for example dialog), not the viewport.",
+)
+@click.option("--full-page", is_flag=True, help="Capture the whole scrollable page.")
+@click.option(
+    "--max-width",
+    type=click.IntRange(min=0),
+    default=SCREENSHOT_MAX_WIDTH,
+    show_default=True,
+    help="Shrink a wider image to this many pixels (0 keeps the display's own size).",
+)
+@click.option(
+    "--out",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Write here (the file must not exist yet) instead of the captures folder.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_screenshot(
+    ctx: click.Context,
+    task: str,
+    within: str | None,
+    full_page: bool,
+    max_width: int,
+    out: Path | None,
+    as_json_flag: bool,
+) -> None:
+    """Take a PNG of TASK's page (never a sign-in page; it only looks)."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: screenshot_task(
+            load_browser_setup(),
+            task,
+            within=within,
+            full_page=full_page,
+            max_width=max_width,
+            out=out,
+        ),
+        "screenshot taken",
+        notes=lambda p: [
+            f"  {p['path']}  ({p['width']}x{p['height']}, {p['bytes']} bytes)",
+            f"  {p['untrusted']}",
+        ],
+    )
 
 
 @browser.command("sign-in", epilog=help_text.BROWSER_SIGN_IN_EPILOG)

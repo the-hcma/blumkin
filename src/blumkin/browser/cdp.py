@@ -14,11 +14,13 @@ drivers here are for synchronous callers such as the CLI.
 
 from __future__ import annotations
 
+import base64
 import collections
 import contextlib
 import dataclasses
 import decimal
 import functools
+import io
 import json
 import math
 import os
@@ -321,6 +323,15 @@ class RequestEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ScreenFrame:
+    """One frame of the browser's own screencast: a JPEG and when the browser painted it."""
+
+    data: bytes
+    #: Seconds since the epoch, as the browser stamps it (not when this process read it).
+    timestamp: float
+
+
+@dataclass(frozen=True, slots=True)
 class UploadObservation:
     """What the page showed after a file was set on an input (issue #607).
 
@@ -608,6 +619,17 @@ def _without_fragment(address: str) -> str:
     return address.split("#", 1)[0]
 
 
+_PUMP_MAX_FRAMES = 120
+
+
+def _paint_time(params: dict[str, Any]) -> float:
+    """When a screencast frame was painted; the protocol makes the stamp optional."""
+    try:
+        return float(params["metadata"]["timestamp"])
+    except KeyError, TypeError, ValueError:
+        return time.time()  # a frame without a stamp is stamped when it was received
+
+
 class PlaywrightDriver:
     """The raw Playwright page attached through CDP.
 
@@ -630,6 +652,10 @@ class PlaywrightDriver:
         self._chain: list[str] = []
         self._chain_listening = False
         self._expired = False
+        self._screencast: tuple[Any, list[dict[str, Any]], int, int] | None = None
+        self._committed: list[str] = []
+        self._committed_frames: list[str] = []
+        self._navigation_listener: Callable[[Any], None] | None = None
         self._dialog_landmarks: tuple[tuple[str, ...], ...] = ()
         self._existing_frames = existing_frames
         self._navigation_handler: Any = None
@@ -2092,6 +2118,243 @@ class PlaywrightDriver:
     def url(self) -> str:
         return str(self._page.url)
 
+    def screenshot_png(
+        self, *, role: str | None = None, name: str | None = None, full_page: bool = False
+    ) -> bytes:
+        """A PNG of the page's viewport, of the whole page, or of one element found by role.
+
+        Taken at the display's own pixel size and shrunk afterwards by the caller: asking the
+        browser for CSS pixels makes Chromium resize the page around every shot, which flickers
+        a recording. Reads pixels only: nothing is clicked, typed or changed. The caller has
+        already decided that this page may be captured (an allowed host, never a sign-in page).
+        """
+        self._require_open()
+        try:
+            with self._bounded(self._call_deadline_s(), "take a screenshot"):
+                if role is None:
+                    return bytes(
+                        self._page.screenshot(
+                            type="png",
+                            full_page=full_page,
+                            caret="initial",  # leave the page's own styles alone
+                            timeout=self._timeout_ms,
+                        )
+                    )
+                target = (
+                    self._page.get_by_role(role, name=name, exact=True)
+                    if name
+                    else (self._page.get_by_role(role))
+                )
+                if target.count() == 0:
+                    raise BrowserActionError(
+                        f"Expected a {role} named {name!r} to capture, got none"
+                        if name
+                        else f"Expected a {role} to capture, got none"
+                    )
+                return self._element_png(target.first)
+        except _playwright_error() as exc:
+            raise self._action_error("take a screenshot", exc) from exc
+
+    def _detach_quietly(self, session: Any) -> None:
+        """Release a DevTools session that did not get going, if the connection still answers."""
+        if session is None or self._expired or self._closed:
+            return
+        with (
+            contextlib.suppress(_playwright_error(), BrowserActionError, _DeadlineExpired),
+            self._bounded(self._call_deadline_s(), "detach the screencast"),
+        ):
+            session.detach()
+
+    def _element_png(self, element: Any) -> bytes:
+        """A PNG of one element, cut out of a picture of the viewport.
+
+        Asking the browser for an element's own picture can scroll the page after the bounds were
+        checked (it did, when the element moved), so the pixels of the viewport are taken and the
+        checked box is cropped from them: nothing is scrolled.
+        """
+        from PIL import Image
+
+        box = self._require_in_view(element)
+        shot = bytes(self._page.screenshot(type="png", caret="initial", timeout=self._timeout_ms))
+        scale = float(self._page.evaluate("window.devicePixelRatio") or 1.0)
+        with Image.open(io.BytesIO(shot)) as image:
+            crop = image.crop(
+                (
+                    round(box["x"] * scale),
+                    round(box["y"] * scale),
+                    round((box["x"] + box["width"]) * scale),
+                    round((box["y"] + box["height"]) * scale),
+                )
+            )
+            out = io.BytesIO()
+            crop.save(out, format="PNG")
+        return out.getvalue()
+
+    def _require_in_view(self, element: Any) -> dict[str, float]:
+        """The element's box, refusing one that is not wholly on screen (no scrolling to it)."""
+        box = element.bounding_box()
+        size = self._page.evaluate("[window.innerWidth, window.innerHeight]")
+        inside = (
+            box is not None
+            and box["x"] >= 0
+            and box["y"] >= 0
+            and box["x"] + box["width"] <= size[0]
+            and box["y"] + box["height"] <= size[1]
+        )
+        if not inside:
+            raise BrowserActionError(
+                "Expected the element to be wholly on screen to capture it without scrolling "
+                "the page, got one that is not; scroll to it yourself, or use --full-page"
+            )
+        assert box is not None  # `inside` is false without one
+        return {key: float(value) for key, value in box.items()}
+
+    def screencast_start(self, *, max_width: int = 1280, quality: int = 60) -> None:
+        """Start the browser's screencast of the page: a frame, with its time, on every change.
+
+        The browser scales the frames it sends to at most `max_width` itself, so the page is
+        never resized or touched (asking for CSS-pixel screenshots did resize it, around every
+        shot, and flickered). Nothing is delivered while the page is idle; `screencast_pump`
+        collects what arrived and acknowledges it, which the browser needs to send more.
+        """
+        self._require_open()
+        session: Any = None
+        try:
+            arrived: list[dict[str, Any]] = []
+
+            def collect(params: dict[str, Any]) -> None:
+                arrived.append(params)
+
+            with self._bounded(self._call_deadline_s(), "start the screencast"):
+                session = self._page.context.new_cdp_session(self._page)
+                session.on("Page.screencastFrame", collect)
+                session.send(
+                    "Page.startScreencast",
+                    {
+                        "everyNthFrame": 1,
+                        "format": "jpeg",
+                        "maxHeight": max_width,
+                        "maxWidth": max_width,
+                        "quality": quality,
+                    },
+                )
+        except _playwright_error() as exc:
+            self._detach_quietly(session)
+            raise self._action_error("start the screencast", exc) from exc
+        self._screencast = (session, arrived, quality, max_width)
+        # The address of every top-level document the page commits, so a recording can tell
+        # that the page went somewhere (a sign-in page) and came back during one read: the
+        # address at the two ends alone looks unchanged.
+        self._committed = []
+        self._committed_frames = []
+        main = self._page.main_frame
+
+        def navigated(frame: Any) -> None:
+            if frame == main:
+                self._committed.append(str(frame.url))
+            else:  # a frame inside the page that came and went between two looks
+                self._committed_frames.append(_web_host(str(frame.url)))
+
+        self._navigation_listener = navigated
+        self._page.on("framenavigated", navigated)
+
+    def screencast_keyframe(self) -> ScreenFrame:
+        """The page as it is now, as a frame stamped with the current time.
+
+        An idle page sends no screencast frame, so a recording takes one when it starts and
+        when it resumes after a stretch it left out. Pixels only: no resize, no scale.
+        """
+        self._require_open()
+        if self._screencast is None:
+            raise BrowserActionError("Expected a running screencast, got none")
+        session, _, quality, max_width = self._screencast
+        try:
+            with self._bounded(self._call_deadline_s(), "take a frame"):
+                shot = session.send(
+                    "Page.captureScreenshot", {"format": "jpeg", "quality": quality}
+                )
+        except _playwright_error() as exc:
+            raise self._action_error("take a frame", exc) from exc
+        return ScreenFrame(
+            data=_fit_jpeg(base64.b64decode(shot["data"]), max_width, quality),
+            timestamp=time.time(),
+        )
+
+    def screencast_pump(self, wait_ms: int) -> list[ScreenFrame]:
+        """Wait up to `wait_ms` for page events, then return the frames that arrived."""
+        self._require_open()
+        if self._screencast is None:
+            raise BrowserActionError("Expected a running screencast, got none")
+        session, arrived, _, _ = self._screencast
+        try:
+            self._page.wait_for_timeout(wait_ms)
+            frames: list[ScreenFrame] = []
+            # A page that repaints without end must not keep this call from returning: what is
+            # left is read on the next call.
+            while arrived and len(frames) < _PUMP_MAX_FRAMES:
+                params = arrived.pop(0)
+                frames.append(
+                    ScreenFrame(
+                        data=base64.b64decode(params["data"]),
+                        timestamp=_paint_time(params),
+                    )
+                )
+                with self._bounded(self._call_deadline_s(), "read the screencast"):
+                    session.send("Page.screencastFrameAck", {"sessionId": params["sessionId"]})
+        except _playwright_error() as exc:
+            raise self._action_error("read the screencast", exc) from exc
+        return frames
+
+    def screencast_stop(self) -> None:
+        """Stop the screencast (the browser may already be gone: that is not an error)."""
+        if self._screencast is None:
+            return
+        session, _, _, _ = self._screencast
+        self._screencast = None
+        listener, self._navigation_listener = self._navigation_listener, None
+        if listener is not None:
+            with contextlib.suppress(_playwright_error(), AttributeError, ValueError):
+                self._page.remove_listener("framenavigated", listener)
+        # Best effort, and each call bounded on its own: a browser that has stopped answering
+        # must not hold the command, and nothing is sent once one call has timed out.
+        for what, call in (
+            ("stop the screencast", lambda: session.send("Page.stopScreencast")),
+            ("detach the screencast", session.detach),
+        ):
+            if self._expired or self._closed:
+                break
+            with (
+                contextlib.suppress(_playwright_error(), BrowserActionError, _DeadlineExpired),
+                self._bounded(self._call_deadline_s(), what),
+            ):
+                call()
+
+    def take_committed_urls(self) -> list[str]:
+        """The addresses of the top-level documents committed since the last call (then cleared)."""
+        taken, self._committed = self._committed, []
+        return taken
+
+    def take_committed_frame_hosts(self) -> tuple[str, ...]:
+        """The hosts of the inner frames committed since the last call (then cleared)."""
+        taken, self._committed_frames = self._committed_frames, []
+        return tuple(taken)
+
+    def frame_hosts(self) -> tuple[str, ...]:
+        """The host of every frame of the page, the top one included (read from local state)."""
+        self._require_open()
+        main = self._page.main_frame
+        # Playwright misses a cross-origin frame that existed before it attached; the inventory
+        # `_child_frames` keeps for that is read too, so such a frame is not left out.
+        try:
+            with self._bounded(self._call_deadline_s(), "list the page's frames"):
+                inner = self._child_frames()
+        except _DeadlineExpired as exc:
+            # An inventory that did not come back is not proof there is no sign-in frame.
+            raise BrowserActionError(
+                "Expected the page's frames to be listed, got no answer; nothing was captured"
+            ) from exc
+        return (_web_host(str(main.url)), *(_web_host(str(frame.url)) for frame in inner))
+
     def wait_ms(self, milliseconds: int) -> None:
         """Pause through Playwright, so page events (a redirect finishing) are delivered."""
         self._require_open()
@@ -2903,6 +3166,26 @@ def _same_cell_text(expected: str, shown: str, *, option: bool) -> bool:
     except decimal.InvalidOperation:
         pass
     return option and bool(left) and bool(right) and (left in right or right in left)
+
+
+def _fit_jpeg(data: bytes, max_side: int, quality: int) -> bytes:
+    """`data` (a JPEG) shrunk to fit inside `max_side` by `max_side`, as the screencast's own
+    frames are; a smaller one is returned as it is. The page is not involved."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(data)) as image:
+        if max(image.size) <= max_side:
+            return data
+        scale = max_side / max(image.size)
+        small = image.convert("RGB").resize(
+            (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    buffer = io.BytesIO()
+    small.save(buffer, format="JPEG", quality=quality)
+    return buffer.getvalue()
 
 
 class RawBrowserDriver(Protocol):
