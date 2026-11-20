@@ -130,6 +130,10 @@ typeCheckingMode = "basic"
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+# Ruff 0.17 also formats the Python code blocks inside markdown. The examples in `.agents/rules/`
+# are written compact on purpose, so `ruff format .` modified one of them, and the markdown lint,
+# which checks modified markdown, then failed the submit on that file's own prose (#798).
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
