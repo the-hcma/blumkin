@@ -846,3 +846,169 @@ def test_a_cell_the_page_did_not_keep_is_not_a_cell_not_committed_error() -> Non
     with pytest.raises(cdp.CellEditedError) as excinfo:
         _edit(page, "8")
     assert not isinstance(excinfo.value, cdp.CellNotCommittedError)
+
+
+# --- a dropdown choice the page dropped on the first try (#809) ----------------------------------
+
+
+def _paid_time_off_page() -> _Page:
+    page = _Page()
+    page.search_select = True
+    page.drop_visible = True
+    page.options = [["Paid Time Off", "Paid Leave"]]
+    return page
+
+
+def test_a_dropdown_choice_that_reads_empty_is_made_once_more_and_then_accepted() -> None:
+    page = _paid_time_off_page()
+    # The first commit reads empty on every look; after the second choice the cell shows it.
+    page.cell_texts = ["", "", "", "", "", "Paid Time Off"]
+
+    edit = _edit(page, "Paid Time Off")
+
+    assert edit.text == "Paid Time Off"
+    assert _kinds(page).count("option-click") == 2  # chosen twice, not three times
+
+
+def test_a_dropdown_choice_dropped_twice_is_still_an_error() -> None:
+    page = _paid_time_off_page()
+    page.cell_texts = [""]  # always empty
+
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "Paid Time Off")
+
+    assert "did not keep it" in str(excinfo.value)
+    assert _kinds(page).count("option-click") == 2  # one retry, never a loop
+
+
+def test_a_dropdown_choice_that_reads_a_different_value_is_not_made_again() -> None:
+    page = _paid_time_off_page()
+    page.cell_texts = ["Paid Leave"]  # kept, but something else: not the dropped case
+
+    with pytest.raises(cdp.CellEditedError):
+        _edit(page, "Paid Time Off")
+
+    assert _kinds(page).count("option-click") == 1
+
+
+def test_a_plain_cell_that_reads_empty_is_not_typed_again() -> None:
+    page = _Page()
+    page.cell_texts = [""]
+
+    with pytest.raises(cdp.CellEditedError):
+        _edit(page, "8")
+
+    assert [text for kind, text in page.events if kind == "type"] == ["8"]  # typed once
+
+
+def test_a_cell_that_cannot_be_found_for_the_retry_says_the_edit_was_attempted() -> None:
+    page = _paid_time_off_page()
+    page.cell_texts = [""]  # the first choice reads empty on every look
+    # Finds: 1 the cell, 2 the read after the edit, 3-6 the re-reads of an empty cell, 7 the retry.
+    page.find_error_from = 7  # the page redrew: the retry cannot find the cell
+
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "Paid Time Off")
+
+    assert "the edit was attempted" in str(excinfo.value)
+    assert "Paid Time Off" not in str(excinfo.value)  # never the typed value
+    assert _kinds(page).count("option-click") == 1
+
+
+def test_a_cell_that_cannot_be_found_at_the_start_is_still_a_plain_action_error() -> None:
+    page = _Page()
+    page.find_error_from = 1
+
+    with pytest.raises(BrowserActionError) as excinfo:
+        _edit(page, "8")
+
+    assert not isinstance(excinfo.value, cdp.CellEditedError)
+
+
+def test_the_retry_chooses_the_first_option_by_its_full_text_not_the_short_typed_one() -> None:
+    page = _Page()
+    page.search_select = True
+    page.drop_visible = True
+    page.options = [["Paid Time Off", "Paid Leave"]]
+    page.cell_texts = ["", "", "", "", "", "Paid Time Off"]
+
+    edit = _edit(page, "Paid Time")  # a prefix that resolves to one option
+
+    assert edit.text == "Paid Time Off"
+    typed = "".join(text for kind, text in page.events if kind == "type")
+    assert typed == "Paid Time" + "Paid Time Off"  # the retry typed the option's own text
+
+
+class _CoverAfterChoice(_Page):
+    """A page where something covers the cell once the first option has been chosen."""
+
+    def wait_for_timeout(self, ms: float) -> None:
+        super().wait_for_timeout(ms)
+        if any(kind == "option-click" for kind, _ in self.events):
+            self.click_target = "cover"
+
+
+def test_a_retry_that_is_blocked_by_a_cover_says_the_edit_was_attempted() -> None:
+    page = _CoverAfterChoice()
+    page.search_select = True
+    page.drop_visible = True
+    page.options = [["Paid Time Off", "Paid Leave"]]
+    page.cell_texts = [""]  # the first choice reads empty on every look
+
+    with pytest.raises(cdp.CellEditedError) as excinfo:
+        _edit(page, "Paid Time Off")
+
+    assert "the edit was attempted" in str(excinfo.value)
+    assert _kinds(page).count("option-click") == 1
+
+
+class _ListChangesAfterChoice(_Page):
+    """A page whose list of matches is another one once the first option has been chosen."""
+
+    after_choice = "Paid Time Off Extended"
+
+    def poll_options(self) -> list[str]:
+        if any(kind == "option-click" for kind, _ in self.events):
+            return [self.after_choice]
+        return super().poll_options()
+
+    def current_options(self) -> list[str]:
+        return self.poll_options()
+
+
+def test_a_retry_never_clicks_a_different_option_even_when_it_is_the_only_prefix_match() -> None:
+    page = _ListChangesAfterChoice()
+    page.search_select = True
+    page.drop_visible = True
+    page.options = [["Paid Time Off", "Paid Leave"]]
+    page.cell_texts = [""]  # the first choice reads empty on every look
+
+    with pytest.raises(cdp.CellNotCommittedError):
+        _edit(page, "Paid Time Off")
+
+    assert _kinds(page).count("option-click") == 1  # the other option was never clicked
+
+
+def test_the_first_attempt_still_accepts_a_unique_prefix() -> None:
+    page = _Page()
+    page.search_select = True
+    page.drop_visible = True
+    page.options = [["Paid Time Off", "Paid Leave"]]
+
+    assert _edit(page, "Paid Time").text == "Paid Time Off"
+
+
+def test_a_retry_never_clicks_an_option_that_only_looks_the_same_once_punctuation_is_ignored() -> (
+    None
+):
+    page = _ListChangesAfterChoice()
+    page.after_choice = "Paid Time-Off"  # the same letters, a different text
+    page.search_select = True
+    page.drop_visible = True
+    page.options = [["Paid Time Off", "Paid Leave"]]
+    page.cell_texts = [""]
+
+    with pytest.raises(cdp.CellNotCommittedError):
+        _edit(page, "Paid Time Off")
+
+    assert _kinds(page).count("option-click") == 1

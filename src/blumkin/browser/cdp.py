@@ -70,7 +70,11 @@ class CellEditedError(BrowserActionError):
     typed value (it reads empty, or shows something else). The edit was made, so the caller
     checks the cell before going on; a ledger step keeps its item resumable, and running the step
     again types the value again.
+
+    `empty` is whether the cell read empty (a value the page dropped), not a different value.
     """
+
+    empty: bool = False
 
 
 class CellNotCommittedError(BrowserActionError):
@@ -1064,22 +1068,63 @@ class PlaywrightDriver:
         wrote = False
         expected: tuple[str, bool] | None = None
         try:
-            handle, meta = self._find_cell(row, column, grid)
-            vet(self._describe(handle))
-            if value is not None:
-                expected = self._write_cell(
-                    handle,
-                    value,
-                    grid,
-                    vet,
-                    vet_name,
-                    lambda: self._neighbour_cell(row, int(meta["column"]), grid),
-                )
-                wrote = True
-                handle, meta = self._read_cell_after_edit(row, column, grid)
-            text = str(handle.evaluate(_CELL_TEXT_JS))
-            if expected is not None and not _same_cell_text(expected[0], text, option=expected[1]):
-                handle, meta, text = self._reread_unkept_cell(row, column, grid, expected, text)
+            typed = value
+            first_choice: str | None = None
+            for attempt in range(_CELL_EDIT_ATTEMPTS):
+                try:
+                    handle, meta = self._find_cell(row, column, grid)
+                    vet(self._describe(handle))
+                    if typed is not None:
+                        expected = self._write_cell(
+                            handle,
+                            typed,
+                            grid,
+                            vet,
+                            vet_name,
+                            lambda: self._neighbour_cell(row, int(meta["column"]), grid),
+                            exact=first_choice is not None,
+                        )
+                        wrote = True
+                        if (
+                            expected is not None
+                            and first_choice is not None
+                            and expected[0] != first_choice
+                        ):
+                            raise CellEditedError(
+                                f"Expected the retry at row {row!r}, column {column!r} to choose "
+                                "the same option as before, got another; nothing was assumed, so "
+                                "check the cell before going on"
+                            )
+                        handle, meta = self._read_cell_after_edit(row, column, grid)
+                except CellEditedError, CellNotCommittedError:
+                    raise
+                except BrowserActionError:
+                    if not attempt:
+                        raise
+                    # The first choice was made and read back empty; now the cell is gone (the
+                    # page redrew), covered, or no longer passes the checks. The edit was
+                    # attempted, so a ledger step stays resumable instead of marking its item
+                    # failed.
+                    raise CellEditedError(
+                        f"Expected to choose the value of the cell at row {row!r}, column "
+                        f"{column!r} once more, got a page that did not allow it; the edit was "
+                        "attempted, so check the cell before going on"
+                    ) from None
+                text = str(handle.evaluate(_CELL_TEXT_JS))
+                if expected is None or _same_cell_text(expected[0], text, option=expected[1]):
+                    break
+                try:
+                    handle, meta, text = self._reread_unkept_cell(row, column, grid, expected, text)
+                    break
+                except CellEditedError as unkept:
+                    # A chosen dropdown option that reads back empty is a choice the page
+                    # dropped (seen on the first edit of a time reporting code cell): the same
+                    # option, by its full text, is chosen once more, and a second miss is the
+                    # error it was.
+                    if attempt + 1 < _CELL_EDIT_ATTEMPTS and expected[1] and unkept.empty:
+                        first_choice = typed = expected[0]
+                        continue
+                    raise
         except _playwright_error() as exc:
             if wrote:
                 # After the value was typed and committed, a failure to look at the cell must
@@ -2373,8 +2418,13 @@ class PlaywrightDriver:
         vet: Callable[[ControlInfo], None],
         vet_name: Callable[[str], None],
         grid: int,
+        *,
+        exact: bool = False,
     ) -> tuple[str, bool]:
         """Commit typed text: pick the matching option of a search-select, else press Tab.
+
+        With `exact` only an option whose text equals the typed text is chosen: a prefix that
+        matches one option is not enough.
 
         A list-of-values cell (a project, a time reporting code) opens a dropdown of matches
         while the text is typed and keeps the typed text uncommitted until an option is chosen,
@@ -2432,10 +2482,16 @@ class PlaywrightDriver:
             listed = [(i, t.strip()) for i, t in enumerate(rows.all_inner_texts()) if t.strip()]
             texts = [t for _, t in listed]
             keys = [_option_key(t) for t in texts]
-            exact = [i for i, k in enumerate(keys) if k == wanted]
+            exact_hits = [
+                i
+                for i, k in enumerate(keys)
+                if k == wanted and (not exact or texts[i] == value.strip())
+            ]
             starts = [i for i, k in enumerate(keys) if k.startswith(wanted)]
             chosen = (
-                exact if len(exact) == 1 else (starts if not exact and len(starts) == 1 else [])
+                exact_hits
+                if len(exact_hits) == 1
+                else (starts if not exact_hits and not exact and len(starts) == 1 else [])
             )
             if chosen and texts == previous:
                 index, text = listed[chosen[0]]
@@ -2450,7 +2506,7 @@ class PlaywrightDriver:
                     # commit is finished with Tab, as for a plain cell.
                     self._page.keyboard.press("Tab")
                     return text, True
-            if texts and len(exact) > 1:
+            if texts and len(exact_hits) > 1:
                 break
             previous = texts
             self._page.wait_for_timeout(_CELL_OPTION_POLL_MS)
@@ -2502,10 +2558,12 @@ class PlaywrightDriver:
             if _same_cell_text(expected[0], shown, option=expected[1]):
                 return handle, meta, shown
         what = "an empty cell" if not shown.strip() else "a different value"
-        raise CellEditedError(
+        error = CellEditedError(
             f"Expected the cell at row {row!r}, column {column!r} to hold the typed value, got "
             f"{what}; the page did not keep it, so check the cell before going on"
         )
+        error.empty = not shown.strip()
+        raise error
 
     def _find_cell(self, row: str, column: str, grid: int) -> tuple[Any, dict[str, Any]]:
         """The cell element at `row` and `column` of the `grid`-th data grid, and its position."""
@@ -2595,8 +2653,13 @@ class PlaywrightDriver:
         vet: Callable[[ControlInfo], None],
         vet_name: Callable[[str], None],
         neighbour: Callable[[], Any | None] | None = None,
+        *,
+        exact: bool = False,
     ) -> tuple[str, bool] | None:
         """Select the cell, type `value` into its editor and commit; clear it when empty.
+
+        With `exact` a dropdown option is chosen only when its whole text is `value` (the retry
+        of a choice the page dropped: a refreshed list must not lead it to another option).
 
         Returns what the cell should show afterwards (see `_commit_typed_cell`), or None for a
         clear, which has nothing to compare with.
@@ -2639,7 +2702,7 @@ class PlaywrightDriver:
             )
         if len(value) > 1:
             self._page.keyboard.type(value[1:])
-        expected = self._commit_typed_cell(value, vet, vet_name, grid)
+        expected = self._commit_typed_cell(value, vet, vet_name, grid, exact=exact)
         self._require_committed(grid, vet, neighbour)
         return expected
 
@@ -3792,6 +3855,9 @@ _CELL_DROP_WAIT_MS = 1500
 #: the server, and a cell that never shows one is refused, not committed with Tab (which drops
 #: the typed text and leaves the cell empty).
 _CELL_DROP_LONG_WAIT_MS = 6000
+#: How many times a dropdown choice is made for one edit: the choice the page dropped (the cell
+#: reads empty after it) is made once more, and a second miss is the error.
+_CELL_EDIT_ATTEMPTS = 2
 #: How often, and how long apart, a typed cell is read again when it reads empty, or shows
 #: something else than what was typed, after the commit.
 _CELL_KEPT_POLLS = 4

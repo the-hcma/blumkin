@@ -92,10 +92,10 @@ def _record(
     session = tmp_path / "session"
     session.mkdir()
     pending = list(script)
-    began = time.time()
+    began = time.monotonic()  # steady: the system clock can step during a run
 
     def stop() -> bool:
-        elapsed = time.time() - began
+        elapsed = time.monotonic() - began
         while pending and elapsed >= pending[0][0]:
             _, action = pending.pop(0)
             if action.startswith("color:"):
@@ -105,16 +105,33 @@ def _record(
         return elapsed >= seconds
 
     began_steady = time.monotonic()
-    why = run_recorder(driver, session, hosts=_HOSTS, sign_in_hosts=_SIGN_IN, stop=stop)
+    began_wall = time.time()
+    ready_at: list[float] = []  # when the first picture was in (this harness's own clock)
+    why = run_recorder(
+        driver,
+        session,
+        hosts=_HOSTS,
+        sign_in_hosts=_SIGN_IN,
+        stop=stop,
+        on_ready=lambda: ready_at.append(time.monotonic()),
+    )
+    stepped = (time.time() - began_wall) - (time.monotonic() - began_steady)
+    if abs(stepped) > 0.5:
+        # Browser paint times are wall-clock times: a clock that stepped during the run (a time
+        # sync, a long sleep) puts them out of step with the rest, and what is measured here
+        # is then the clock, not the recorder.
+        pytest.skip(f"the system clock stepped by {stepped:.1f} s during the run")
     assert why == "stopped", why  # a recording cut short would only match its own shorter journal
     elapsed = time.monotonic() - began_steady  # a clock the journal's own times do not feed
     # The video begins at the first picture (the recorder lets the page settle first), so its
     # real length is counted from there, not from the moment the recorder was asked to start.
     entries, ended = read_index(session)
     span = ended - entries[0].t
-    # The journal's span must agree with an independent clock, less the settle before the first
-    # picture: a recorder that stopped early would write a short span the encoder then matched.
-    assert elapsed - 1.5 <= span <= elapsed + 0.5, (span, elapsed)
+    # The journal's span must agree with an independent clock: the run, less the time the page
+    # took to give its first picture (measured here, so a slow or busy machine does not fail it).
+    # A recorder that stopped early would write a short span the encoder then matched.
+    startup = ready_at[0] - began_steady
+    assert elapsed - startup - 1.0 <= span <= elapsed - startup + 1.0, (span, elapsed, startup)
     assert elapsed >= seconds - 0.3, (elapsed, seconds)
     return session, span, page
 
