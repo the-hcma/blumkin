@@ -3487,6 +3487,9 @@ def open_driver(
                 browser = playwright.chromium.connect_over_cdp(websocket, timeout=timeout_s * 1000)
             except _playwright_error() as exc:
                 last = exc
+                _recover_from_no_page(
+                    exc, endpoint, open_page, timeout_s, retry_left=attempt + 1 < attempts
+                )
                 continue
             return _driver_for(
                 browser,
@@ -3508,6 +3511,33 @@ def open_driver(
 
 
 _DISCOVERY_TIMEOUT_S = 3.0
+_NO_CONTEXT_MARKER = "Browser context management is not supported"
+
+
+def _recover_from_no_page(
+    exc: Exception, endpoint: str, open_page: bool, timeout_s: float, *, retry_left: bool
+) -> None:
+    """Deal with a browser that has no tab, which Playwright cannot attach to at all.
+
+    Its connect fails with a protocol error about browser context management (it sets up
+    downloads on a context that does not exist) when the last tab was closed. With no page
+    target the browser is given a blank tab over DevTools, so the next attempt attaches;
+    a read-only attach (`open_page` off) must not change the browser, so it says there is no
+    page instead, whether or not an attempt is left. A tab is opened only when another attempt
+    follows to use it. Any other failure is left to the retry loop.
+    """
+    if _NO_CONTEXT_MARKER not in str(exc):
+        return
+    if count_page_targets(endpoint, min(timeout_s, _DISCOVERY_TIMEOUT_S)) != 0:
+        return  # it has a page: the failure is something else
+    if not open_page:
+        raise BrowserNoPageError(
+            f"Expected an open page in the browser at {endpoint}, got none (not opening one)"
+        )
+    if not retry_left:
+        return  # a tab opened now would be left behind with nothing to attach to it
+    with contextlib.suppress(OSError, ValueError):
+        _open_blank_target(endpoint, min(timeout_s, _DISCOVERY_TIMEOUT_S))
 
 
 _POLL_MS = 250

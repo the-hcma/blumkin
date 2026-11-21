@@ -4614,3 +4614,97 @@ def test_a_request_that_stays_open_for_the_life_of_the_page_is_not_waited_for(
     page.fire("request", _NetRequest(kind=kind))
     driver.wait_network_quiet()
     assert page.now < 2.0
+
+
+_NO_CONTEXT = "BrowserType.connect_over_cdp: Browser context management is not supported."
+
+
+def _browser_with_targets(
+    monkeypatch: pytest.MonkeyPatch, targets: list[dict[str, Any]]
+) -> list[str]:
+    """Make DevTools report `targets`; returns the endpoints a blank tab was requested on."""
+    from blumkin.browser import cdp
+
+    opened: list[str] = []
+    monkeypatch.setattr(cdp, "_fetch_targets", lambda endpoint, timeout: targets)
+    monkeypatch.setattr(
+        cdp, "_open_blank_target", lambda endpoint, timeout: opened.append(endpoint)
+    )
+    return opened
+
+
+def _attach_failing(pw: _Playwright, **kwargs: Any) -> Any:
+    return open_driver(
+        "http://127.0.0.1:40123",
+        factory=lambda: pw,
+        fetch_version=_good_version,
+        sleep=lambda seconds: None,
+        **kwargs,
+    )
+
+
+def test_open_driver_gives_a_tab_to_a_browser_that_has_none_and_attaches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pw = _Playwright()
+    pw.failures = [PlaywrightError(_NO_CONTEXT)]
+    opened = _browser_with_targets(monkeypatch, [])  # no page at all
+
+    driver = _attach_failing(pw)
+
+    assert opened == ["http://127.0.0.1:40123"] and len(pw.connects) == 2
+    driver.close()
+
+
+def test_a_read_only_attach_to_a_browser_with_no_tab_says_so_and_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser.cdp import BrowserNoPageError
+
+    pw = _Playwright()
+    pw.failures = [PlaywrightError(_NO_CONTEXT)]
+    opened = _browser_with_targets(monkeypatch, [])
+
+    with pytest.raises(BrowserNoPageError):
+        _attach_failing(pw, open_page=False)
+
+    assert opened == []
+
+
+def test_the_context_error_with_a_tab_open_is_left_to_the_retry_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pw = _Playwright()
+    pw.failures = [PlaywrightError(_NO_CONTEXT)] * 5
+    opened = _browser_with_targets(monkeypatch, [{"type": "page"}])
+
+    with pytest.raises(BrowserAttachError):
+        _attach_failing(pw, attempts=3)
+
+    assert opened == []
+
+
+def test_no_tab_is_opened_when_no_attempt_is_left_to_use_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pw = _Playwright()
+    pw.failures = [PlaywrightError(_NO_CONTEXT)] * 3
+    opened = _browser_with_targets(monkeypatch, [])
+
+    with pytest.raises(BrowserAttachError):
+        _attach_failing(pw, attempts=1)
+
+    assert opened == []  # the only attempt failed: a tab now would just be left behind
+
+
+def test_a_read_only_attach_still_reports_no_page_on_its_only_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blumkin.browser.cdp import BrowserNoPageError
+
+    pw = _Playwright()
+    pw.failures = [PlaywrightError(_NO_CONTEXT)]
+    _browser_with_targets(monkeypatch, [])
+
+    with pytest.raises(BrowserNoPageError):
+        _attach_failing(pw, attempts=1, open_page=False)
