@@ -870,7 +870,9 @@ def test_the_safety_net_is_installed_once_and_released_on_detach() -> None:
     assert context.unrouted == [context.routes[0]]
 
 
-def _swallow_a_post(driver: Any, page: Any) -> None:
+def _swallow_a_post(
+    driver: Any, page: Any, *, from_child_frame: bool = False, navigation: bool = True
+) -> None:
     """Send a form post from `page` through the installed net, as the browser would."""
     from types import SimpleNamespace
 
@@ -878,10 +880,12 @@ def _swallow_a_post(driver: Any, page: Any) -> None:
         method="POST",
         url="https://erp.example.com/x",
         headers={},
-        frame=SimpleNamespace(page=page, parent_frame=None),
-        is_navigation_request=lambda: True,
+        frame=SimpleNamespace(page=page, parent_frame=object() if from_child_frame else None),
+        is_navigation_request=lambda: navigation,
     )
-    driver._net_handler(SimpleNamespace(request=request, fulfill=lambda **_: None))
+    driver._net_handler(
+        SimpleNamespace(request=request, fulfill=lambda **_: None, continue_=lambda: None)
+    )
 
 
 class _NamedPage:
@@ -4708,3 +4712,289 @@ def test_a_read_only_attach_still_reports_no_page_on_its_only_attempt(
 
     with pytest.raises(BrowserNoPageError):
         _attach_failing(pw, attempts=1, open_page=False)
+
+
+def test_the_sign_in_pass_stays_while_the_block_ends_on_a_sign_in_page() -> None:
+    pw, driver = _driver()
+    pw.page.url = "https://login.example.net/sso"
+
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass  # `goto --sign-in-wait 0`: the block ends while the login is still running
+
+    assert pw.page.context is not None
+    assert pw.page.context.unrouted == []  # the identity provider's next post is still let through
+
+
+def test_the_sign_in_pass_ends_when_the_block_ends_on_the_applications_page() -> None:
+    pw, driver = _driver()
+    pw.page.url = "https://app.example.com/home"
+
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+
+    assert pw.page.context is not None
+    assert len(pw.page.context.unrouted) == 1
+
+
+def test_the_next_sign_in_pass_replaces_a_lingering_one_by_removing_that_handler() -> None:
+    pw, driver = _driver()
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    context = pw.page.context
+    assert context is not None
+    first = context.routes[-1][1]
+    pw.page.url = "https://app.example.com/home"
+
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+
+    assert [handler for _, handler in context.unrouted][0] is first  # the old pass, first
+    assert len(context.unrouted) == 2  # then the new one's own
+
+
+def test_a_login_post_in_flight_is_not_cancelled_when_the_driver_detaches_mid_login() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+
+    driver.close()
+
+    assert not any("stopLoading" in event for event in context.events)  # nothing stopped
+
+
+def test_a_post_the_net_swallowed_is_still_cancelled_even_with_a_sign_in_pass_lingering() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    _swallow_a_post(driver, _named_page("a"))
+
+    driver.close()
+
+    assert "cdp:a:Page.stopLoading" in context.events  # a swallowed write must not go out
+    assert "cdp:page:Page.stopLoading" not in context.events  # the mid-login page is left alone
+
+
+def test_the_driven_page_is_cancelled_when_no_sign_in_pass_lingers() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://app.example.com/home"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" in context.events
+
+
+def test_an_old_swallowed_post_on_the_page_does_not_cancel_the_login_it_has_moved_on_to() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    _swallow_a_post(driver, pw.page)  # an application post swallowed on the driven page earlier
+    pw.page.url = "https://login.example.net/sso"  # which has since gone to the identity provider
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" not in context.events
+
+
+def test_the_driven_page_is_cancelled_when_it_has_left_the_sign_in_host_by_the_detach() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass  # the pass lingers...
+    pw.page.url = "https://app.example.com/form"  # ...but the caller went on to the application
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" in context.events  # a post on its way to the net is stopped
+
+
+def test_a_login_that_finishes_while_other_pages_are_stopped_makes_the_driven_page_stoppable() -> (
+    None
+):
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    _swallow_a_post(driver, _named_page("a"))
+    # While page "a" is being stopped the login finishes and the page goes to the application.
+    context.during_send = lambda: setattr(pw.page, "url", "https://app.example.com/form")
+
+    driver.close()
+
+    events = context.events
+    assert "cdp:a:Page.stopLoading" in events
+    assert events.index("cdp:page:Page.stopLoading") > events.index("cdp:a:Page.stopLoading")
+
+
+def test_the_next_sign_in_pass_is_installed_before_the_retained_one_is_removed() -> None:
+    pw, driver = _driver()
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    context = pw.page.context
+    assert context is not None
+    order: list[str] = []
+    real_route, real_unroute = context.route, context.unroute
+    context.route = lambda pattern, handler: (order.append("route"), real_route(pattern, handler))[
+        1
+    ]  # type: ignore[method-assign]
+    context.unroute = lambda pattern, handler: (
+        order.append("unroute"),
+        real_unroute(pattern, handler),
+    )[1]  # type: ignore[method-assign]
+    pw.page.url = "https://app.example.com/home"
+
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+
+    assert order[:2] == ["route", "unroute"]  # the new pass is in before the old one goes
+
+
+def test_a_failed_registration_leaves_the_retained_sign_in_pass_in_place() -> None:
+    pw, driver = _driver()
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    context = pw.page.context
+    assert context is not None
+
+    def refuse(pattern: str, handler: Any) -> None:
+        raise PlaywrightError("route refused")
+
+    context.route = refuse  # type: ignore[method-assign]
+
+    with pytest.raises(BrowserActionError):
+        with driver.sign_in_pass(lambda host: host == "login.example.net"):
+            pass
+
+    assert context.unrouted == []  # the retained pass is still there
+
+
+def test_a_post_swallowed_from_a_frame_on_the_sign_in_page_is_still_cancelled() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    # An application form inside a frame of the sign-in page was swallowed by the net.
+    _swallow_a_post(driver, pw.page, from_child_frame=True)
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" in context.events  # its document is still there: stopped
+
+
+def test_a_frame_write_swallowed_on_the_application_does_not_cancel_the_login_it_moved_on_to() -> (
+    None
+):
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://app.example.com/form"
+    _swallow_a_post(driver, pw.page, from_child_frame=True)  # while the page was on the application
+    pw.page.url = "https://login.example.net/sso"  # which has since gone to the identity provider
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" not in context.events  # the left document's write is moot
+
+
+def test_a_top_level_post_swallowed_on_the_sign_in_page_itself_is_still_cancelled() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    # A navigation out of the sign-in page that the pass did not allow, swallowed by the net.
+    _swallow_a_post(driver, pw.page)
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" in context.events  # it must not go out with the route
+
+
+def test_a_background_post_the_net_lets_through_leaves_the_login_exempt() -> None:
+    pw, driver = _driver()
+    driver.block_form_submission()
+    context = pw.browser.contexts[0]
+    pw.page.url = "https://login.example.net/sso"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    # A background request from an application frame: continued, not swallowed, nothing pending.
+    _swallow_a_post(driver, pw.page, from_child_frame=True, navigation=False)
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" not in context.events
+
+
+def _driver_with_document_events() -> tuple[Any, Any, Any, list[Any]]:
+    page = _Page()
+    listeners: list[Any] = []
+    page.on = lambda event, callback: listeners.append((event, callback))  # type: ignore[attr-defined]
+    pw = _Playwright(page)
+    pw, driver = _driver(pw)
+    return pw, driver, page, listeners
+
+
+def _fire(listeners: list[Any], event: str) -> None:
+    for name, callback in listeners:
+        if name == event:
+            callback(object())
+
+
+def _swallow_on_the_sign_in_page(driver: Any, page: Any) -> None:
+    driver.block_form_submission()
+    page.url = "https://login.example.net/a"
+    with driver.sign_in_pass(lambda host: host == "login.example.net"):
+        pass
+    _swallow_a_post(driver, page, from_child_frame=True)  # swallowed in sign-in document A
+
+
+def test_a_new_document_on_the_page_forgets_the_writes_swallowed_in_the_old_one() -> None:
+    pw, driver, page, listeners = _driver_with_document_events()
+    context = pw.browser.contexts[0]
+    _swallow_on_the_sign_in_page(driver, page)
+    _fire(listeners, "domcontentloaded")  # sign-in document B has loaded
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" not in context.events  # B's login post is left alone
+
+
+def test_a_same_document_navigation_does_not_forget_a_swallowed_write() -> None:
+    pw, driver, page, listeners = _driver_with_document_events()
+    context = pw.browser.contexts[0]
+    _swallow_on_the_sign_in_page(driver, page)
+    _fire(listeners, "framenavigated")  # pushState or a hash change: no new document
+
+    driver.close()
+
+    assert "cdp:page:Page.stopLoading" in context.events  # the document and its write remain
+
+
+def test_new_documents_are_watched_through_domcontentloaded_not_framenavigated() -> None:
+    _, _, _, listeners = _driver_with_document_events()
+    names = [name for name, _ in listeners]
+
+    assert "domcontentloaded" in names and "framenavigated" not in names
