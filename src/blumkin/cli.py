@@ -3981,6 +3981,15 @@ def browser_record_clip(
     "--within",
     help="Capture one element, as ROLE or ROLE:NAME (for example dialog), not the viewport.",
 )
+@click.option(
+    "--mask",
+    multiple=True,
+    metavar="ROLE[:NAME]",
+    help=(
+        "Cover every element with this role (and exact name, when given) with a solid bar "
+        "before the picture is kept; repeat it. A mask that matches nothing refuses the capture."
+    ),
+)
 @click.option("--full-page", is_flag=True, help="Capture the whole scrollable page.")
 @click.option(
     "--max-width",
@@ -4000,6 +4009,7 @@ def browser_screenshot(
     ctx: click.Context,
     task: str,
     within: str | None,
+    mask: tuple[str, ...],
     full_page: bool,
     max_width: int,
     out: Path | None,
@@ -4017,10 +4027,12 @@ def browser_screenshot(
             full_page=full_page,
             max_width=max_width,
             out=out,
+            mask=mask,
         ),
         "screenshot taken",
         notes=lambda p: [
             f"  {p['path']}  ({p['width']}x{p['height']}, {p['bytes']} bytes)",
+            *([f"  covered by {p['masks']} mask option(s)"] if p["masks"] else []),
             f"  {p['untrusted']}",
         ],
     )

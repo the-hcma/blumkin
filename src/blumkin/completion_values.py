@@ -87,6 +87,20 @@ def waiting_item_ids(
 
 # --- browser: task names, ledger instances, model pages, roles (the browser commands) ---------
 
+#: Roles an element can be searched by in `--mask ROLE[:NAME]`: where a name or an amount shows.
+_MASK_ROLES = (
+    "cell",
+    "columnheader",
+    "gridcell",
+    "heading",
+    "img",
+    "link",
+    "listitem",
+    "row",
+    "rowheader",
+    "textbox",
+)
+
 #: Roles an element can be searched by in `--within ROLE[:NAME]`: the containers people read.
 _WITHIN_ROLES = (
     "alertdialog",
@@ -209,6 +223,13 @@ def model_page_ids(
     ]
 
 
+def mask_roles(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+    """The roles `--mask ROLE[:NAME]` takes: what a screenshot can cover (name: the page's)."""
+    if ":" in incomplete:
+        return []
+    return [CompletionItem(role) for role in _MASK_ROLES if role.startswith(incomplete)]
+
+
 def within_roles(
     ctx: click.Context, param: click.Parameter, incomplete: str
 ) -> list[CompletionItem]:
@@ -299,6 +320,7 @@ _WIRING: tuple[tuple[str, str, object, tuple[tuple[str, ...], ...]], ...] = (
     ("argument", "page_id", model_page_ids, (("browser",),)),
     ("option", "--role", browser_roles, (("browser",),)),
     ("option", "--within", within_roles, (("browser",),)),
+    ("option", "--mask", mask_roles, (("browser",),)),
     ("option", "--profile", profile_names, ()),
     ("option", "--tz", time_zones, ()),
     ("option", "--folder", mail_folders, (("mail", "list"),)),

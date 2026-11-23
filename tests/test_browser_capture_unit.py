@@ -89,9 +89,14 @@ class _Page:
         return _jpeg(self.frames * 10 % 250)
 
     def screenshot_png(
-        self, *, role: str | None = None, name: str | None = None, full_page: bool = False
+        self,
+        *,
+        role: str | None = None,
+        name: str | None = None,
+        full_page: bool = False,
+        masks: Any = (),
     ) -> bytes:
-        self.shots.append({"role": role, "name": name, "full_page": full_page})
+        self.shots.append({"role": role, "name": name, "full_page": full_page, "masks": masks})
         return _png()
 
 
@@ -152,12 +157,12 @@ def test_a_screenshot_never_reports_the_pages_query_or_fragment(
 
 def test_within_captures_one_element_by_role_and_name(tmp_path: Path, page: _Page) -> None:
     capture.screenshot_task(_setup(tmp_path), "time-sheet", within="dialog:Add Item")
-    assert page.shots == [{"role": "dialog", "name": "Add Item", "full_page": False}]
+    assert page.shots == [{"role": "dialog", "name": "Add Item", "full_page": False, "masks": ()}]
 
 
 def test_full_page_asks_for_the_whole_page(tmp_path: Path, page: _Page) -> None:
     capture.screenshot_task(_setup(tmp_path), "time-sheet", full_page=True)
-    assert page.shots == [{"role": None, "name": None, "full_page": True}]
+    assert page.shots == [{"role": None, "name": None, "full_page": True, "masks": ()}]
 
 
 def test_within_and_full_page_together_are_refused(tmp_path: Path, page: _Page) -> None:
@@ -354,10 +359,43 @@ def test_the_screenshot_command_passes_its_options_and_prints_the_result(
     assert seen == {
         "task": "time-sheet",
         "within": "dialog",
+        "mask": (),
         "full_page": False,
         "max_width": 1600,
         "out": Path("/tmp/a.png"),
     }
+
+
+def test_the_screenshot_command_passes_every_mask_and_says_how_many_covered_it(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake(setup: Any, task: str, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs)
+        return {
+            "ok": True,
+            "path": "/x/y.png",
+            "width": 1,
+            "height": 2,
+            "bytes": 3,
+            "masks": 2,
+            "untrusted": "n",
+        }
+
+    monkeypatch.setattr("blumkin.cli.screenshot_task", fake)
+    result = _run(
+        "browser", "screenshot", "time-sheet", "--mask", "cell", "--mask", "heading:Ada: Lovelace"
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["mask"] == ("cell", "heading:Ada: Lovelace")
+    assert json.loads(result.output)["masks"] == 2  # the machine-readable result says how many
+    # and the plain text does too (without --json)
+    text = CliRunner().invoke(
+        main, ["browser", "screenshot", "time-sheet", "--mask", "cell", "--mask", "row"]
+    )
+    assert text.exit_code == 0, text.output
+    assert "covered by 2 mask option(s)" in text.output
 
 
 def test_a_capture_refusal_is_reported_as_host_blocked(
@@ -706,3 +744,55 @@ def test_a_frame_event_that_arrives_only_during_the_settle_wait_is_still_counted
         capture.screenshot_task(_setup(tmp_path), "time-sheet")
 
     assert not list((tmp_path / "captures" / "time-sheet").glob("*.png"))
+
+
+# --- covering what must not be shown (#806) ---------------------------------------------------
+
+
+def test_each_mask_is_parsed_and_handed_to_the_driver(tmp_path: Path, page: _Page) -> None:
+    result = capture.screenshot_task(
+        _setup(tmp_path), "time-sheet", mask=["cell", "heading:Ada: Lovelace"]
+    )
+
+    assert page.shots[0]["masks"] == (("cell", None), ("heading", "Ada: Lovelace"))
+    assert result["masks"] == 2
+
+
+def test_a_screenshot_with_no_mask_reports_none(tmp_path: Path, page: _Page) -> None:
+    assert capture.screenshot_task(_setup(tmp_path), "time-sheet")["masks"] == 0
+
+
+@pytest.mark.parametrize(
+    ("spec", "parsed"),
+    [
+        ("cell", ("cell", None)),
+        ("img", ("img", None)),
+        ("textbox", ("textbox", None)),
+        ("heading:Ada Lovelace", ("heading", "Ada Lovelace")),
+        (
+            "Heading: Total: 12",
+            ("heading", "Total: 12"),
+        ),  # the role is folded, the name may hold colons
+    ],
+)
+def test_the_roles_the_guide_and_completion_offer_are_accepted_as_masks(
+    spec: str, parsed: tuple[str, str | None]
+) -> None:
+    assert capture.parse_mask(spec) == parsed
+
+
+@pytest.mark.parametrize("spec", ["", "two words", "Bad!Role", ":name"])
+def test_a_mask_that_is_not_a_role_is_refused_before_the_browser_is_touched(
+    tmp_path: Path, page: _Page, spec: str
+) -> None:
+    with pytest.raises(ValueError, match="--mask"):
+        capture.screenshot_task(_setup(tmp_path), "time-sheet", mask=[spec])
+
+    assert page.shots == []
+
+
+def test_too_many_masks_are_refused(tmp_path: Path, page: _Page) -> None:
+    with pytest.raises(ValueError, match="at most"):
+        capture.screenshot_task(
+            _setup(tmp_path), "time-sheet", mask=["cell"] * (capture.MASKS_MAX + 1)
+        )

@@ -631,6 +631,8 @@ def _without_fragment(address: str) -> str:
 
 
 _PUMP_MAX_FRAMES = 120
+#: The colour of the bar a mask draws.
+_MASK_COLOR = "#000000"
 
 
 def _paint_time(params: dict[str, Any]) -> float:
@@ -2257,9 +2259,24 @@ class PlaywrightDriver:
         return str(self._page.url)
 
     def screenshot_png(
-        self, *, role: str | None = None, name: str | None = None, full_page: bool = False
+        self,
+        *,
+        role: str | None = None,
+        name: str | None = None,
+        full_page: bool = False,
+        masks: Sequence[tuple[str, str | None]] = (),
     ) -> bytes:
         """A PNG of the page's viewport, of the whole page, or of one element found by role.
+
+        Each of `masks` (a role and, optionally, an exact accessible name) is covered by a solid
+        black bar over every element it matches. The browser's own screenshot draws the bars, in
+        the same render as the pixels, so a fixed or sticky element, a full-page picture and any
+        number of matches are all covered where they are drawn. Each bar is placed once, as the
+        picture starts, so an element that moves during the picture itself is not followed, and a
+        bar covers the element's own box, so text that overflows it is not covered. The bar is
+        one overlay element that exists only while the picture is taken, and nothing the
+        page holds is changed. A mask that matches no element refuses the capture before any
+        picture is taken, so what it was meant to hide is never left in view.
 
         Taken at the display's own pixel size and shrunk afterwards by the caller: asking the
         browser for CSS pixels makes Chromium resize the page around every shot, which flickers
@@ -2270,14 +2287,7 @@ class PlaywrightDriver:
         try:
             with self._bounded(self._call_deadline_s(), "take a screenshot"):
                 if role is None:
-                    return bytes(
-                        self._page.screenshot(
-                            type="png",
-                            full_page=full_page,
-                            caret="initial",  # leave the page's own styles alone
-                            timeout=self._timeout_ms,
-                        )
-                    )
+                    return self._masked_shot(full_page, masks)
                 target = (
                     self._page.get_by_role(role, name=name, exact=True)
                     if name
@@ -2289,9 +2299,55 @@ class PlaywrightDriver:
                         if name
                         else f"Expected a {role} to capture, got none"
                     )
-                return self._element_png(target.first)
+                return self._element_png(target.first, masks)
         except _playwright_error() as exc:
             raise self._action_error("take a screenshot", exc) from exc
+
+    def _masked_shot(self, full_page: bool, masks: Sequence[tuple[str, str | None]]) -> bytes:
+        """The viewport (or the whole page) as a PNG, with the masked elements covered."""
+        covered = []
+        before: list[int] = []
+        for role, name in masks:
+            # Elements marked aria-hidden are included: they can still be painted, and a mask
+            # that skipped them would leave a name in view that its role and name describe.
+            target = (
+                self._page.get_by_role(role, name=name, exact=True, include_hidden=True)
+                if name
+                else self._page.get_by_role(role, include_hidden=True)
+            )
+            found = target.count()
+            if found == 0:
+                raise BrowserActionError(
+                    f"Expected an element to mask ({role}{':' + name if name else ''}), got "
+                    "none; nothing was captured, so the thing it should hide is not left in view"
+                )
+            covered.append(target)
+            before.append(found)
+        options: dict[str, Any] = {}
+        if covered:
+            options = {"mask": covered, "mask_color": _MASK_COLOR}
+        shot = bytes(
+            self._page.screenshot(
+                type="png",
+                full_page=full_page,
+                caret="initial",  # leave the page's own styles alone
+                timeout=self._timeout_ms,
+                **options,
+            )
+        )
+        # The browser looks the elements up again as the picture starts: one that stopped
+        # matching in between (its name changed, it was removed) is then not covered, and the
+        # picture would show what it was meant to hide. Only a change in HOW MANY elements a
+        # mask matches is caught here (and refused, not kept): one element that stops matching
+        # while another takes its place, or one that is gone only for the instant between the
+        # two counts, is not.
+        if [target.count() for target in covered] != before:
+            raise BrowserActionError(
+                "Expected each mask to match as many elements after the picture was taken as "
+                "before, got a page where a count changed; nothing was captured, so look at "
+                "the page and try again"
+            )
+        return shot
 
     def _detach_quietly(self, session: Any) -> None:
         """Release a DevTools session that did not get going, if the connection still answers."""
@@ -2303,17 +2359,18 @@ class PlaywrightDriver:
         ):
             session.detach()
 
-    def _element_png(self, element: Any) -> bytes:
+    def _element_png(self, element: Any, masks: Sequence[tuple[str, str | None]] = ()) -> bytes:
         """A PNG of one element, cut out of a picture of the viewport.
 
         Asking the browser for an element's own picture can scroll the page after the bounds were
         checked (it did, when the element moved), so the pixels of the viewport are taken and the
-        checked box is cropped from them: nothing is scrolled.
+        checked box is cropped from them: nothing is scrolled. The masks are painted on the
+        viewport picture before the crop, so a masked element inside the one captured is covered.
         """
         from PIL import Image
 
         box = self._require_in_view(element)
-        shot = bytes(self._page.screenshot(type="png", caret="initial", timeout=self._timeout_ms))
+        shot = self._masked_shot(False, masks)
         scale = float(self._page.evaluate("window.devicePixelRatio") or 1.0)
         with Image.open(io.BytesIO(shot)) as image:
             crop = image.crop(

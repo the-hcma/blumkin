@@ -29,7 +29,7 @@ import json
 import os
 import shutil
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,8 @@ CAPTURE_NOTE = (
 )
 #: The most a full-page screenshot may be, in bytes: a very long page is refused, not truncated.
 SCREENSHOT_MAX_BYTES = 25_000_000
+#: The most `--mask` options one screenshot takes.
+MASKS_MAX = 20
 #: How long a capture waits at its end for a frame event that is still on its way.
 _EVENT_SETTLE_MS = 50
 #: A screenshot wider than this is shrunk to it (after it is taken, so the page is never touched).
@@ -208,6 +210,16 @@ def _prune_locked(directory: Path, older_than_s: float) -> int:
     return removed
 
 
+def parse_mask(spec: str) -> tuple[str, str | None]:
+    """`ROLE` or `ROLE:NAME` of an element to cover, as (role, name)."""
+    try:
+        return parse_within(spec)
+    except ValueError:
+        raise ValueError(
+            f"Expected --mask as ROLE or ROLE:NAME (a heading, say), got {spec!r}"
+        ) from None
+
+
 def validate_task_segment(task: str) -> None:
     """Refuse a task name that is not one plain path segment (`..`, `a/b`, an absolute path)."""
     if not task or task != Path(task).name or task in (".", ".."):
@@ -251,8 +263,16 @@ def screenshot_task(
     max_width: int = SCREENSHOT_MAX_WIDTH,
     out: Path | None = None,
     now: Callable[[], datetime] | None = None,
+    mask: Sequence[str] = (),
 ) -> dict[str, Any]:
     """A PNG of the task's page, written privately; its path and size are returned.
+
+    Each `mask` (`ROLE` or `ROLE:NAME`) is covered by a solid black bar over everything it
+    matches on the page (a heading with a person's name, an amount cell). The browser's own
+    screenshot draws the bars in the same render as the pixels, so a fixed element, a full-page
+    picture and any number of matches are covered where they are drawn; the bar is one overlay
+    element that exists only while the picture is taken, and nothing the page holds is changed.
+    A mask that matches nothing refuses the capture before any picture is taken.
 
     An image wider than `max_width` pixels is shrunk to it once it is taken (0 keeps the
     display's own size), so a large or retina screen does not cost an agent more than it needs.
@@ -270,6 +290,9 @@ def screenshot_task(
     if out is not None and out.exists():
         raise ValueError(f"Expected a file that does not exist yet, got {out}")
     role, name = parse_within(within) if within is not None else (None, None)
+    masks = tuple(parse_mask(spec) for spec in mask)
+    if len(masks) > MASKS_MAX:
+        raise ValueError(f"Expected at most {MASKS_MAX} --mask options, got {len(masks)}")
     hosts = _declared_hosts(config, task)
     sign_in_hosts = sign_in_hosts_for(config, task)
     page = _attach_for_capture(config, task)
@@ -283,7 +306,7 @@ def screenshot_task(
             documents = page.frame_signature()
             _require_capturable(page.url, task, hosts, sign_in_hosts)
             _require_no_sign_in_frame(page.frame_hosts(), sign_in_hosts)
-            data = page.screenshot_png(role=role, name=name, full_page=full_page)
+            data = page.screenshot_png(role=role, name=name, full_page=full_page, masks=masks)
             # The page may have moved while the pixels were taken: refuse a result that may
             # belong to a page the first check never saw.
             _require_capturable(page.url, task, hosts, sign_in_hosts, "capturing")
@@ -314,6 +337,7 @@ def screenshot_task(
         "action": "screenshot",
         "bytes": len(data),
         "height": height,
+        "masks": len(masks),
         "ok": True,
         "path": str(path),
         "task": task,
