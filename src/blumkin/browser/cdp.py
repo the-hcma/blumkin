@@ -664,9 +664,16 @@ class PlaywrightDriver:
         self._existing_frames = existing_frames
         self._navigation_handler: Any = None
         self._net_handler: Any = None
+        self._lingering_sign_in: tuple[Any, Callable[[str], bool]] | None = None
         self._uploading = False
         self._upload_posts = 0
         self._swallowed_pages: dict[Any, int] = {}
+        #: The hosts a page was on when the net swallowed a write on it (from any frame). A write
+        #: swallowed while the page was on a sign-in host belongs to a document that is still
+        #: there; one swallowed earlier, on the application, belongs to a document the page has
+        #: left.
+        self._swallowed_hosts: dict[Any, set[str]] = {}
+        self._watch_documents(page)
         self._lenient_net = _remembering_writes(
             _navigation_net(
                 page,
@@ -674,8 +681,11 @@ class PlaywrightDriver:
                 self._count_upload_post,
             ),
             self._swallowed_pages,
+            self._swallowed_hosts,
         )
-        self._strict_net = _remembering_writes(_abort_every_write, self._swallowed_pages)
+        self._strict_net = _remembering_writes(
+            _abort_every_write, self._swallowed_pages, self._swallowed_hosts
+        )
         self._page = page
         self._playwright = playwright
         self._timeout_ms = timeout_s * 1000
@@ -786,23 +796,38 @@ class PlaywrightDriver:
         """Stop loading on the page this driver drives and on any page the net saw a write on.
 
         A post that is still on its way to the net has not been recorded yet, which is why the
-        driven page is always included. The user's other tabs keep whatever they are loading. It
-        goes through the DevTools protocol, not a script in the page, because a page can replace
-        `window.stop`. Each page gets its own deadline, so a stalled tab cannot hold up the
-        detach, and a page that cannot be reached is skipped while the rest are still stopped
-        (best effort: there is nothing to raise on the way out).
+        driven page is included even when no write was seen on it. The one exception is a page
+        that is mid-login (a sign-in pass lingers and the page is on a sign-in host now): its
+        pending load is the identity provider's own post, which the pass let through, and a
+        write the net swallowed on it before it reached the sign-in host belonged to a document it
+        has left. A write swallowed while it was on a sign-in host is not exempt: that document
+        is still there. The user's
+        other tabs keep whatever they are loading. It goes through the DevTools protocol, not a
+        script in the page, because a page can replace `window.stop`. Each page gets its own
+        deadline, so a stalled tab cannot hold up the detach, and a page that cannot be reached
+        is skipped while the rest are still stopped (best effort: there is nothing to raise on
+        the way out).
         """
         done: dict[Any, int] = {}
         passes: dict[Any, int] = {}
         while True:
+            # Read again on every pass: a login that finishes while another page is being
+            # stopped makes this page an ordinary one again, and it is stopped like any other.
+            # A page mid-login is left alone only while the net holds no write it swallowed while
+            # the page was on a sign-in host (an application form in a frame of a sign-in page, or
+            # a navigation the pass did not allow): that document is still there, and its write
+            # must not go out when the route does.
+            mid_login = self._mid_login() and not self._write_swallowed_on_sign_in_page()
+            driven = [] if mid_login else [self._page]
             # A write that reaches the net while pages are being stopped, from a new page or
             # from one already stopped, makes that page pending again: the writes seen per page
             # are compared after every page, before the net is removed. A page that keeps
             # writing is stopped at most `_CANCEL_PASSES_MAX` times, and the page stopped the
             # fewest times goes first, so one busy page cannot starve the others or the detach.
+            others = [p for p in self._swallowed_pages if not (mid_login and p == self._page)]
             pending = [
                 p
-                for p in dict.fromkeys([self._page, *self._swallowed_pages])
+                for p in dict.fromkeys([*driven, *others])
                 if (p not in done or done[p] != self._swallowed_pages.get(p, 0))
                 and passes.get(p, 0) < _CANCEL_PASSES_MAX
             ]
@@ -1647,7 +1672,11 @@ class PlaywrightDriver:
 
         A login form POST, or the identity provider's POST back to the site, would otherwise be
         answered with an empty page and the sign-in could never finish. Only a request that goes
-        to a sign-in host or comes from a page on one is let through, and only inside this block.
+        to a sign-in host or comes from a page on one is let through, and only for the block,
+        except that a block which ends with the page still on a sign-in host (a `goto` that did
+        not wait for the login to finish) leaves the pass in place until this connection ends or
+        the next pass replaces it, and a detach in that state leaves the page's loading alone,
+        so the login's own post is neither swallowed nor cancelled.
         With ``is_task_host``, a top-level navigation out of a sign-in page may go only to a
         sign-in host or a task host; any other is left to the navigation guard.
         """
@@ -1657,11 +1686,68 @@ class PlaywrightDriver:
             self._context.route("**/*", handler)
         except _playwright_error() as exc:
             raise self._action_error("let the sign-in through", exc) from exc
+        # Only now the retained pass goes: with the replacement already in, a login post is never
+        # without one, and a failed registration above leaves the retained pass as it was.
+        self._drop_lingering_sign_in()
         try:
             yield
         finally:
+            if self._on_sign_in_page(is_sign_in_host):
+                # The block ends mid-login (`goto --sign-in-wait 0`, or a wait that ran out):
+                # the identity provider's page posts its login form a moment later, while the
+                # command is still cleaning up, and the safety net would answer that post with an
+                # empty page and cancel it, which left the sign-in blank (#808). The pass stays
+                # until this connection ends or the next pass replaces it.
+                self._lingering_sign_in = (handler, is_sign_in_host)
+            else:
+                with contextlib.suppress(_playwright_error()):
+                    self._context.unroute("**/*", handler)
+
+    def _drop_lingering_sign_in(self) -> None:
+        lingering, self._lingering_sign_in = self._lingering_sign_in, None
+        if lingering is not None:
             with contextlib.suppress(_playwright_error()):
-                self._context.unroute("**/*", handler)
+                self._context.unroute("**/*", lingering[0])
+
+    def _watch_documents(self, page: Any) -> None:
+        """Forget the swallowed writes of a page when it loads a new document.
+
+        A write swallowed in one sign-in document no longer needs cancelling once another one
+        replaces it. The page's `domcontentloaded` event is used, not `framenavigated`: that one
+        also fires for a same-document change (`pushState`, a hash change), which keeps the
+        document and its pending write. The records of frames that remain in the new document
+        are made after it loads, so they are kept; a write swallowed in the short stretch
+        between the commit and that event is forgotten with the old ones, which at worst leaves
+        one swallowed post uncancelled when the next document is itself a sign-in page.
+        """
+
+        def loaded(_: Any = None) -> None:
+            self._swallowed_hosts.pop(page, None)
+
+        listen = getattr(page, "on", None)
+        if listen is not None:
+            with contextlib.suppress(_playwright_error()):
+                listen("domcontentloaded", loaded)
+
+    def _write_swallowed_on_sign_in_page(self) -> bool:
+        """Whether a write was swallowed, from any frame, while the page was on a sign-in host."""
+        lingering = self._lingering_sign_in
+        if lingering is None:
+            return False
+        return any(lingering[1](host) for host in self._swallowed_hosts.get(self._page, ()))
+
+    def _mid_login(self) -> bool:
+        """Whether a sign-in pass lingers and the page is still on a sign-in host right now."""
+        lingering = self._lingering_sign_in
+        return lingering is not None and self._on_sign_in_page(lingering[1])
+
+    def _on_sign_in_page(self, is_sign_in_host: Callable[[str], bool]) -> bool:
+        """Whether the page is on a sign-in host now (False when that cannot be read)."""
+        try:
+            host = _web_host(str(self._page.url))
+        except _playwright_error(), AttributeError:
+            return False
+        return bool(host) and is_sign_in_host(host)
 
     def scroll_frame_text(
         self, is_allowed: Callable[[str], bool], *, max_steps: int, wait_s: float
@@ -4242,8 +4328,10 @@ def _log_swallowed(request: Any) -> None:
         return
 
 
-def _abort_every_write(route: Any) -> None:
+def _abort_every_write(route: Any) -> bool:
     """Strict mode: swallow any request that writes, navigation or background; pass the rest.
+
+    Returns whether the request was swallowed.
 
     Reads (GET, HEAD) and the OPTIONS preflight carry no form data and go through; the write
     that follows a preflight is the one answered with an empty `204`, so the server never
@@ -4251,14 +4339,15 @@ def _abort_every_write(route: Any) -> None:
     """
     if route.request.method in _READ_METHODS:
         route.continue_()
-    else:
-        _log_swallowed(route.request)
-        route.fulfill(status=204)
+        return False
+    _log_swallowed(route.request)
+    route.fulfill(status=204)
+    return True
 
 
 def _navigation_net(
     page: Any, uploading: Callable[[], bool], on_pass: Callable[[], None] | None = None
-) -> Callable[[Any], None]:
+) -> Callable[[Any], bool]:
     """The safety net for form posts, which lets a file upload's frame post through.
 
     While an `upload` runs, every multipart POST from a child frame to the page's own host is
@@ -4270,14 +4359,14 @@ def _navigation_net(
     one made while nothing uploads.
     """
 
-    def handler(route: Any) -> None:
+    def handler(route: Any) -> bool:
         request = route.request
         if uploading() and _is_frame_post_to_page_host(request, page):
             if on_pass is not None:
                 on_pass()
             route.continue_()
-            return
-        _abort_non_get_navigation(route)
+            return False
+        return _abort_non_get_navigation(route)
 
     return handler
 
@@ -4299,8 +4388,10 @@ def _is_frame_post_to_page_host(request: Any, page: Any) -> bool:
     return bool(host) and host == urlsplit(str(page.url)).hostname
 
 
-def _abort_non_get_navigation(route: Any) -> None:
+def _abort_non_get_navigation(route: Any) -> bool:
     """Swallow a page navigation that is not a GET (a form POST); let everything else through.
+
+    Returns whether the request was swallowed.
 
     The request is answered with an empty `204 No Content`, which tells the browser to stay
     on the current page. Aborting it instead would replace the page with an error page and
@@ -4310,24 +4401,37 @@ def _abort_non_get_navigation(route: Any) -> None:
     if request.is_navigation_request() and request.method not in ("GET", "HEAD"):
         _log_swallowed(request)
         route.fulfill(status=204)
-    else:
-        route.continue_()
+        return True
+    route.continue_()
+    return False
 
 
 def _remembering_writes(
-    handler: Callable[[Any], None], pages: dict[Any, int]
+    handler: Callable[[Any], bool | None],
+    pages: dict[Any, int],
+    write_hosts: dict[Any, set[str]] | None = None,
 ) -> Callable[[Any], None]:
-    """Wrap a net so the page of every write it sees is counted, for the cancel at detach."""
+    """Wrap a net so the page of every write it sees is counted, for the cancel at detach.
+
+    The host the page was on at that moment is kept too, in `write_hosts`, but only for a
+    write the net actually swallowed (a background request it let through leaves nothing
+    pending): the cancel must know whether a swallowed write's document can still be there
+    (the page was on a sign-in host) or was left when the page moved on.
+    """
 
     def wrapped(route: Any) -> None:
+        page = None
         try:
             request = route.request
             if request.method not in _READ_METHODS:
                 page = request.frame.page
                 pages[page] = pages.get(page, 0) + 1
         except AttributeError, _playwright_error():
-            pass
-        handler(route)
+            page = None
+        swallowed = handler(route)
+        if swallowed and page is not None and write_hosts is not None:
+            with contextlib.suppress(AttributeError, _playwright_error()):
+                write_hosts.setdefault(page, set()).add(_web_host(str(page.url)))
 
     return wrapped
 
