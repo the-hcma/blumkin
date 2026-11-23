@@ -61,6 +61,8 @@ CAPTURE_NOTE = (
 )
 #: The most a full-page screenshot may be, in bytes: a very long page is refused, not truncated.
 SCREENSHOT_MAX_BYTES = 25_000_000
+#: How long a capture waits at its end for a frame event that is still on its way.
+_EVENT_SETTLE_MS = 50
 #: A screenshot wider than this is shrunk to it (after it is taken, so the page is never touched).
 SCREENSHOT_MAX_WIDTH = 1600
 
@@ -257,8 +259,11 @@ def screenshot_task(
 
     `within` (`ROLE` or `ROLE:NAME`) captures one element, such as the open dialog, instead of
     the viewport; `full_page` captures the whole scrollable page. The page must be on an
-    allowed host and not a sign-in page. `out` names the file (it must not exist yet); by
-    default one is created in the task's captures directory.
+    allowed host and not a sign-in page, and no frame may be attached, detached, navigated or
+    load another document while the picture is taken (the frame tree is compared before and
+    after and the page's frame events are counted), else nothing is saved. `out`
+    names the file (it must not exist yet); by default one is created in the task's captures
+    directory.
     """
     if within is not None and full_page:
         raise ValueError("Expected --within or --full-page, got both")
@@ -269,13 +274,28 @@ def screenshot_task(
     sign_in_hosts = sign_in_hosts_for(config, task)
     page = _attach_for_capture(config, task)
     try:
-        _require_capturable(page.url, task, hosts, sign_in_hosts)
-        _require_no_sign_in_frame(page.frame_hosts(), sign_in_hosts)
-        data = page.screenshot_png(role=role, name=name, full_page=full_page)
-        # The page may have moved while the pixels were taken: refuse a result that may belong
-        # to a page the first check never saw.
-        _require_capturable(page.url, task, hosts, sign_in_hosts, "capturing")
-        _require_no_sign_in_frame(page.frame_hosts(), sign_in_hosts)
+        # Three guards over the whole window. The documents the page shows are read first and
+        # last: an address read twice cannot tell a page that left for a sign-in page and came
+        # back from one that stayed, but a document loaded in between has another loader id. That
+        # tree leaves out cross-process frames, and a frame can come and go between the two
+        # reads, so the page's frame events are counted over the same window too.
+        with page.watch_documents() as watch:
+            documents = page.frame_signature()
+            _require_capturable(page.url, task, hosts, sign_in_hosts)
+            _require_no_sign_in_frame(page.frame_hosts(), sign_in_hosts)
+            data = page.screenshot_png(role=role, name=name, full_page=full_page)
+            # The page may have moved while the pixels were taken: refuse a result that may
+            # belong to a page the first check never saw.
+            _require_capturable(page.url, task, hosts, sign_in_hosts, "capturing")
+            _require_no_sign_in_frame(page.frame_hosts(), sign_in_hosts)
+            page.wait_ms(_EVENT_SETTLE_MS)  # an event still on its way is counted
+            changed = page.frame_signature() != documents or watch.changes > 0
+        if changed:
+            raise BrowserActionError(
+                "Expected the page to show the same documents while the picture was taken, got "
+                "a page that loaded or changed a frame (it may have been a sign-in page); "
+                "nothing was saved, so look at the page and try again"
+            )
         url = page.url
     finally:
         page.close()

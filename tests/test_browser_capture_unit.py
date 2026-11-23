@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
 import stat
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -46,6 +48,30 @@ class _Page:
         self.shots: list[dict[str, Any]] = []
         self.frames = 0
         self.embedded: list[tuple[str, ...]] = [()]
+        #: Successive answers to "which documents does the page show?"; the last one repeats.
+        self.signatures: list[Any] = [(("main", "doc-1"),)]
+
+    #: How many frame events the page counted while it was watched, per `watch_documents`.
+    watch_changes = 0
+
+    #: Frame events that arrive only while the page is waited on (a late one).
+    late_changes = 0
+    watch: Any = None
+
+    def wait_ms(self, milliseconds: int) -> None:
+        if self.watch is not None:
+            self.watch.changes += self.late_changes  # delivered while the connection is serviced
+
+    @contextlib.contextmanager
+    def watch_documents(self) -> Any:
+        self.watch = SimpleNamespace(changes=self.watch_changes)  # events that arrive in the block
+        yield self.watch
+
+    def frame_signature(self) -> Any:
+        found = self.signatures.pop(0) if len(self.signatures) > 1 else self.signatures[0]
+        if isinstance(found, Exception):
+            raise found
+        return found
 
     def frame_hosts(self) -> tuple[str, ...]:
         found = self.embedded.pop(0) if len(self.embedded) > 1 else self.embedded[0]
@@ -67,9 +93,6 @@ class _Page:
     ) -> bytes:
         self.shots.append({"role": role, "name": name, "full_page": full_page})
         return _png()
-
-    def wait_ms(self, milliseconds: int) -> None:
-        return None
 
 
 def _setup(tmp_path: Path, **policy: Any) -> BrowserSetup:
@@ -592,3 +615,94 @@ def test_a_screenshot_that_cannot_be_written_leaves_no_file_behind(
         capture._write_private_bytes(target, b"x")
 
     assert not target.exists()  # so a retry to the same name is not refused
+
+
+def test_a_page_that_loaded_another_document_during_the_capture_is_not_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = _use(monkeypatch, _APP)  # the address reads the same at both ends...
+    holder.signatures = [
+        (("main", "doc-1"),),
+        (("main", "doc-2"),),
+    ]  # ...but a document came between
+
+    with pytest.raises(BrowserActionError, match="loaded or changed a frame"):
+        capture.screenshot_task(_setup(tmp_path), "time-sheet")
+
+    assert holder.shots != []  # the picture was taken
+    assert not list((tmp_path / "captures" / "time-sheet").glob("*.png"))  # and never saved
+
+
+def test_a_new_frame_in_the_page_during_the_capture_is_not_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = _use(monkeypatch, _APP)
+    holder.signatures = [(("main", "doc-1"),), (("child", "doc-9"), ("main", "doc-1"))]
+
+    with pytest.raises(BrowserActionError, match="loaded or changed a frame"):
+        capture.screenshot_task(_setup(tmp_path), "time-sheet")
+
+    assert not list((tmp_path / "captures" / "time-sheet").glob("*.png"))
+
+
+def test_a_page_whose_documents_cannot_be_read_is_not_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = _use(monkeypatch, _APP)
+    holder.signatures = [BrowserActionError("no answer")]
+
+    with pytest.raises(BrowserActionError, match="no answer"):
+        capture.screenshot_task(_setup(tmp_path), "time-sheet")
+
+    assert holder.shots == []  # nothing was even taken
+
+
+def test_the_same_documents_before_and_after_keep_the_screenshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = _use(monkeypatch, _APP)
+    holder.signatures = [(("main", "doc-1"), ("child", "doc-2"))]
+
+    result = capture.screenshot_task(_setup(tmp_path), "time-sheet")
+
+    assert Path(result["path"]).exists()
+
+
+def test_a_frame_that_came_and_went_during_the_capture_is_not_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sign-in iframe attached and detached between the two reads leaves both reads equal."""
+    holder = _use(monkeypatch, _APP)
+    holder.watch_changes = 2  # attached, then detached
+    holder.signatures = [(("main", "doc-1"),)]  # the same tree at both ends
+
+    with pytest.raises(BrowserActionError, match="loaded or changed a frame"):
+        capture.screenshot_task(_setup(tmp_path), "time-sheet")
+
+    assert not list((tmp_path / "captures" / "time-sheet").glob("*.png"))
+
+
+def test_a_capture_waits_briefly_at_its_end_for_an_event_still_on_its_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = _use(monkeypatch, _APP)
+    waits: list[int] = []
+    holder.wait_ms = waits.append  # type: ignore[method-assign]
+
+    capture.screenshot_task(_setup(tmp_path), "time-sheet")
+
+    assert waits == [capture._EVENT_SETTLE_MS]
+
+
+def test_a_frame_event_that_arrives_only_during_the_settle_wait_is_still_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count is read after the wait: an event still on its way when the picture ends counts."""
+    holder = _use(monkeypatch, _APP)
+    holder.late_changes = 1  # nothing before the wait; one delivered during it
+    holder.signatures = [(("main", "doc-1"),)]  # and the same tree at both ends
+
+    with pytest.raises(BrowserActionError, match="loaded or changed a frame"):
+        capture.screenshot_task(_setup(tmp_path), "time-sheet")
+
+    assert not list((tmp_path / "captures" / "time-sheet").glob("*.png"))
