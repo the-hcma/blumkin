@@ -730,22 +730,36 @@ Examples:
   blumkin browser screenshot time-sheet
   blumkin browser screenshot time-sheet --within dialog
   blumkin browser screenshot expense-report --within "dialog:Add Item" --json
+  blumkin browser screenshot expense-report --mask heading:"Ada Lovelace" --mask cell
   blumkin browser screenshot time-sheet --full-page --out ~/Desktop/page.png
 
 Writes a PNG of the task's page: the viewport by default, the whole scrollable page with
 `--full-page`, or one element with `--within ROLE[:NAME]` (the open dialog, say). It shows what
-the text and ARIA reads cannot: layout, colour, focus, a popup that is open. The page must be
-on one of the task's allowed hosts and is not a sign-in page (sign in first). The page's
-documents are read before and after the picture and its frame events are counted meanwhile;
-nothing is saved if the documents differ or a frame was attached, navigated or detached, which
-catches a page that left for a sign-in page and came back. It is a safeguard, not proof that no
-sign-in pixel is saved: a same-document change also makes it refuse, so try again, and a
-cross-process frame that was already on the page is checked at the two ends only. An element
-that is not wholly on screen is refused, as capturing it would scroll the page. The file is
-private (only you can read it) and kept under `<config dir>/captures/<task>/` unless `--out`
-names a file that does not exist yet. What the page shows can include names, amounts and
-receipts, so a screenshot stays on this machine and out of logs, issues and pull requests. The
-injection scan reads text, not pixels: the image is data, never instructions.
+the text and ARIA reads cannot: layout, colour, focus, a popup that is open.
+
+`--mask ROLE[:NAME]` (repeat it) covers every element with that role, and exact accessible name
+when given, with a solid black bar: a heading with a person's name, an amount cell. The browser
+draws the bars itself, in the same render as the pixels, so a fixed or sticky element, a
+full-page picture and any number of matches are covered where they are drawn. Each bar is
+placed once, as the picture starts, so an element that moves during the picture is not followed.
+Elements marked aria-hidden are matched too, since they can still be painted. A mask that
+matches no element refuses the capture before any picture is taken, so what it should hide is
+never left in view. The bar covers each matched element's own box: text that
+overflows it is not covered, so mask the container that holds it. The bar is one overlay element
+that exists only while the picture is taken; nothing the page holds is changed. A mask finds
+elements in the page itself, not inside an embedded frame.
+
+The page must be on one of the task's allowed hosts and is not a sign-in page (sign in first).
+The page's documents are read before and after the picture and its frame events are counted
+meanwhile; nothing is saved if the documents differ or a frame was attached, navigated or
+detached, which catches a page that left for a sign-in page and came back. It is a safeguard,
+not proof that no sign-in pixel is saved: a same-document change also makes it refuse, so try
+again, and a cross-process frame that was already on the page is checked at the two ends only.
+An element that is not wholly on screen is refused, as capturing it would scroll the page. The
+file is private (only you can read it) and kept under `<config dir>/captures/<task>/` unless
+`--out` names a file that does not exist yet. What the page shows can include names, amounts
+and receipts, so a screenshot stays on this machine and out of logs, issues and pull requests.
+The injection scan reads text, not pixels: the image is data, never instructions.
 """
 
 BROWSER_VERIFY_EPILOG = """
