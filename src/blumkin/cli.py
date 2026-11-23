@@ -184,6 +184,7 @@ from blumkin.browser.model_commands import (
     model_flows,
     model_versions,
 )
+from blumkin.browser.narration import ENGINE_NAMES, SPEED_MAX, SPEED_MIN, NarrationOptions
 from blumkin.browser.profiles import (
     BrowserProfileError,
     ProfileBrowserRunningError,
@@ -201,6 +202,7 @@ from blumkin.browser.recording import (
     RECORD_FORMATS,
     RECORD_MAX_SECONDS,
     clip_recording,
+    narrate_recording,
     recording_status,
     start_recording,
     stop_recording,
@@ -674,6 +676,13 @@ def _finite_wait(ctx: click.Context, param: click.Parameter, value: float | None
     """Reject `nan`, which a numeric range check lets through."""
     if value is not None and math.isnan(value):
         raise click.BadParameter("must be a number of seconds, got nan")
+    return value
+
+
+def _finite_speed(ctx: click.Context, param: click.Parameter, value: float | None) -> float | None:
+    """Reject `nan` for a speed, which a numeric range check lets through."""
+    if value is not None and math.isnan(value):
+        raise click.BadParameter("must be a number from the allowed range, got nan")
     return value
 
 
@@ -3845,14 +3854,72 @@ def _record_encode_options[F: Callable[..., Any]](command: F) -> F:
     return command
 
 
+def _narration_options[F: Callable[..., Any]](command: F) -> F:
+    """The options `record stop` takes for the narration of the video it writes."""
+    for option in reversed(
+        [
+            click.option(
+                "--narration/--no-narration",
+                "narration",
+                default=True,
+                show_default=True,
+                help="Speak the cues given with `narrate` into the video (MP4 only).",
+            ),
+            click.option(
+                "--voice",
+                help="The engine's voice for the narration (the engine's own default if unset).",
+            ),
+            click.option(
+                "--narration-speed",
+                type=click.FloatRange(min=SPEED_MIN, max=SPEED_MAX),
+                callback=_finite_speed,
+                default=1.0,
+                show_default=True,
+                help="How fast the narration is spoken (1 is the voice's normal pace).",
+            ),
+            click.option(
+                "--engine",
+                type=click.Choice(list(ENGINE_NAMES)),
+                default="say",
+                show_default=True,
+                help="The offline speech engine.",
+            ),
+            click.option(
+                "--hold-for-narration",
+                is_flag=True,
+                help="Let the video run past the session's end, the last frame held, so the "
+                "last cue is heard whole (the video is then longer than the session).",
+            ),
+        ]
+    ):
+        command = option(command)
+    return command
+
+
 def _record_notes(p: dict[str, Any]) -> list[str]:
     cards = f", {p['cards']} left out" if p["cards"] else ""
     captions = f", {p['captions']} captions" if p["captions"] else ""
     return [
         f"  {p['path']}  ({p['seconds']} s, {p['bytes']} bytes, {p['frames']} frames"
         f"{cards}{captions}, ended: {p['ended']})",
+        *_narration_notes(p.get("narration")),
         *([f"  frames: {p['frames_dir']}"] if p["frames_dir"] else []),
         f"  {p['untrusted']}",
+    ]
+
+
+def _narration_notes(told: dict[str, Any] | None) -> list[str]:
+    """The line a written video adds for its narration (counts only, never the text)."""
+    if not told:
+        return []
+    if "skipped" in told:
+        return [f"  narration: {told['cues']} cue(s) left out ({told['skipped']})"]
+    late = f", {told['late']} late by up to {told['max_late_s']} s" if told["late"] else ""
+    cut = f", {told['cut']} cut off at the end" if told["cut"] else ""
+    hold = f", the video held {told['hold_s']} s for it" if told["hold_s"] else ""
+    return [
+        f"  narration: {told['cues']} cue(s), {told['spoken_s']} s of {told['engine']} "
+        f"({told['voice']}){late}{cut}{hold}"
     ]
 
 
@@ -3875,6 +3942,7 @@ def browser_record_start(ctx: click.Context, task: str, as_json_flag: bool) -> N
 @browser_record.command("stop", epilog=help_text.BROWSER_RECORD_STOP_EPILOG)
 @click.argument("task")
 @_record_encode_options
+@_narration_options
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_record_stop(
@@ -3885,6 +3953,11 @@ def browser_record_stop(
     speed: float,
     trim_idle: float | None,
     keep_frames: bool,
+    narration: bool,
+    voice: str | None,
+    narration_speed: float,
+    engine: str,
+    hold_for_narration: bool,
     as_json_flag: bool,
 ) -> None:
     """Stop TASK's recording and write the video."""
@@ -3900,6 +3973,16 @@ def browser_record_stop(
             speed=speed,
             trim_idle_s=trim_idle,
             keep_frames=keep_frames,
+            narration=(
+                NarrationOptions(
+                    engine=engine,
+                    voice=voice,
+                    speed=narration_speed,
+                    hold=hold_for_narration,
+                )
+                if narration
+                else None
+            ),
         ),
         "recording written",
         notes=_record_notes,
@@ -3972,6 +4055,30 @@ def browser_record_clip(
         ),
         "recording written",
         notes=_record_notes,
+    )
+
+
+@browser.command("narrate", epilog=help_text.BROWSER_NARRATE_EPILOG)
+@click.argument("task")
+@click.argument("text")
+@click.option(
+    "--ahead",
+    is_flag=True,
+    help="Place the cue just before the next browser command, so it is heard before the click.",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_narrate(
+    ctx: click.Context, task: str, text: str, ahead: bool, as_json_flag: bool
+) -> None:
+    """Add a spoken cue to TASK's running recording (your own words, never the page's)."""
+    _browser_action(
+        ctx,
+        as_json_flag,
+        task,
+        lambda: narrate_recording(load_browser_setup(), task, text, ahead=ahead),
+        "narration added",
+        notes=lambda p: [f"  {p['cues']} cue(s) so far; `record stop {task}` speaks them"],
     )
 
 

@@ -492,12 +492,41 @@ Examples:
   blumkin browser record stop time-sheet
   blumkin browser record stop time-sheet --speed 2 --out ~/Desktop/time-sheet.mp4
   blumkin browser record stop time-sheet --format gif --trim-idle 1.5
+  blumkin browser record stop time-sheet --voice Daniel --narration-speed 0.9
+  blumkin browser record stop time-sheet --no-narration
 
 Ends the task's recording and writes the video, which by default is as long as the session was
 (`--speed` and `--trim-idle` change that). The result
 gives the file's path, length, size, how many frames it holds, how many stretches were left out
 (a sign-in page or a page off the task's hosts) and why the recording ended (`stopped`, `time
 limit` or `browser closed`). `--keep-frames` leaves the numbered JPEGs and the index beside it.
+
+The cues given with `blumkin browser narrate` are spoken by an offline engine (`--engine say`,
+the macOS voice; `--voice` and `--narration-speed` choose how it sounds), placed on the video's
+timeline and mixed into the MP4 as its sound track; `--no-narration` leaves them out and a GIF
+has no audio. The video keeps its real length: cues play in order, so when one runs on into
+the moment the next was planned for, the next waits until it ends and is counted as late, and a
+cue that runs past the end is cut off, unless `--hold-for-narration` lets the video run on with
+the last frame held so the last cue is heard whole. The result counts the cues, the late and cut
+ones and the seconds held; it never says what was said.
+"""
+
+BROWSER_NARRATE_EPILOG = """
+Examples:
+
+\b
+  blumkin browser narrate time-sheet "Copying last period's card, then adjusting the holiday days"
+  blumkin browser narrate time-sheet "Now I will fill in the project" --ahead
+
+Adds one spoken cue to the task's running recording (`record start` first; with none running it
+is an error, since you meant it to be heard). The text is your own words about the step: never
+read it off the page, and never say a typed value, an amount, a name or a receipt's contents, as
+the video may be forwarded. A cue is at most 400 characters (say more in more cues), and a
+recording holds at most 200. By default the cue is heard at the moment you add it; `--ahead`
+places it to end just before the next browser command, so the viewer hears what is about to
+happen before it does. A cue cannot start before you add it, so one added too close to the
+command to fit overlaps it. The cues are kept in the recording's private session folder until
+`record stop` speaks them, and are removed with it. Nothing is spoken until then.
 """
 
 BROWSER_RESET_SESSION_EPILOG = """
