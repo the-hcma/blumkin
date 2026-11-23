@@ -326,6 +326,13 @@ class RequestEntry:
     outcome: str = ""
 
 
+@dataclass(slots=True)
+class DocumentWatch:
+    """How many frame events (attach, detach, navigate) the page had while it was watched."""
+
+    changes: int = 0
+
+
 @dataclass(frozen=True, slots=True)
 class ScreenFrame:
     """One frame of the browser's own screencast: a JPEG and when the browser painted it."""
@@ -2485,6 +2492,82 @@ class PlaywrightDriver:
                 "Expected the page's frames to be listed, got no answer; nothing was captured"
             ) from exc
         return (_web_host(str(main.url)), *(_web_host(str(frame.url)) for frame in inner))
+
+    @contextlib.contextmanager
+    def watch_documents(self) -> Iterator[DocumentWatch]:
+        """Count the frame events of the page for the length of the block.
+
+        A frame that is attached, navigated or detached while a picture is taken may have shown
+        something the checks before and after never saw: a sign-in frame can come and go between
+        two reads, and the frame tree behind `frame_signature` leaves out cross-process frames
+        (exactly where a sign-in frame usually is), which Playwright's own events do cover. A
+        navigation of the main frame counts too: a document restored from the back/forward cache
+        keeps its loader id. A same-document change (`pushState`) fires the same event and is
+        counted too, so a capture may be refused for it and asked for again.
+
+        Events are delivered while the connection is serviced: the block should end with a short
+        `wait_ms`, so one that is still on its way is counted.
+        """
+        self._require_open()
+        watch = DocumentWatch()
+        names = ("frameattached", "framedetached", "framenavigated")
+
+        def count(_: Any = None) -> None:
+            watch.changes += 1
+
+        for name in names:
+            self._page.on(name, count)
+        try:
+            yield watch
+        finally:
+            for name in names:
+                with contextlib.suppress(_playwright_error(), AttributeError, ValueError):
+                    self._page.remove_listener(name, count)
+
+    def frame_signature(self) -> tuple[tuple[str, str], ...]:
+        """Which documents the page shows now: a (frame id, loader id) pair for every frame.
+
+        DevTools gives every document a frame loads a new loader id, a return to the address it
+        had before included, so two equal signatures mean no frame loaded another document in
+        between: more than an address read twice can say, which a round trip through a sign-in
+        page leaves unchanged. Read over a DevTools session of its own, bounded, and a
+        failure to read it is an error (a capture then cannot be shown to belong to one page).
+        """
+        self._require_open()
+        session: Any = None
+        try:
+            with self._bounded(self._call_deadline_s(), "read the page's documents"):
+                session = self._page.context.new_cdp_session(self._page)
+                tree = session.send("Page.getFrameTree")["frameTree"]
+        except _DeadlineExpired as exc:
+            raise BrowserActionError(
+                "Expected the page's documents to be read, got no answer; nothing was captured"
+            ) from exc
+        except _playwright_error() as exc:
+            raise self._action_error("read the page's documents", exc) from exc
+        except (KeyError, TypeError) as exc:
+            raise BrowserActionError(
+                "Expected the page's frame tree from DevTools, got something else; nothing was "
+                "captured"
+            ) from exc
+        finally:
+            self._detach_quietly(session)
+        pairs: list[tuple[str, str]] = []
+
+        def walk(node: Mapping[str, Any]) -> None:
+            frame = node["frame"]
+            pairs.append((str(frame["id"]), str(frame.get("loaderId", ""))))
+            for child in node.get("childFrames", []):
+                walk(child)
+
+        try:
+            walk(tree)
+        except (KeyError, TypeError) as exc:
+            raise BrowserActionError(
+                "Expected the page's frame tree from DevTools, got something else; nothing was "
+                "captured"
+            ) from exc
+        return tuple(sorted(pairs))
 
     def wait_ms(self, milliseconds: int) -> None:
         """Pause through Playwright, so page events (a redirect finishing) are delivered."""

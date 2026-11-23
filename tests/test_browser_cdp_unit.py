@@ -308,7 +308,7 @@ class _CdpSession:
         self._context = context
         self._name = name
 
-    def send(self, method: str) -> None:
+    def send(self, method: str) -> Any:
         self._context.events.append(f"cdp:{self._name}:{method}")
         if self._context.during_send is not None:
             callback, self._context.during_send = self._context.during_send, None
@@ -318,6 +318,9 @@ class _CdpSession:
         error = self._context.stop_errors.get(self._name)
         if error is not None:
             raise error
+        if method == "Page.getFrameTree":
+            return {"frameTree": self._context.frame_tree}
+        return None
 
     def detach(self) -> None:
         self._context.events.append(f"cdp:{self._name}:detach")
@@ -332,6 +335,7 @@ class _Context:
         self.unrouted: list[Any] = []
         self.events: list[str] = []
         self.stop_errors: dict[str, Exception] = {}
+        self.frame_tree: Any = {"frame": {"id": "main", "loaderId": "doc-1"}}
         self.stalled: set[str] = set()
         self.stalled_detach: set[str] = set()
         self.during_send: Any = None
@@ -4998,3 +5002,85 @@ def test_new_documents_are_watched_through_domcontentloaded_not_framenavigated()
     names = [name for name, _ in listeners]
 
     assert "domcontentloaded" in names and "framenavigated" not in names
+
+
+def test_the_frame_signature_lists_every_frame_with_its_loader_id() -> None:
+    pw, driver = _driver()
+    assert pw.page.context is not None
+    pw.page.context.frame_tree = {
+        "frame": {"id": "main", "loaderId": "L1"},
+        "childFrames": [
+            {"frame": {"id": "b", "loaderId": "L3"}},
+            {"frame": {"id": "a", "loaderId": "L2"}, "childFrames": [{"frame": {"id": "c"}}]},
+        ],
+    }
+
+    assert driver.frame_signature() == (("a", "L2"), ("b", "L3"), ("c", ""), ("main", "L1"))
+    assert "cdp:page:detach" in pw.page.context.events  # the session is released
+
+
+def test_a_loader_id_that_changes_changes_the_signature_even_on_the_same_address() -> None:
+    pw, driver = _driver()
+    assert pw.page.context is not None
+    pw.page.url = "https://app.example.com/home"
+    first = driver.frame_signature()
+    pw.page.context.frame_tree = {"frame": {"id": "main", "loaderId": "doc-after-a-round-trip"}}
+
+    assert driver.frame_signature() != first  # same address, a new document
+
+
+def test_a_frame_tree_that_cannot_be_read_is_an_error_not_an_empty_signature() -> None:
+    pw, driver = _driver()
+    assert pw.page.context is not None
+    pw.page.context.frame_tree = {"unexpected": True}
+
+    with pytest.raises(BrowserActionError, match="frame tree"):
+        driver.frame_signature()
+
+
+def _driver_with_frame_events() -> tuple[Any, Any, Any, list[Any], list[Any]]:
+    page = _Page()
+    listeners: list[Any] = []
+    removed: list[Any] = []
+    page.on = lambda event, callback: listeners.append((event, callback))  # type: ignore[attr-defined]
+    page.remove_listener = lambda event, callback: removed.append((event, callback))  # type: ignore[attr-defined]
+    pw = _Playwright(page)
+    pw, driver = _driver(pw)
+    listeners.clear()  # the driver's own listeners are not the watch's
+    return pw, driver, page, listeners, removed
+
+
+def test_the_document_watch_counts_frame_attach_detach_and_navigation() -> None:
+    _, driver, _, listeners, _ = _driver_with_frame_events()
+
+    with driver.watch_documents() as watch:
+        for name in ("frameattached", "framenavigated", "framedetached"):
+            for event, callback in listeners:
+                if event == name:
+                    callback(object())
+
+    assert watch.changes == 3
+
+
+def test_the_document_watch_counts_nothing_when_no_frame_event_arrives() -> None:
+    _, driver, _, _, _ = _driver_with_frame_events()
+
+    with driver.watch_documents() as watch:
+        pass
+
+    assert watch.changes == 0
+
+
+def test_the_document_watch_removes_its_listeners_even_when_the_block_raises() -> None:
+    _, driver, _, listeners, removed = _driver_with_frame_events()
+
+    with pytest.raises(KeyboardInterrupt):
+        with driver.watch_documents():
+            assert {event for event, _ in listeners} == {
+                "frameattached",
+                "framedetached",
+                "framenavigated",
+            }
+            raise KeyboardInterrupt
+
+    assert {event for event, _ in removed} == {"frameattached", "framedetached", "framenavigated"}
