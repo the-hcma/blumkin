@@ -182,6 +182,7 @@ def run_recorder(
     index = _open_private(session_dir / "index.jsonl", "a")
     count = 0
     on_card = False
+    need_fresh = False  # a step was seen and no picture has been taken since
     floor = 0.0
     began = tick()  # the time limit runs on a clock that never steps back
     reason = "stopped"
@@ -333,14 +334,18 @@ def run_recorder(
                     resumed = take_keyframe()
                     if resumed is not None:
                         on_card = False
+                        need_fresh = False
                         add_frame(resumed)
-                elif step_seen:
+                elif step_seen or need_fresh:
                     # The clock stepped: a frame read now cannot be told from one queued before
-                    # the last keyframe (its paint time is on either side of the step), so this
-                    # batch is left out and a fresh picture is taken, which also compares later
-                    # frames from here and shows a page that goes idle as it is now.
+                    # the last keyframe (its paint time is on either side of the step), so
+                    # frames are left out and a fresh picture is tried for on every look until
+                    # one is taken, which also compares later frames from there and shows a page
+                    # that goes idle as it is now.
+                    need_fresh = True
                     again = take_keyframe()
                     if again is not None:
+                        need_fresh = False
                         add_frame(again)
                 else:
                     for frame in frames:

@@ -2437,3 +2437,22 @@ def test_a_clock_that_is_slewed_is_not_a_step(tmp_path: Path) -> None:
 
     assert driver.keyframes == 1  # no fresh picture was needed
     assert [item["t"] for item in lines if item["kind"] == "frame"] == [101.0, 106.0, 111.0, 116.0]
+
+
+def test_a_fresh_picture_that_fails_after_a_step_is_tried_again_and_frames_wait_for_it(
+    tmp_path: Path,
+) -> None:
+    steps = [
+        _Step(frames=(_shot(_NEXT_PIXELS, 106.0),)),  # read as the step is seen
+        _Step(frames=(_shot(_LOGIN_PIXELS, 56.0 + 5.0),)),  # queued: read while no picture is fresh
+    ]
+    driver = _Driver(steps)
+    driver.keyframe_pixels = [_APP_PIXELS, b"not a jpeg", _NEXT_PIXELS]
+    wall, steady = _stepping_clocks(driver, step_at=1, step=-60.0)
+
+    _, lines = _run(tmp_path, driver, False, False, False, True, clock=wall, tick=steady)
+
+    assert driver.keyframes >= 3  # the start, the one that failed, and the retry
+    assert _LOGIN_PIXELS not in _stored(tmp_path)  # nothing was taken while waiting for it
+    frames = [item["t"] for item in lines if item["kind"] == "frame"]
+    assert len(frames) == 2 and frames[1] > frames[0]
