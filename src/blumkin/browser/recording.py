@@ -696,7 +696,9 @@ def _encode_mp4(
     caption_shown: list[float] | None = None,
     narration_cues: list[str] | None = None,
 ) -> int:
-    """Write the MP4 and return how many subtitle cues it holds.
+    """Write the MP4 and return how many command caption cues it holds.
+
+    The narration track (`narration_cues`) is counted by the caller, not here.
 
     `caption_shown` is the frame durations the captions are placed through: the session's own,
     even when the last frame is held for narration, so a hold never moves a command.
