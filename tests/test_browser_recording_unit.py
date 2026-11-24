@@ -356,6 +356,44 @@ def test_the_recorder_writes_the_capture_clock_anchor_with_its_first_entry(
     assert anchor[0] == lines[0]["t"]  # the first entry's time on the journal's axis
 
 
+def test_frames_painted_after_a_wall_clock_step_stay_on_the_steady_axis(tmp_path: Path) -> None:
+    """Paint times are wall-clock: after a +60 s step they move back so they match the cues."""
+    steps = [
+        _Step(frames=(_shot(_NEXT_PIXELS, 101.0 + 5 * n + (60.0 if n >= 3 else 0.0)),))
+        for n in range(1, 5)
+    ]
+    driver = _Driver(steps)
+
+    def wall() -> float:  # 5 s a read; each step takes two, and the 60 s step is at the third's
+        return 1000.0 + 5.0 * driver.pumped + (60.0 if driver.pumped >= 5 else 0.0)
+
+    def steady() -> float:
+        return 50.0 + 5.0 * driver.pumped
+
+    _, lines = _run(tmp_path, driver, False, False, False, False, True, clock=wall, tick=steady)
+
+    frames = [item["t"] for item in lines if item["kind"] == "frame"]
+    assert frames == [101.0, 106.0, 111.0, 116.0, 121.0]  # no jump of 60 s at the step
+
+
+def test_without_a_step_the_frames_keep_the_browsers_paint_times(tmp_path: Path) -> None:
+    steps = [_Step(frames=(_shot(_NEXT_PIXELS, 101.0 + 5 * n),)) for n in range(1, 4)]
+    driver = _Driver(steps)
+
+    _, lines = _run(
+        tmp_path,
+        driver,
+        False,
+        False,
+        False,
+        True,
+        clock=lambda: 1000.0 + 5.0 * driver.pumped,
+        tick=lambda: 50.0 + 5.0 * driver.pumped,
+    )
+
+    assert [item["t"] for item in lines if item["kind"] == "frame"] == [101.0, 106.0, 111.0, 116.0]
+
+
 def test_frames_painted_before_the_keyframe_are_stale_and_not_kept(tmp_path: Path) -> None:
     """Frames queued while the keyframe was being taken may be the page that was just left."""
     driver = _Driver([_Step(frames=(_shot(_LOGIN_PIXELS, 100.5), _shot(_NEXT_PIXELS, 101.5)))])

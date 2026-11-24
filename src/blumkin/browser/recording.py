@@ -185,6 +185,18 @@ def run_recorder(
     reason = "stopped"
 
     anchor: list[float] = []  # [journal time of the first entry, steady clock at that moment]
+    wall_at_anchor: list[float] = []  # the wall clock then: what a step is measured from
+
+    def stepped() -> float:
+        """How far the wall clock has stepped (or slept ahead) since the first entry.
+
+        Paint times are on the wall clock and the journal's axis is steady, so a frame is moved
+        back by this much: after a step the pictures stay where the cards, the captions and the
+        cues are, instead of being 60 s ahead of them.
+        """
+        if not anchor:
+            return 0.0
+        return (clock() - wall_at_anchor[0]) - (tick() - anchor[1])
 
     def moment() -> float:
         """Now on the journal's axis: the first entry's time plus steady time since it.
@@ -198,6 +210,7 @@ def run_recorder(
     def log(entry: dict[str, Any]) -> None:
         if not anchor and entry.get("kind") in ("frame", "card"):
             anchor.extend((float(entry["t"]), tick()))
+            wall_at_anchor.append(clock())
             write_anchor(session_dir, anchor[0], anchor[1])  # captions and cues stamp from it
         index.write(json.dumps(entry) + "\n")
         index.flush()
@@ -209,7 +222,7 @@ def run_recorder(
         count += 1
         name = f"frames/f{count:06d}.jpg"
         _write_private(session_dir / name, frame.data)
-        log({"file": name, "kind": "frame", "t": frame.timestamp})
+        log({"file": name, "kind": "frame", "t": frame.timestamp - stepped()})
 
     def add_card(why: str) -> None:
         nonlocal on_card
