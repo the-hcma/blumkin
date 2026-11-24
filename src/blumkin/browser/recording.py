@@ -183,29 +183,36 @@ def run_recorder(
     count = 0
     on_card = False
     floor = 0.0
-    floor_step = 0.0  # how far the clock had stepped when the floor was set
     began = tick()  # the time limit runs on a clock that never steps back
     reason = "stopped"
 
     anchor: list[float] = []  # [journal time of the first entry, steady clock at that moment]
     wall_at_anchor: list[float] = []  # the wall clock then: what a step is measured from
     last: list[float] = []  # the time of the entry logged last
+    drift = [0.0]  # how far the wall clock was ahead of the steady one at the last look
+    stepped_by = [0.0]  # the sum of the steps seen since the first entry
 
-    def stepped() -> float:
-        """How far the wall clock has stepped (or slept ahead) since the first entry.
+    def watch_step() -> bool:
+        """Look at the two clocks; True when the wall clock stepped since the last look.
 
-        Paint times are on the wall clock and the journal's axis is steady, so a frame is moved
-        back by this much: after a step the pictures stay where the cards, the captions and the
-        cues are, instead of being 60 s ahead of them.
+        A step is a jump between two looks (a poll apart), so the slow drift of a clock that is
+        being slewed never adds up to one. Paint times are on the wall clock and the journal's
+        axis is steady, so a frame is moved back by the steps seen: after one the pictures stay
+        where the cards, the captions and the cues are, instead of a whole step away from them.
         """
         if not anchor:
-            return 0.0
-        found = (clock() - wall_at_anchor[0]) - (tick() - anchor[1])
-        return found if abs(found) >= CLOCK_STEP_MIN_S else 0.0  # slewing is not a step
+            return False
+        now_drift = (clock() - wall_at_anchor[0]) - (tick() - anchor[1])
+        jump = now_drift - drift[0]
+        drift[0] = now_drift
+        if abs(jump) < CLOCK_STEP_MIN_S:
+            return False
+        stepped_by[0] += jump
+        return True
 
     def on_axis(painted: float) -> float:
         """A paint time (or a keyframe's) on the journal's axis, before any clamping."""
-        return painted - stepped()
+        return painted - stepped_by[0]
 
     def moment() -> float:
         """Now on the journal's axis: the first entry's time plus steady time since it.
@@ -220,6 +227,7 @@ def run_recorder(
         if not anchor and entry.get("kind") in ("frame", "card"):
             anchor.extend((float(entry["t"]), tick()))
             wall_at_anchor.append(clock())
+            drift[0] = 0.0
             with contextlib.suppress(OSError):  # without it they fall back to the wall clock
                 write_anchor(session_dir, anchor[0], anchor[1])  # captions and cues stamp from it
         if entry.get("kind") in ("frame", "card"):
@@ -238,7 +246,7 @@ def run_recorder(
         # just after it is moved a whole step the wrong way. A painted frame cannot be later than
         # now, nor earlier than the entry logged last: when a step is seen, hold it in between.
         moved = on_axis(frame.timestamp)
-        if stepped() != 0.0:
+        if stepped_by[0] != 0.0:
             moved = min(moved, moment())
         log({"file": name, "kind": "frame", "t": max(moved, last[0]) if last else moved})
 
@@ -281,7 +289,7 @@ def run_recorder(
 
     def take_keyframe() -> ScreenFrame | None:
         """A frame of the page as it is, or None when the page is not steadily recordable."""
-        nonlocal floor, floor_step, why_not
+        nonlocal floor, why_not
         why_not = "unstable"
         driver.take_committed_urls()
         driver.take_committed_frame_hosts()
@@ -292,10 +300,9 @@ def run_recorder(
         if not steady():
             return None
         key = driver.screencast_keyframe()
-        if not steady() or not _valid_jpeg(key.data):
-            return None
+        if watch_step() or not steady() or not _valid_jpeg(key.data):
+            return None  # a step now: its paint time is on one side or the other, try again
         floor = on_axis(key.timestamp)  # frames painted before it, still queued, are stale
-        floor_step = stepped()
         return key
 
     try:
@@ -316,6 +323,7 @@ def run_recorder(
             driver.take_committed_urls()
             driver.take_committed_frame_hosts()
             frames = driver.screencast_pump(POLL_MS)
+            step_seen = watch_step()
             after = state_now()
             route = route_state(driver.take_committed_urls(), driver.take_committed_frame_hosts())
             if before == "ok" and after == "ok" and route == "ok":
@@ -326,11 +334,14 @@ def run_recorder(
                     if resumed is not None:
                         on_card = False
                         add_frame(resumed)
-                elif abs(stepped() - floor_step) >= CLOCK_STEP_MIN_S:
-                    # The clock stepped since the keyframe: a frame read now cannot be told from
-                    # one queued before it (its paint time is on either side of the step), so
-                    # this batch is left out and later ones are compared from here.
-                    floor, floor_step = 0.0, stepped()
+                elif step_seen:
+                    # The clock stepped: a frame read now cannot be told from one queued before
+                    # the last keyframe (its paint time is on either side of the step), so this
+                    # batch is left out and a fresh picture is taken, which also compares later
+                    # frames from here and shows a page that goes idle as it is now.
+                    again = take_keyframe()
+                    if again is not None:
+                        add_frame(again)
                 else:
                     for frame in frames:
                         if on_axis(frame.timestamp) >= floor:
