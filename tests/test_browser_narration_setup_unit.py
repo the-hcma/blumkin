@@ -604,3 +604,23 @@ def test_the_setups_own_test_word_is_spoken_before_the_marker_exists(tmp_path: P
 
     narration_setup.smoke_test(tmp_path, run)
     assert "before_marker=True" in captured["code"]
+
+
+def test_a_stale_marker_is_removed_before_a_repair_so_it_cannot_vouch_for_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(tmp_path)
+    (narration_dir(tmp_path) / MODEL_NAME).unlink()  # the install lost its model
+    states: list[bool] = []
+
+    def fetch_file(item: Download, dest: Path, progress: Any = None) -> None:
+        states.append((narration_dir(tmp_path) / "setup.json").exists())
+        if item.name.endswith(".whl"):
+            _wheel(dest, {"kokoro_onnx/__init__.py": b""})
+        else:
+            dest.write_bytes(b"x")
+
+    _good_match(monkeypatch)
+    _full_run(tmp_path, fetch_file=fetch_file)
+    assert states and not any(states)
+    assert is_installed(tmp_path)

@@ -537,9 +537,10 @@ Installs the Kokoro voice, once, after you confirm. It shows what it will do fir
 downloads (the `kokoro-onnx` package from PyPI, the speech model of about 325 MB and the voices
 file, from the `kokoro-onnx` project's release page) and four Python packages (`onnxruntime`,
 `numpy`, `espeakng-loader`, `phonemizer`) installed by `uv` or `pip` into a private folder under
-the blumkin config directory. Each download is HTTPS only, from a fixed list of hosts (redirects
-included), and must match a pinned size and SHA-256 before it is used; a file that does not is
-removed. `kokoro-onnx` claims it needs Python below 3.14 although it works on 3.14, so its
+the blumkin config directory. The three downloads are HTTPS only, from a fixed list of hosts
+(redirects included), and must match a pinned size and SHA-256 before they are used; a file that
+does not is removed. The four packages are installed by `uv` or `pip` from PyPI within pinned
+version ranges, without hash checks. `kokoro-onnx` claims it needs Python below 3.14 although it works on 3.14, so its
 pure-Python wheel is unpacked from the verified file. The `espeak-ng` library the phonemizer
 loads is GPL software: it is installed on demand into that folder and is never bundled with
 blumkin. A test word is spoken at the end, and the setup is only marked done when it worked, so

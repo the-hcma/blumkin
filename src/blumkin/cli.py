@@ -4132,11 +4132,15 @@ def browser_narration_status(ctx: click.Context, as_json_flag: bool) -> None:
 
 def _narration_plan_lines(shown: dict[str, Any]) -> list[str]:
     """What the setup is about to fetch, for the person to read before they say yes."""
-    lines = ["The Kokoro voice needs these downloads (checked against pinned SHA-256 values):"]
+    lines = [
+        "The Kokoro voice needs these three downloads (each checked against a pinned SHA-256):"
+    ]
     for item in shown["downloads"]:
         lines.append(f"  {item['name']}  {item['size'] / 1e6:.1f} MB  ({item['purpose']})")
         lines.append(f"    from {item['url']}")
-    lines.append("and these Python packages from PyPI, installed into a private folder:")
+    lines.append(
+        "and these Python packages from PyPI (pinned version ranges, no hash check), installed into a private folder:"
+    )
     lines.append("  " + ", ".join(shown["packages"]))
     lines.append(
         f"About {shown['total_bytes'] / 1e6:.0f} MB in all, kept under your blumkin config folder."

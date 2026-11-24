@@ -316,6 +316,7 @@ def run_setup(
         raise SetupError("Expected a confirmation to download the narration engine, got none")
     root = narration_dir(config_dir)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (root / MARKER_NAME).unlink(missing_ok=True)  # a stale marker must not vouch for a repair
     os.chmod(root, 0o700)
     os.chmod(root.parent, 0o700)
     wheel = root / WHEEL_NAME
