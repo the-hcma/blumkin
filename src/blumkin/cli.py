@@ -185,6 +185,8 @@ from blumkin.browser.model_commands import (
     model_versions,
 )
 from blumkin.browser.narration import ENGINE_NAMES, SPEED_MAX, SPEED_MIN, NarrationOptions
+from blumkin.browser.narration_setup import SetupError, run_setup
+from blumkin.browser.narration_setup import status as narration_status
 from blumkin.browser.profiles import (
     BrowserProfileError,
     ProfileBrowserRunningError,
@@ -914,6 +916,9 @@ def _browser_fail(exc: BaseException, *, as_json: bool, task: str) -> NoReturn:
     elif isinstance(exc, AddressNotSetError):
         slug, code = "not_found", EXIT_NOT_FOUND
         hint = "Store one with `blumkin profiles set-address` (it prompts, or use --stdin)."
+    elif isinstance(exc, SetupError):
+        slug, code = "narration_setup_failed", EXIT_OTHER
+        hint = "Nothing half-installed is used; fix what the message says and run it again."
     elif isinstance(exc, SubmitBlockedError):
         slug, code = "submit_blocked", EXIT_OTHER
     elif isinstance(exc, UploadBlockedError):
@@ -3880,9 +3885,9 @@ def _narration_options[F: Callable[..., Any]](command: F) -> F:
             click.option(
                 "--engine",
                 type=click.Choice(list(ENGINE_NAMES)),
-                default="say",
+                default="auto",
                 show_default=True,
-                help="The offline speech engine.",
+                help="The offline speech engine: Kokoro once `narration setup` was run, else say.",
             ),
             click.option(
                 "--hold-for-narration",
@@ -4056,6 +4061,87 @@ def browser_record_clip(
         "recording written",
         notes=_record_notes,
     )
+
+
+@browser.group("narration", epilog=help_text.BROWSER_NARRATION_EPILOG)
+def browser_narration() -> None:
+    """Set up and check the offline voice that narrates a recording."""
+
+
+@browser_narration.command("setup", epilog=help_text.BROWSER_NARRATION_SETUP_EPILOG)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Do not ask: download and install after the plan is shown (about 350 MB).",
+)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_narration_setup(ctx: click.Context, yes: bool, as_json_flag: bool) -> None:
+    """Download and install the Kokoro voice once, after you confirm what that means."""
+    as_json = _as_json(ctx, as_json_flag)
+    if as_json and not yes:
+        raise click.UsageError(
+            "Expected --yes with --json (a prompt cannot be answered), got neither"
+        )
+
+    def confirm(shown: dict[str, Any]) -> bool:
+        if yes:
+            return True
+        emit_lines(_narration_plan_lines(shown))
+        return click.confirm("Download and install it?", default=False)
+
+    try:
+        result = run_setup(
+            config_dir(),
+            confirm=confirm,
+            say=(lambda text: None) if as_json else (lambda text: emit_lines([f"  {text}"])),
+        )
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task="")
+    if as_json:
+        emit_json(result)
+        return
+    if result["already"]:
+        emit_lines(["narration voice: already set up"])
+    else:
+        emit_lines([f"narration voice: set up (a test word took {result['test_seconds']} s)"])
+
+
+@browser_narration.command("status", epilog=help_text.BROWSER_NARRATION_STATUS_EPILOG)
+@click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
+@click.pass_context
+def browser_narration_status(ctx: click.Context, as_json_flag: bool) -> None:
+    """Say whether the Kokoro voice is set up, and which engine `auto` will use."""
+    as_json = _as_json(ctx, as_json_flag)
+    try:
+        found = narration_status(config_dir())
+    except Exception as exc:  # noqa: BLE001 - _browser_fail owns the mapping
+        _browser_fail(exc, as_json=as_json, task="")
+    found["auto"] = "kokoro" if found["installed"] else "say"
+    if as_json:
+        emit_json({"ok": True, **found})
+        return
+    emit_lines(
+        [
+            "kokoro: " + ("set up" if found["installed"] else "not set up"),
+            f"auto uses: {found['auto']}"
+            + ("" if found["installed"] else " (run `blumkin browser narration setup` for Kokoro)"),
+        ]
+    )
+
+
+def _narration_plan_lines(shown: dict[str, Any]) -> list[str]:
+    """What the setup is about to fetch, for the person to read before they say yes."""
+    lines = ["The Kokoro voice needs these downloads (checked against pinned SHA-256 values):"]
+    for item in shown["downloads"]:
+        lines.append(f"  {item['name']}  {item['size'] / 1e6:.1f} MB  ({item['purpose']})")
+        lines.append(f"    from {item['url']}")
+    lines.append("and these Python packages from PyPI, installed into a private folder:")
+    lines.append("  " + ", ".join(shown["packages"]))
+    lines.append(
+        f"About {shown['total_bytes'] / 1e6:.0f} MB in all, kept under your blumkin config folder."
+    )
+    return lines
 
 
 @browser.command("narrate", epilog=help_text.BROWSER_NARRATE_EPILOG)

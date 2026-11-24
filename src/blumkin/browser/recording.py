@@ -33,7 +33,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -563,7 +563,7 @@ def _narrate(
     the overrun (the last frame held) only when `options.hold` asks for it.
     """
     try:
-        engine = get_engine(options.engine)
+        engine = get_engine(options.engine, options.config_dir)
         voice = validate_voice(options.voice or engine.default_voice)
         spoken = synthesize_cues(
             cues, engine, voice=voice, speed=validate_speed(options.speed), folder=work
@@ -947,7 +947,7 @@ def narrate_recording(
 def _require_narration_ready(options: NarrationOptions) -> None:
     """Refuse, before a recording is stopped, narration that could not be made."""
     try:
-        engine = get_engine(options.engine)
+        engine = get_engine(options.engine, options.config_dir)
         engine.ensure_ready()
         engine.check_voice(validate_voice(options.voice or engine.default_voice))
     except NarrationError as exc:
@@ -1051,8 +1051,10 @@ def stop_recording(
     """
     directory = captures_dir(config.config_dir, task)
     if narration is not None:
+        # The engine looks for Kokoro under the config directory.
+        narration = replace(narration, config_dir=config.config_dir)
         # Before anything is stopped: a bad option must not leave a half-finished stop.
-        get_engine(narration.engine)
+        get_engine(narration.engine, narration.config_dir)
         validate_voice(narration.voice or "x")
         validate_speed(narration.speed)
     marked = False  # whether this stop wrote the mark, so only its own is ever taken off

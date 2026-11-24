@@ -39,7 +39,7 @@ def _no_dependence_on_this_machines_tools(monkeypatch: pytest.MonkeyPatch) -> No
     The voice check, which asks `say` for its voices, is switched off here; the tests of it call
     the real one (`_REAL_CHECK_VOICE`) against a listing they supply.
     """
-    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(shutil, "which", lambda name, config_dir=None: f"/usr/bin/{name}")
     monkeypatch.setattr(narration.SayEngine, "check_voice", lambda self, voice: None)
 
 
@@ -126,7 +126,7 @@ def test_a_speed_outside_the_range_is_refused(speed: float) -> None:
 
 
 def test_an_unknown_engine_is_refused_naming_the_known_ones() -> None:
-    with pytest.raises(ValueError, match="engine of say"):
+    with pytest.raises(ValueError, match="engine of auto, kokoro, say"):
         narration.get_engine("festival")
 
 
@@ -336,7 +336,7 @@ def test_a_failed_say_reports_its_complaint_but_never_the_text(
 def test_say_missing_from_the_machine_is_a_clear_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name, config_dir=None: None)
 
     with pytest.raises(NarrationError, match="macOS `say`"):
         narration.SayEngine().synthesize("x", voice="V", speed=1.0, out=tmp_path / "a")
@@ -401,7 +401,7 @@ def _fake_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
 def _use_fake_engine(monkeypatch: pytest.MonkeyPatch) -> _FakeEngine:
     engine = _FakeEngine()
-    monkeypatch.setattr(recording, "get_engine", lambda name: engine)
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: engine)
     return engine
 
 
@@ -590,7 +590,7 @@ def test_a_narration_failure_is_a_browser_action_error_that_names_no_text(
         def synthesize(self, text: str, *, voice: str, speed: float, out: Path) -> None:
             raise NarrationError("Expected `say` to speak a cue, got exit 1")
 
-    monkeypatch.setattr(recording, "get_engine", lambda name: Failing())
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: Failing())
     _fake_ffmpeg(monkeypatch)
 
     with pytest.raises(BrowserActionError) as excinfo:
@@ -734,7 +734,7 @@ def test_record_stop_turns_its_options_into_narration_options(
         "browser", "record", "stop", "time-sheet", "--voice", "Daniel",
         "--narration-speed", "0.9", "--hold-for-narration",
     )  # fmt: skip
-    assert seen["narration"] == NarrationOptions(engine="say", voice="Daniel", speed=0.9, hold=True)
+    assert seen["narration"] == NarrationOptions(voice="Daniel", speed=0.9, hold=True)
 
     _invoke("browser", "record", "stop", "time-sheet", "--no-narration")
     assert seen["narration"] is None
@@ -853,7 +853,9 @@ def test_narration_that_cannot_be_made_is_refused_before_the_recorder_is_stopped
     session = _running_recording(tmp_path, monkeypatch)
     _session(session)
     narration.record_cue(session, "a cue", now=lambda: 101.0)
-    monkeypatch.setattr(shutil, "which", lambda name: None if name == "say" else f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        shutil, "which", lambda name, config_dir=None: None if name == "say" else f"/usr/bin/{name}"
+    )
     signals: list[int] = []
     monkeypatch.setattr(recording.os, "kill", lambda pid, sig: signals.append(sig))
 
@@ -872,7 +874,9 @@ def test_a_missing_ffmpeg_is_refused_early_with_the_way_out(
     _session(session)
     narration.record_cue(session, "a cue", now=lambda: 101.0)
     monkeypatch.setattr(
-        shutil, "which", lambda name: None if name == "ffmpeg" else f"/usr/bin/{name}"
+        shutil,
+        "which",
+        lambda name, config_dir=None: None if name == "ffmpeg" else f"/usr/bin/{name}",
     )
 
     with pytest.raises(BrowserActionError, match="--format gif"):
@@ -884,7 +888,7 @@ def test_a_recording_with_no_cues_needs_neither_say_nor_ffmpeg_to_be_stopped_ear
 ) -> None:
     session = _running_recording(tmp_path, monkeypatch)
     _session(session)
-    monkeypatch.setattr(shutil, "which", lambda name: None)  # nothing is installed
+    monkeypatch.setattr(shutil, "which", lambda name, config_dir=None: None)  # nothing is installed
     monkeypatch.setattr(recording.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(recording, "_worker_alive", lambda state: state.get("stopping") is None)
     monkeypatch.setattr(recording, "_finish", lambda *a, **k: {"ok": True})
@@ -920,7 +924,7 @@ def test_a_gif_stop_needs_neither_say_nor_ffmpeg_even_when_the_recording_has_cue
     session = _running_recording(tmp_path, monkeypatch)
     _session(session)
     narration.record_cue(session, "a cue", now=lambda: 101.0)
-    monkeypatch.setattr(shutil, "which", lambda name: None)  # no say, no ffmpeg
+    monkeypatch.setattr(shutil, "which", lambda name, config_dir=None: None)  # no say, no ffmpeg
     monkeypatch.setattr(recording.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(recording, "_worker_alive", lambda state: state.get("stopping") is None)
     monkeypatch.setattr(recording, "_finish", lambda *a, **k: {"ok": True})
@@ -1120,7 +1124,7 @@ def test_an_unavailable_voice_is_refused_before_the_recorder_is_stopped(
         def check_voice(self, voice: str) -> None:
             raise NarrationError(f"Expected a voice `say` has installed, got {voice!r}")
 
-    monkeypatch.setattr(recording, "get_engine", lambda name: NoSuchVoice())
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: NoSuchVoice())
     signals: list[int] = []
     monkeypatch.setattr(recording.os, "kill", lambda pid, sig: signals.append(sig))
 
@@ -1145,7 +1149,7 @@ def test_the_engines_default_voice_is_what_the_preflight_checks_when_none_was_na
         def check_voice(self, voice: str) -> None:
             checked.append(voice)
 
-    monkeypatch.setattr(recording, "get_engine", lambda name: Recording())
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: Recording())
     monkeypatch.setattr(recording.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(recording, "_worker_alive", lambda state: state.get("stopping") is None)
     monkeypatch.setattr(recording, "_finish", lambda *a, **k: {"ok": True})
@@ -1164,7 +1168,9 @@ def test_the_way_out_of_a_missing_ffmpeg_does_not_ask_for_ffmpeg() -> None:
 
     with pytest.raises(BrowserActionError) as excinfo:
         original = shutil.which
-        shutil.which = lambda name: None if name == "ffmpeg" else f"/usr/bin/{name}"  # type: ignore[assignment]
+        shutil.which = lambda name, config_dir=None: (
+            None if name == "ffmpeg" else f"/usr/bin/{name}"
+        )  # type: ignore[assignment]
         try:
             _require_narration_ready(NarrationOptions())
         finally:
