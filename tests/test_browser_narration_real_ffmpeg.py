@@ -80,7 +80,7 @@ def test_a_real_encode_has_one_audio_stream_as_long_as_the_video(
     _session(session, seconds=6.0)
     narration.record_cue(session, "x" * 20, now=lambda: 101.0)  # 2 s of tone from second 1
     narration.record_cue(session, "y" * 20, now=lambda: 103.0)  # 2 s from second 3
-    monkeypatch.setattr(recording, "get_engine", lambda name: _ToneEngine())
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: _ToneEngine())
     target = tmp_path / "o.mp4"
 
     result = recording.encode_recording(session, target, narration=NarrationOptions())
@@ -100,7 +100,7 @@ def test_a_held_video_is_as_long_as_the_narration_and_its_audio_matches(
     session = tmp_path / "s"
     _session(session, seconds=3.0)
     narration.record_cue(session, "z" * 50, now=lambda: 102.0)  # 5 s of tone from second 2
-    monkeypatch.setattr(recording, "get_engine", lambda name: _ToneEngine())
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: _ToneEngine())
     target = tmp_path / "o.mp4"
 
     result = recording.encode_recording(session, target, narration=NarrationOptions(hold=True))

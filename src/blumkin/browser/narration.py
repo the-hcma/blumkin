@@ -46,7 +46,8 @@ SPEED_MAX = 2.0
 MIX_RATE = 24000
 SPEECH_TIMEOUT_S = 60.0
 MIX_TIMEOUT_S = 300.0
-ENGINE_NAMES = ("say",)
+#: `auto` is Kokoro once it is set up (`blumkin browser narration setup`), else `say`.
+ENGINE_NAMES = ("auto", "kokoro", "say")
 #: A line of `say -v ?`: the voice's name, its locale (any one token: `en_US`, `ar_001`,
 #: `en_GB-u-sd-gbsct`, `en-scotland`), then `# a sample sentence`.
 _SAY_VOICE_LINE = re.compile(r"^(.+?)\s+\S+\s+#")
@@ -92,11 +93,13 @@ class Placement:
 class NarrationOptions:
     """What the caller asked of the narration when the recording is written."""
 
-    engine: str = "say"
+    engine: str = "auto"
     voice: str | None = None
     speed: float = 1.0
     #: Let the video run past the session's end (the last frame held) so the last cue is whole.
     hold: bool = False
+    #: Where blumkin keeps its files (the Kokoro engine lives under it); set by `record stop`.
+    config_dir: Path | None = None
 
 
 class NarrationError(RuntimeError):
@@ -191,9 +194,26 @@ class SayEngine:
             )
 
 
-def get_engine(name: str) -> Engine:
-    """The engine called `name`."""
+def get_engine(name: str, config_dir: Path | None = None) -> Engine:
+    """The engine called `name`; `auto` is Kokoro when it is set up under `config_dir`, else `say`.
+
+    Kokoro lives under the config directory, so it needs `config_dir`; asking for it by name
+    without one is an error, and `auto` then falls back to `say`.
+    """
     if name == "say":
+        return SayEngine()
+    if name in ("auto", "kokoro"):
+        if config_dir is None:
+            if name == "kokoro":
+                raise ValueError(
+                    "Expected a config directory to find the Kokoro engine in, got none"
+                )
+            return SayEngine()
+        from blumkin.browser.narration_kokoro import KokoroEngine
+
+        kokoro = KokoroEngine(config_dir)
+        if name == "kokoro" or kokoro.is_installed():
+            return kokoro
         return SayEngine()
     raise ValueError(f"Expected an engine of {', '.join(ENGINE_NAMES)}, got {name!r}")
 

@@ -492,7 +492,7 @@ Examples:
   blumkin browser record stop time-sheet
   blumkin browser record stop time-sheet --speed 2 --out ~/Desktop/time-sheet.mp4
   blumkin browser record stop time-sheet --format gif --trim-idle 1.5
-  blumkin browser record stop time-sheet --voice Daniel --narration-speed 0.9
+  blumkin browser record stop time-sheet --engine say --voice Daniel --narration-speed 0.9
   blumkin browser record stop time-sheet --no-narration
 
 Ends the task's recording and writes the video, which by default is as long as the session was
@@ -501,14 +501,67 @@ gives the file's path, length, size, how many frames it holds, how many stretche
 (a sign-in page or a page off the task's hosts) and why the recording ended (`stopped`, `time
 limit` or `browser closed`). `--keep-frames` leaves the numbered JPEGs and the index beside it.
 
-The cues given with `blumkin browser narrate` are spoken by an offline engine (`--engine say`,
-the macOS voice; `--voice` and `--narration-speed` choose how it sounds), placed on the video's
+The cues given with `blumkin browser narrate` are spoken by an offline engine (`--engine auto`,
+the default, is the Kokoro voice once `narration setup` was run and the macOS `say` voice until
+then; `--voice` and `--narration-speed` choose how it sounds), placed on the video's
 timeline and mixed into the MP4 as its sound track; `--no-narration` leaves them out and a GIF
 has no audio. The video keeps its real length: cues play in order, so when one runs on into
 the moment the next was planned for, the next waits until it ends and is counted as late, and a
 cue that runs past the end is cut off, unless `--hold-for-narration` lets the video run on with
 the last frame held so the last cue is heard whole. The result counts the cues, the late and cut
 ones and the seconds held; it never says what was said.
+"""
+
+BROWSER_NARRATION_EPILOG = """
+Examples:
+
+\b
+  blumkin browser narration status
+  blumkin browser narration setup
+
+The voice that narrates a recording (`blumkin browser narrate`, then `record stop`). Two engines
+speak offline, on this machine: the macOS `say` voice, which needs nothing, and Kokoro, an open
+model with a much more natural voice (`af_bella` by default), which is installed once with
+`narration setup`. `record stop --engine auto` (the default) uses Kokoro when it is set up and
+`say` when it is not. Nothing is sent anywhere when a cue is spoken.
+"""
+
+BROWSER_NARRATION_SETUP_EPILOG = """
+Examples:
+
+\b
+  blumkin browser narration setup
+  blumkin browser narration setup --yes --json
+
+Installs the Kokoro voice, once, after you confirm. It shows what it will do first: three
+downloads (the `kokoro-onnx` package from PyPI, the speech model of about 325 MB and the voices
+file, from the `kokoro-onnx` project's release page) and four Python packages (`onnxruntime`,
+`numpy`, `espeakng-loader`, `phonemizer`) installed by `uv` or `pip` into a private folder under
+the blumkin config directory. The three downloads are HTTPS only, from a fixed list of hosts
+(redirects included), and must match a pinned size and SHA-256 before they are used; a file that
+does not is removed. The four packages are installed by `uv` or `pip` within pinned version
+ranges, under that tool's own index settings, and what they depend on is resolved by the tool
+without hash checks. `kokoro-onnx` claims it needs Python below 3.14 although it works on 3.14,
+so its pure-Python wheel is unpacked from the verified file. The `espeak-ng` library the phonemizer
+loads is GPL software: it is installed on demand into that folder and is never bundled with
+blumkin. A test word is spoken at the end, and the setup is only marked done when it worked, so
+a failed run leaves nothing half-installed that is used. Once a setup has finished, running it
+again reports what is there and downloads nothing; after a failed one (a download that did not
+verify is removed), running it again may fetch the model again. This is the only time anything
+is downloaded: recording, `narrate` and `record stop` never touch the network. `--yes` skips
+the question (and is needed with `--json`), so an agent passes it only when you have said yes
+to this download.
+"""
+
+BROWSER_NARRATION_STATUS_EPILOG = """
+Examples:
+
+\b
+  blumkin browser narration status
+  blumkin browser narration status --json
+
+Says whether the Kokoro voice is set up and which engine `--engine auto` will use (Kokoro when
+it is set up, else `say`). It reads local files only and changes nothing.
 """
 
 BROWSER_NARRATE_EPILOG = """
