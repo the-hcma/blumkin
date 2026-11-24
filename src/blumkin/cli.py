@@ -4139,7 +4139,8 @@ def _narration_plan_lines(shown: dict[str, Any]) -> list[str]:
         lines.append(f"  {item['name']}  {item['size'] / 1e6:.1f} MB  ({item['purpose']})")
         lines.append(f"    from {item['url']}")
     lines.append(
-        "and these Python packages from PyPI (pinned version ranges, no hash check), installed into a private folder:"
+        "and these Python packages (pinned version ranges; your installer's index and no hash "
+        "check), into a private folder:"
     )
     lines.append("  " + ", ".join(shown["packages"]))
     lines.append(

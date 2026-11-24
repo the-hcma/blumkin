@@ -539,9 +539,10 @@ file, from the `kokoro-onnx` project's release page) and four Python packages (`
 `numpy`, `espeakng-loader`, `phonemizer`) installed by `uv` or `pip` into a private folder under
 the blumkin config directory. The three downloads are HTTPS only, from a fixed list of hosts
 (redirects included), and must match a pinned size and SHA-256 before they are used; a file that
-does not is removed. The four packages are installed by `uv` or `pip` from PyPI within pinned
-version ranges, without hash checks. `kokoro-onnx` claims it needs Python below 3.14 although it works on 3.14, so its
-pure-Python wheel is unpacked from the verified file. The `espeak-ng` library the phonemizer
+does not is removed. The four packages are installed by `uv` or `pip` within pinned version
+ranges, under that tool's own index settings, and what they depend on is resolved by the tool
+without hash checks. `kokoro-onnx` claims it needs Python below 3.14 although it works on 3.14,
+so its pure-Python wheel is unpacked from the verified file. The `espeak-ng` library the phonemizer
 loads is GPL software: it is installed on demand into that folder and is never bundled with
 blumkin. A test word is spoken at the end, and the setup is only marked done when it worked, so
 a failed run leaves nothing half-installed that is used. Run again, it reports what is there

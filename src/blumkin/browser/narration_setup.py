@@ -12,7 +12,9 @@ What is fetched is fixed here and checked:
   `kokoro-onnx` wheel from PyPI, each with a pinned size and SHA-256 that must match before the
   file is used (a file that does not match is removed);
 - the packages Kokoro needs (`onnxruntime`, `numpy`, `espeakng-loader`, `phonemizer`) are
-  installed by `uv` or `pip` from PyPI into the same private folder, within pinned version ranges;
+  installed by `uv` or `pip` into the same private folder, within pinned version ranges (the
+  tool's own index settings apply, and what those packages depend on is resolved by the tool, so
+  only the three files above are hash-checked);
 - every download is HTTPS, only from the hosts listed below, redirects included.
 
 `kokoro-onnx` declares `Requires-Python <3.14` although its code, and every package it needs,
@@ -48,7 +50,8 @@ MARKER_NAME = "setup.json"
 MODEL_NAME = "kokoro-v1.0.onnx"
 VOICES_NAME = "voices-v1.0.bin"
 WHEEL_NAME = "kokoro_onnx-0.6.1-py3-none-any.whl"
-#: The packages Kokoro needs, installed from PyPI within these ranges.
+#: The packages Kokoro needs, installed within these ranges: exactly the `Requires-Dist` of the
+#: pinned kokoro-onnx 0.6.1 wheel (its wheel is unpacked, not installed, so nothing resolves them).
 REQUIREMENTS = (
     "onnxruntime>=1.20.1,<2",
     "numpy>=2.0.2,<3",
