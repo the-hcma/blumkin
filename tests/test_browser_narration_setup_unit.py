@@ -663,3 +663,11 @@ def test_a_retry_installs_into_an_empty_package_folder(
 
 def test_the_default_voice_passes_the_voice_check() -> None:
     assert narration.validate_voice(KokoroEngine(Path("/nowhere")).default_voice) == "af_bella"
+
+
+def test_the_plan_the_person_confirms_counts_the_packages_in_the_size() -> None:
+    from blumkin.cli import _narration_plan_lines
+
+    text = "\n".join(_narration_plan_lines(narration_setup.plan()))
+    assert "plus about 130 MB for the packages" in text
+    assert "about 500 MB on disk" in text

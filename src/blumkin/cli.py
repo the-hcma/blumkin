@@ -4072,7 +4072,7 @@ def browser_narration() -> None:
 @click.option(
     "--yes",
     is_flag=True,
-    help="Do not ask: download and install after the plan is shown (about 350 MB).",
+    help="Do not ask: download and install after the plan is shown (about 500 MB on disk).",
 )
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
@@ -4144,7 +4144,8 @@ def _narration_plan_lines(shown: dict[str, Any]) -> list[str]:
     )
     lines.append("  " + ", ".join(shown["packages"]))
     lines.append(
-        f"About {shown['total_bytes'] / 1e6:.0f} MB in all, kept under your blumkin config folder."
+        f"{shown['total_bytes'] / 1e6:.0f} MB for the three files, plus about 130 MB for the "
+        "packages: about 500 MB on disk, kept under your blumkin config folder."
     )
     return lines
 

@@ -66,7 +66,7 @@ class KokoroEngine:
         if not self.is_installed():
             raise NarrationError(
                 "Expected the Kokoro narration engine to be set up, got none; run "
-                "`blumkin browser narration setup` once (it downloads about 350 MB after you "
+                "`blumkin browser narration setup` once (it downloads about 500 MB after you "
                 "confirm), or use --engine say"
             )
 
