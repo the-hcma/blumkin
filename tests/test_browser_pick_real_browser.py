@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from browser_leaks import borrowed
 
 from blumkin.browser.cdp import ControlInfo, PlaywrightDriver
 
@@ -54,7 +55,12 @@ def _driver(real: Any) -> tuple[PlaywrightDriver, Any]:
     browser, page, manager = real
     page.set_content(_PAGE)
     page.evaluate("document.title = 'start'")
-    return PlaywrightDriver(browser=browser, page=page, playwright=manager, timeout_s=5.0), page
+    # The browser and the session are shared by every test here: lend them, so the cleanup that
+    # closes each test's driver does not close them for the next test (#824).
+    driver = PlaywrightDriver(
+        browser=borrowed(browser), page=page, playwright=borrowed(manager), timeout_s=5.0
+    )
+    return driver, page
 
 
 def _pick(real: Any, name: str, role: str) -> tuple[ControlInfo, str]:

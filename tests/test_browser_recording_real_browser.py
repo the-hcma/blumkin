@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from browser_leaks import borrowed
 
 from blumkin.browser.cdp import PlaywrightDriver
 from blumkin.browser.recording import encode_recording, read_index, run_recorder
@@ -78,7 +79,12 @@ def _scripted_page(real: Any, scale: float = 1.0) -> tuple[PlaywrightDriver, Any
         lambda r: r.fulfill(body=_LOGIN, content_type="text/html"),
     )
     page.goto("https://app.example.com/")
-    return PlaywrightDriver(browser=browser, page=page, playwright=manager, timeout_s=5.0), page
+    # The browser and the session are shared by every test here: lend them, so the cleanup that
+    # closes each test's driver does not close them for the next test (#824).
+    driver = PlaywrightDriver(
+        browser=borrowed(browser), page=page, playwright=borrowed(manager), timeout_s=5.0
+    )
+    return driver, page
 
 
 def _record(
