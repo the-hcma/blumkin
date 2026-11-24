@@ -693,3 +693,18 @@ def test_a_marker_that_is_not_an_object_is_an_incomplete_setup_not_a_crash(
     for text in ("[]", "null", "3"):
         marker.write_text(text)
         assert narration_setup.status(tmp_path) == {"installed": False}
+
+
+def test_the_test_word_gets_an_absolute_config_directory_whatever_the_caller_gave(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake(tmp_path)
+    monkeypatch.chdir(tmp_path.parent)
+    seen: list[str] = []
+
+    def run(command: list[str], **kw: Any) -> Any:
+        seen.append(command[-1])
+        return SimpleNamespace(returncode=0, stdout="1.0\n", stderr="")
+
+    narration_setup.smoke_test(Path(tmp_path.name), run)
+    assert seen == [str(tmp_path.resolve())]

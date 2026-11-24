@@ -1346,3 +1346,24 @@ def test_the_cue_journal_is_kept_when_publishing_fails_so_the_stop_can_be_retrie
         )  # fmt: skip
 
     assert [c.text for c in narration.read_cues(session)] == ["a cue"]
+
+
+def test_an_export_checks_the_voice_before_it_synthesizes_a_cue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = tmp_path / "s"
+    _session(session)
+    narration.record_cue(session, "a cue", now=lambda: 101.0)
+    spoken: list[str] = []
+
+    class Strict(_FakeEngine):
+        def check_voice(self, voice: str) -> None:
+            raise NarrationError(f"Expected a known voice, got {voice!r}")
+
+        def synthesize(self, text: str, **kw: Any) -> None:
+            spoken.append(text)
+
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: Strict())
+    with pytest.raises(BrowserActionError, match="known voice"):
+        recording.encode_recording(session, tmp_path / "o.mp4", narration=NarrationOptions())
+    assert spoken == []

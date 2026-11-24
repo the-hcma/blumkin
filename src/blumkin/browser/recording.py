@@ -565,6 +565,7 @@ def _narrate(
     try:
         engine = get_engine(options.engine, options.config_dir)
         voice = validate_voice(options.voice or engine.default_voice)
+        engine.check_voice(voice)  # a direct export is checked too, not only `record stop`
         spoken = synthesize_cues(
             cues, engine, voice=voice, speed=validate_speed(options.speed), folder=work
         )

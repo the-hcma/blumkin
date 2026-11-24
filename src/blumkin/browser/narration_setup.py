@@ -295,7 +295,7 @@ def smoke_test(config_dir: Path, run: Callable[..., Any] = subprocess.run) -> fl
     )
     try:
         done = run(  # noqa: S603 - this interpreter, a fixed program and a path
-            [sys.executable, "-I", "-c", code, str(config_dir)],
+            [sys.executable, "-I", "-c", code, str(config_dir.resolve())],
             cwd=narration_dir(config_dir),  # never the caller's folder, whose files could shadow
             capture_output=True,
             text=True,
