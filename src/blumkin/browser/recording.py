@@ -75,6 +75,8 @@ from blumkin.browser.narration import (
 from blumkin.browser.profiles import load_profile
 
 STATE_NAME = RECORDING_STATE_NAME
+#: A difference between the wall and the steady clock smaller than this is not a step.
+CLOCK_STEP_MIN_S = 0.5
 #: A forgotten recording stops itself after this long.
 RECORD_MAX_SECONDS = 1800.0
 #: The video is at most this wide and runs at this many frames a second.
@@ -197,7 +199,12 @@ def run_recorder(
         """
         if not anchor:
             return 0.0
-        return (clock() - wall_at_anchor[0]) - (tick() - anchor[1])
+        found = (clock() - wall_at_anchor[0]) - (tick() - anchor[1])
+        return found if abs(found) >= CLOCK_STEP_MIN_S else 0.0  # slewing is not a step
+
+    def on_axis(painted: float) -> float:
+        """A paint time (or a keyframe's) on the journal's axis, before any clamping."""
+        return painted - stepped()
 
     def moment() -> float:
         """Now on the journal's axis: the first entry's time plus steady time since it.
@@ -226,8 +233,11 @@ def run_recorder(
         name = f"frames/f{count:06d}.jpg"
         _write_private(session_dir / name, frame.data)
         # The correction is the step as of now, so a frame painted just before a step and read
-        # just after it would be moved a whole step back: never before the entry logged last.
-        moved = frame.timestamp - stepped()
+        # just after it is moved a whole step the wrong way. A painted frame cannot be later than
+        # now, nor earlier than the entry logged last: when a step is seen, hold it in between.
+        moved = on_axis(frame.timestamp)
+        if stepped() != 0.0:
+            moved = min(moved, moment())
         log({"file": name, "kind": "frame", "t": max(moved, last[0]) if last else moved})
 
     def add_card(why: str) -> None:
@@ -282,7 +292,7 @@ def run_recorder(
         key = driver.screencast_keyframe()
         if not steady() or not _valid_jpeg(key.data):
             return None
-        floor = key.timestamp  # frames painted before it, still queued, are stale
+        floor = on_axis(key.timestamp)  # frames painted before it, still queued, are stale
         return key
 
     try:
@@ -315,7 +325,7 @@ def run_recorder(
                         add_frame(resumed)
                 else:
                     for frame in frames:
-                        if frame.timestamp >= floor:
+                        if on_axis(frame.timestamp) >= floor:
                             add_frame(frame)
             elif not on_card:
                 add_card(next((s for s in (after, route, before) if s != "ok"), "unstable"))

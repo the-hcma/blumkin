@@ -2349,7 +2349,7 @@ def test_a_caption_lookup_that_raises_never_fails_the_command(
     assert result.exit_code == 0, result.output
 
 
-def test_a_frame_painted_before_a_step_but_read_after_it_is_not_moved_a_whole_step_back(
+def test_a_frame_painted_before_a_step_but_read_after_it_is_dropped_not_misplaced_by_a_whole_step(
     tmp_path: Path,
 ) -> None:
     steps = [
@@ -2372,5 +2372,33 @@ def test_a_frame_painted_before_a_step_but_read_after_it_is_not_moved_a_whole_st
     )
 
     times = [item["t"] for item in lines if item["kind"] == "frame"]
-    assert times == sorted(times)  # never out of order
-    assert times[1] == 101.0  # held at the entry before it, not 46.0
+    # Its paint time cannot be told from the stale frames before the keyframe once the step is
+    # seen, so it is left out rather than placed a whole step early; the next one is on time.
+    assert times == [101.0, 116.0]
+
+
+def test_a_backward_step_does_not_push_a_queued_frame_ahead_or_freeze_the_ones_after_it(
+    tmp_path: Path,
+) -> None:
+    steps = [
+        _Step(frames=(_shot(_NEXT_PIXELS, 106.0),)),  # painted before the step, read after it
+        _Step(frames=(_shot(_NEXT_PIXELS, 56.0),)),  # painted after it: 116 on the axis
+    ]
+    driver = _Driver(steps)
+
+    def wall() -> float:  # the step is 60 s back and lands before the first read
+        return 1000.0 + 5.0 * driver.pumped - (60.0 if driver.pumped >= 1 else 0.0)
+
+    _, lines = _run(
+        tmp_path,
+        driver,
+        False,
+        False,
+        False,
+        True,
+        clock=wall,
+        tick=lambda: 50.0 + 5.0 * driver.pumped,
+    )
+
+    times = [item["t"] for item in lines if item["kind"] == "frame"]
+    assert times == [101.0, 106.0, 116.0]  # held by "now", then the next one is on time
