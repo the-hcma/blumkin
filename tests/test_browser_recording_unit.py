@@ -373,7 +373,8 @@ def test_frames_painted_after_a_wall_clock_step_stay_on_the_steady_axis(tmp_path
     _, lines = _run(tmp_path, driver, False, False, False, False, True, clock=wall, tick=steady)
 
     frames = [item["t"] for item in lines if item["kind"] == "frame"]
-    assert frames == [101.0, 106.0, 111.0, 116.0, 121.0]  # no jump of 60 s at the step
+    # no jump of 60 s at the step; the batch read as it is seen (116) is left out
+    assert frames == [101.0, 106.0, 111.0, 121.0]
 
 
 def test_without_a_step_the_frames_keep_the_browsers_paint_times(tmp_path: Path) -> None:
@@ -2377,7 +2378,7 @@ def test_a_frame_painted_before_a_step_but_read_after_it_is_dropped_not_misplace
     assert times == [101.0, 116.0]
 
 
-def test_a_backward_step_does_not_push_a_queued_frame_ahead_or_freeze_the_ones_after_it(
+def test_a_backward_step_leaves_out_its_batch_and_does_not_freeze_the_frames_after_it(
     tmp_path: Path,
 ) -> None:
     steps = [
@@ -2401,4 +2402,41 @@ def test_a_backward_step_does_not_push_a_queued_frame_ahead_or_freeze_the_ones_a
     )
 
     times = [item["t"] for item in lines if item["kind"] == "frame"]
-    assert times == [101.0, 106.0, 116.0]  # held by "now", then the next one is on time
+    assert times == [101.0, 116.0]  # the batch read as the step is seen is left out
+
+
+def test_a_stale_frame_read_after_a_backward_step_is_not_let_back_in(tmp_path: Path) -> None:
+    """A frame painted before the keyframe (the page just left) must not pass a moved floor."""
+    steps = [_Step(frames=(_shot(_LOGIN_PIXELS, 99.0),))]  # painted before the keyframe (101)
+    driver = _Driver(steps)
+
+    def wall() -> float:
+        return 1000.0 + 5.0 * driver.pumped - (60.0 if driver.pumped >= 1 else 0.0)
+
+    _, lines = _run(
+        tmp_path,
+        driver,
+        False,
+        False,
+        True,
+        clock=wall,
+        tick=lambda: 50.0 + 5.0 * driver.pumped,
+    )
+
+    assert _LOGIN_PIXELS not in _stored(tmp_path)
+    assert [item["kind"] for item in lines] == ["frame", "end"]
+
+
+def test_a_failure_to_write_the_anchor_does_not_stop_the_recording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(recording, "write_anchor", refuse)
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 102.0),))])
+
+    why, lines = _run(tmp_path, driver, False, True)
+
+    assert why == "stopped"
+    assert [item["kind"] for item in lines] == ["frame", "frame", "end"]

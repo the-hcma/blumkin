@@ -183,6 +183,7 @@ def run_recorder(
     count = 0
     on_card = False
     floor = 0.0
+    floor_step = 0.0  # how far the clock had stepped when the floor was set
     began = tick()  # the time limit runs on a clock that never steps back
     reason = "stopped"
 
@@ -219,7 +220,8 @@ def run_recorder(
         if not anchor and entry.get("kind") in ("frame", "card"):
             anchor.extend((float(entry["t"]), tick()))
             wall_at_anchor.append(clock())
-            write_anchor(session_dir, anchor[0], anchor[1])  # captions and cues stamp from it
+            with contextlib.suppress(OSError):  # without it they fall back to the wall clock
+                write_anchor(session_dir, anchor[0], anchor[1])  # captions and cues stamp from it
         if entry.get("kind") in ("frame", "card"):
             last[:] = [float(entry["t"])]
         index.write(json.dumps(entry) + "\n")
@@ -279,7 +281,7 @@ def run_recorder(
 
     def take_keyframe() -> ScreenFrame | None:
         """A frame of the page as it is, or None when the page is not steadily recordable."""
-        nonlocal floor, why_not
+        nonlocal floor, floor_step, why_not
         why_not = "unstable"
         driver.take_committed_urls()
         driver.take_committed_frame_hosts()
@@ -293,6 +295,7 @@ def run_recorder(
         if not steady() or not _valid_jpeg(key.data):
             return None
         floor = on_axis(key.timestamp)  # frames painted before it, still queued, are stale
+        floor_step = stepped()
         return key
 
     try:
@@ -323,6 +326,11 @@ def run_recorder(
                     if resumed is not None:
                         on_card = False
                         add_frame(resumed)
+                elif abs(stepped() - floor_step) >= CLOCK_STEP_MIN_S:
+                    # The clock stepped since the keyframe: a frame read now cannot be told from
+                    # one queued before it (its paint time is on either side of the step), so
+                    # this batch is left out and later ones are compared from here.
+                    floor, floor_step = 0.0, stepped()
                 else:
                     for frame in frames:
                         if on_axis(frame.timestamp) >= floor:
