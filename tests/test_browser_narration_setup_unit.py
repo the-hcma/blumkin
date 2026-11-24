@@ -543,7 +543,11 @@ def test_setup_asks_and_a_no_downloads_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("blumkin.cli.config_dir", lambda: tmp_path)
-    monkeypatch.setattr(narration_setup, "fetch", lambda *a, **k: pytest.fail("must not download"))
+    monkeypatch.setattr(
+        narration_setup.urllib.request,
+        "build_opener",
+        lambda *handlers: pytest.fail("must not download"),
+    )
     result = CliRunner().invoke(main, ["browser", "narration", "setup"], input="n\n")
     assert result.exit_code != 0
     assert "SHA-256" in result.output
