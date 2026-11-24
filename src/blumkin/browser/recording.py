@@ -732,7 +732,8 @@ def _encode_mp4(
             command += ["-i", str(subtitles)]
     spoken_track = None
     if narration_cues:
-        spoken_track = session_dir / "narration.srt"
+        # in the folder `encode_recording` removes, so the words are not kept with the frames
+        spoken_track = session_dir / "narration" / "narration.srt"
         _write_private(spoken_track, "\n".join(narration_cues).encode())
         command += ["-i", str(spoken_track)]
     next_input = 1 + (subtitles is not None) + (spoken_track is not None)

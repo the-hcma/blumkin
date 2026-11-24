@@ -1399,3 +1399,23 @@ def test_a_narration_cue_past_the_end_is_cut_to_it_and_one_after_it_is_left_out(
     cues = recording.narration_srt_cues([first, second], [a, b], total=10.0)
 
     assert cues == ["1\n00:00:09,000 --> 00:00:10,000\nLate words\n"]
+
+
+def test_the_narration_text_is_not_left_in_the_session_folder_after_the_encode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = tmp_path / "s"
+    _session(session)
+    narration.record_cue(session, "Copying the secret-ish card", now=lambda: 101.0)
+    _use_fake_engine(monkeypatch)
+    commands = _fake_ffmpeg(monkeypatch)
+
+    recording.encode_recording(session, tmp_path / "o.mp4", narration=NarrationOptions())
+
+    video = commands[-1]
+    written = [Path(video[k + 1]) for k, part in enumerate(video) if part == "-i"]
+    assert any(path.name == "narration.srt" for path in written)  # it was given to ffmpeg
+    # the cue journal is removed later by `_finish`; what the encode itself writes must go
+    left = [p for p in session.rglob("*") if p.is_file() and p.name != narration.NARRATION_FILE]
+    assert not [p for p in left if p.name == "narration.srt"]
+    assert not [p for p in left if b"secret-ish" in p.read_bytes()]
