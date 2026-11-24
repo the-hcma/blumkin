@@ -124,11 +124,26 @@ def site_dir(config_dir: Path) -> Path:
     return narration_dir(config_dir) / SITE_DIRNAME
 
 
+def _python_tag() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def _marker_python(root: Path) -> str | None:
+    try:
+        return json.loads((root / MARKER_NAME).read_text()).get("python")
+    except OSError, ValueError, AttributeError:
+        return None
+
+
 def is_installed(config_dir: Path) -> bool:
-    """Whether the setup finished here: its marker, the model, the voices and the packages."""
+    """Whether the setup finished here, for this Python: marker, model, voices and packages.
+
+    The packages include native code built for one Python minor version, so a setup made
+    under another one is not reused: running the setup again repairs it.
+    """
     root = narration_dir(config_dir)
     return (
-        (root / MARKER_NAME).is_file()
+        _marker_python(root) == _python_tag()
         and (root / MODEL_NAME).is_file()
         and (root / VOICES_NAME).is_file()
         and (root / SITE_DIRNAME / "kokoro_onnx").is_dir()
@@ -270,14 +285,16 @@ def smoke_test(config_dir: Path, run: Callable[..., Any] = subprocess.run) -> fl
         "from blumkin.browser.narration_kokoro import KokoroEngine\n"
         "engine = KokoroEngine(pathlib.Path(sys.argv[1]), before_marker=True)\n"
         "engine.ensure_ready()\n"
-        "out = pathlib.Path(tempfile.mkdtemp()) / 'ok.wav'\n"
-        "engine.synthesize('Ready.', voice=engine.default_voice, speed=1.0, out=out)\n"
-        "with wave.open(str(out)) as w:\n"
-        "    print(w.getnframes() / w.getframerate())\n"
+        "with tempfile.TemporaryDirectory() as scratch:\n"
+        "    out = pathlib.Path(scratch) / 'ok.wav'\n"
+        "    engine.synthesize('Ready.', voice=engine.default_voice, speed=1.0, out=out)\n"
+        "    with wave.open(str(out)) as w:\n"
+        "        print(w.getnframes() / w.getframerate())\n"
     )
     try:
         done = run(  # noqa: S603 - this interpreter, a fixed program and a path
-            [sys.executable, "-c", code, str(config_dir)],
+            [sys.executable, "-I", "-c", code, str(config_dir)],
+            cwd=narration_dir(config_dir),  # never the caller's folder, whose files could shadow
             capture_output=True,
             text=True,
             timeout=SMOKE_TIMEOUT_S,
@@ -332,7 +349,8 @@ def run_setup(
         say(f"{item.name}: downloading ({item.size // 1024} KiB) for {item.purpose}")
         fetch_file(item, path)
     site = site_dir(config_dir)
-    site.mkdir(mode=0o700, exist_ok=True)
+    shutil.rmtree(site, ignore_errors=True)  # a retry starts from an empty folder
+    site.mkdir(mode=0o700)
     say("installing the packages Kokoro needs")
     install(site)
     say("unpacking kokoro-onnx")
@@ -341,6 +359,7 @@ def run_setup(
     say("speaking a test word")
     seconds = check(config_dir)
     marker = {
+        "python": _python_tag(),
         "kokoro_onnx": "0.6.1",
         "model_sha256": DOWNLOADS[1].sha256,
         "voices_sha256": DOWNLOADS[2].sha256,

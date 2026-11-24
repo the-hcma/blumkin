@@ -56,7 +56,9 @@ def _install_fake(config: Path) -> None:
     (site_dir(config) / "kokoro_onnx").mkdir(parents=True, exist_ok=True)
     (root / MODEL_NAME).write_bytes(b"m")
     (root / VOICES_NAME).write_bytes(b"v")
-    (root / "setup.json").write_text(json.dumps({"when": "t", "kokoro_onnx": "0.6.1"}))
+    (root / "setup.json").write_text(
+        json.dumps({"when": "t", "kokoro_onnx": "0.6.1", "python": narration_setup._python_tag()})
+    )
 
 
 def _full_run(config: Path, **kw: Any) -> dict[str, Any]:
@@ -599,11 +601,16 @@ def test_the_setups_own_test_word_is_spoken_before_the_marker_exists(tmp_path: P
     captured: dict[str, Any] = {}
 
     def run(command: list[str], **kw: Any) -> Any:
-        captured["code"] = command[2]
+        captured["code"] = command[3]
+        captured["command"] = command
+        captured["cwd"] = kw.get("cwd")
         return SimpleNamespace(returncode=0, stdout="1.0\n", stderr="")
 
     narration_setup.smoke_test(tmp_path, run)
     assert "before_marker=True" in captured["code"]
+    assert captured["command"][1] == "-I"  # no PYTHONPATH, no current directory on the path
+    assert captured["cwd"] == narration_dir(tmp_path)
+    assert "mkdtemp" not in captured["code"]  # the scratch folder is removed after the word
 
 
 def test_a_stale_marker_is_removed_before_a_repair_so_it_cannot_vouch_for_it(
@@ -624,3 +631,31 @@ def test_a_stale_marker_is_removed_before_a_repair_so_it_cannot_vouch_for_it(
     _full_run(tmp_path, fetch_file=fetch_file)
     assert states and not any(states)
     assert is_installed(tmp_path)
+
+
+def test_a_setup_made_under_another_python_is_not_reused(tmp_path: Path) -> None:
+    _install_fake(tmp_path)
+    assert is_installed(tmp_path)
+    marker = narration_dir(tmp_path) / "setup.json"
+    marker.write_text(json.dumps({"python": "2.7", "when": "t"}))
+    assert not is_installed(tmp_path)
+    marker.write_text("not json")
+    assert not is_installed(tmp_path)
+
+
+def test_a_retry_installs_into_an_empty_package_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _good_match(monkeypatch)
+    leftover = site_dir(tmp_path) / "numpy"
+    leftover.mkdir(parents=True)
+    (leftover / "half.py").write_text("partial")
+    seen: list[list[str]] = []
+    _full_run(
+        tmp_path, install=lambda target: seen.append(sorted(p.name for p in target.iterdir()))
+    )
+    assert seen == [[]]
+
+
+def test_the_default_voice_passes_the_voice_check() -> None:
+    assert narration.validate_voice(KokoroEngine(Path("/nowhere")).default_voice) == "af_bella"
