@@ -341,6 +341,21 @@ def test_the_recorder_keeps_a_first_frame_then_every_frame_the_page_sends(tmp_pa
     assert _stored(tmp_path) == [_APP_PIXELS, _NEXT_PIXELS, _NEXT_PIXELS]
 
 
+def test_the_recorder_writes_the_capture_clock_anchor_with_its_first_entry(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.capture_clock import read_anchor
+
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 101.0),))])
+    ticks = iter([10.0, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5, 14.0] + [15.0] * 40)
+
+    _, lines = _run(tmp_path, driver, False, True, tick=lambda: next(ticks))
+
+    anchor = read_anchor(tmp_path)
+    assert anchor is not None
+    assert anchor[0] == lines[0]["t"]  # the first entry's time on the journal's axis
+
+
 def test_frames_painted_before_the_keyframe_are_stale_and_not_kept(tmp_path: Path) -> None:
     """Frames queued while the keyframe was being taken may be the page that was just left."""
     driver = _Driver([_Step(frames=(_shot(_LOGIN_PIXELS, 100.5), _shot(_NEXT_PIXELS, 101.5)))])

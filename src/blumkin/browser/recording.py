@@ -45,6 +45,7 @@ from blumkin.browser.capture import (
     prune_captures,
     task_lock,
 )
+from blumkin.browser.capture_clock import capture_now, write_anchor
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     BrowserActionError,
@@ -197,6 +198,7 @@ def run_recorder(
     def log(entry: dict[str, Any]) -> None:
         if not anchor and entry.get("kind") in ("frame", "card"):
             anchor.extend((float(entry["t"]), tick()))
+            write_anchor(session_dir, anchor[0], anchor[1])  # captions and cues stamp from it
         index.write(json.dumps(entry) + "\n")
         index.flush()
 
@@ -937,7 +939,7 @@ def note_command(
     command: str,
     params: dict[str, Any],
     *,
-    now: Callable[[], float] = time.time,
+    now: Callable[[], float] | None = None,
 ) -> None:
     """Add a caption to the task's running recording, if there is one; never raises.
 
@@ -956,13 +958,19 @@ def note_command(
         if not session_dir.is_dir() or (session_dir / "reason").exists():
             return
         with _open_private(session_dir / "captions.jsonl", "a") as handle:
-            handle.write(json.dumps({"t": now(), "text": text}) + "\n")
+            moment = now() if now is not None else capture_now(session_dir)
+            handle.write(json.dumps({"t": moment, "text": text}) + "\n")
     except Exception:  # noqa: BLE001, S110 - a caption must never fail the command it describes
         return
 
 
 def narrate_recording(
-    config: Any, task: str, text: str, *, ahead: bool = False, now: Callable[[], float] = time.time
+    config: Any,
+    task: str,
+    text: str,
+    *,
+    ahead: bool = False,
+    now: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     """Add one narration cue to the task's running recording; refuses when none is running.
 
@@ -994,7 +1002,12 @@ def narrate_recording(
                 f"Expected a running recording of task {task!r} to narrate, got one that has ended"
             )
         try:
-            held = record_cue(session_dir, cleaned, ahead=ahead, now=now)
+            held = record_cue(
+                session_dir,
+                cleaned,
+                ahead=ahead,
+                now=now if now is not None else (lambda: capture_now(session_dir)),
+            )
         except ValueError as exc:
             raise BrowserActionError(str(exc)) from exc
     return {"action": "narrate", "ahead": ahead, "cues": held, "ok": True, "task": task}
