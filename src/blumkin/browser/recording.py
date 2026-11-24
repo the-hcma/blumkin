@@ -32,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,8 @@ from blumkin.browser.narration import (
     NARRATION_FILE,
     NarrationError,
     NarrationOptions,
+    Placement,
+    Spoken,
     get_engine,
     mix_track,
     overrun,
@@ -461,6 +463,25 @@ def srt_cues(
     return cues
 
 
+def narration_srt_cues(
+    spoken: Sequence[Spoken], placements: Sequence[Placement], total: float
+) -> list[str]:
+    """The narration as SubRip cues: each shown while it is heard, so a muted viewer reads it.
+
+    Cues are played in order and never overlap; one that starts past the video's end is left
+    out and one that runs past it ends with it.
+    """
+    cues: list[str] = []
+    for item, where in zip(spoken, placements, strict=True):
+        end = min(where.end, total)
+        if where.start >= total or end <= where.start:
+            continue
+        cues.append(
+            f"{len(cues) + 1}\n{_srt_time(where.start)} --> {_srt_time(end)}\n{item.cue.text}\n"
+        )
+    return cues
+
+
 # --------------------------------------------------------------------------- encoding
 
 
@@ -502,11 +523,12 @@ def encode_recording(
             "skipped": "a GIF has no audio" if fmt == "gif" else "narration was turned off",
         }
     audio: Path | None = None
+    spoken_text: list[str] = []
     video_shown = shown  # what the frames last: longer in the last one when it is held
     work = session_dir / "narration"
     try:
         if held_cues and fmt == "mp4" and narration is not None:
-            audio, told, video_shown, total = _narrate(
+            audio, told, video_shown, total, spoken_text = _narrate(
                 session_dir, work, held_cues, captions, entries, shown, speed, total, narration
             )
         if fmt == "gif":
@@ -526,7 +548,10 @@ def encode_recording(
                 target=target,
                 audio=audio,
                 caption_shown=shown,
+                narration_cues=spoken_text,
             )
+            if told is not None and spoken_text:
+                told = {**told, "subtitles": len(spoken_text)}
     finally:
         shutil.rmtree(work, ignore_errors=True)  # the sound files go with the encode
         if audio is not None:
@@ -556,11 +581,12 @@ def _narrate(
     speed: float,
     total: float,
     options: NarrationOptions,
-) -> tuple[Path, dict[str, Any], list[float], float]:
+) -> tuple[Path, dict[str, Any], list[float], float, list[str]]:
     """Speak the cues, place them, and mix them into one audio file for the video.
 
-    Returns the audio file, what to report, and the frame durations and total, which grow by
-    the overrun (the last frame held) only when `options.hold` asks for it.
+    Returns the audio file, what to report, the frame durations and total (which grow by the
+    overrun, the last frame held, only when `options.hold` asks for it) and the narration as
+    SubRip cues for the subtitle track.
     """
     try:
         engine = get_engine(options.engine, options.config_dir)
@@ -580,6 +606,7 @@ def _narrate(
             total += extra
         audio = work / "mix.m4a"  # in the folder that is removed whether or not the mix works
         mix_track(spoken, placements, total, audio)
+        written = narration_srt_cues(spoken, placements, total)
         told = {
             **summarize(placements, total),
             "engine": engine.name,
@@ -588,7 +615,7 @@ def _narrate(
         }
     except (NarrationError, ValueError) as exc:
         raise BrowserActionError(str(exc)) from exc
-    return audio, told, shown, total
+    return audio, told, shown, total, written
 
 
 def read_captions(session_dir: Path) -> list[tuple[float, str]]:
@@ -667,8 +694,11 @@ def _encode_mp4(
     target: Path,
     audio: Path | None = None,
     caption_shown: list[float] | None = None,
+    narration_cues: list[str] | None = None,
 ) -> int:
-    """Write the MP4 and return how many subtitle cues it holds.
+    """Write the MP4 and return how many command caption cues it holds.
+
+    The narration track (`narration_cues`) is counted by the caller, not here.
 
     `caption_shown` is the frame durations the captions are placed through: the session's own,
     even when the last frame is held for narration, so a hold never moves a command.
@@ -700,13 +730,38 @@ def _encode_mp4(
             subtitles = session_dir / "captions.srt"
             _write_private(subtitles, text.encode())
             command += ["-i", str(subtitles)]
+    spoken_track = None
+    if narration_cues:
+        # in the folder `encode_recording` removes, so the words are not kept with the frames
+        spoken_track = session_dir / "narration" / "narration.srt"
+        _write_private(spoken_track, "\n".join(narration_cues).encode())
+        command += ["-i", str(spoken_track)]
+    next_input = 1 + (subtitles is not None) + (spoken_track is not None)
     audio_input = None
     if audio is not None:
-        audio_input = 2 if subtitles is not None else 1
+        audio_input = next_input
         command += ["-i", str(audio)]
     command += ["-vf", scale, "-map", "0:v"]
+    tracks = 0
+    if spoken_track is not None:  # the narration first: it is the track a muted viewer is shown
+        command += [
+            "-map", f"{1 + (subtitles is not None)}:0",
+            f"-metadata:s:s:{tracks}", "language=eng", f"-metadata:s:s:{tracks}", "title=Narration",
+            f"-disposition:s:{tracks}", "default",
+        ]  # fmt: skip
+        tracks += 1
     if subtitles is not None:
-        command += ["-map", "1:0", "-c:s", "mov_text", "-metadata:s:s:0", "language=eng"]
+        command += ["-map", "1:0", f"-metadata:s:s:{tracks}", "language=eng"]
+        if spoken_track is not None:
+            command += [
+                f"-metadata:s:s:{tracks}",
+                "title=Commands",
+                f"-disposition:s:{tracks}",
+                "0",
+            ]
+        tracks += 1
+    if tracks:
+        command += ["-c:s", "mov_text"]
     if audio_input is not None:
         command += ["-map", f"{audio_input}:a", "-c:a", "copy"]
     command += [

@@ -419,7 +419,7 @@ def test_the_cues_are_spoken_mixed_and_muxed_into_the_video(
     mix, video = commands  # the audio is mixed first, then the video takes it as an input
     assert "-filter_complex" in mix and mix[mix.index("-c:a") + 1] == "aac"
     assert "-i" in video and video[video.index("-map") + 1] == "0:v"
-    assert ["-map", "1:a", "-c:a", "copy"] == video[video.index("1:a") - 1 : video.index("1:a") + 3]
+    assert ["-map", "2:a", "-c:a", "copy"] == video[video.index("2:a") - 1 : video.index("2:a") + 3]
     assert result["narration"]["cues"] == 1 and result["narration"]["engine"] == "say"
     assert result["narration"]["voice"] == "Fake"  # the engine's own default
     assert engine.spoken == [("Copying the card", "Fake", 1.0)]
@@ -443,9 +443,11 @@ def test_the_audio_takes_the_input_after_the_subtitles_when_there_are_captions(
     assert [Path(item).suffix for item in inputs] == [
         ".txt",
         ".srt",
+        ".srt",
         ".m4a",
-    ]  # frames, captions, sound
-    assert maps == ["0:v", "1:0", "2:a"]  # video, subtitles, then the audio from the third input
+    ]  # frames, captions, narration text, sound
+    # video, the narration track first (the one a muted viewer is shown), the commands, the audio
+    assert maps == ["0:v", "2:0", "1:0", "3:a"]
 
 
 def test_each_sound_file_keeps_its_own_delay_when_the_cues_play_in_another_order(
@@ -1367,3 +1369,53 @@ def test_an_export_checks_the_voice_before_it_synthesizes_a_cue(
     with pytest.raises(BrowserActionError, match="known voice"):
         recording.encode_recording(session, tmp_path / "o.mp4", narration=NarrationOptions())
     assert spoken == []
+
+
+def _spoken_at(text: str, start: float, seconds: float) -> tuple[Any, Any]:
+    from blumkin.browser.narration import Cue, Placement, Spoken
+
+    return (
+        Spoken(cue=Cue(t=0.0, text=text), path=Path("x.wav"), seconds=seconds),
+        Placement(planned=start, start=start, seconds=seconds),
+    )
+
+
+def test_the_narration_becomes_subtitle_cues_shown_while_it_is_heard() -> None:
+    first, a = _spoken_at("Copying the card", 1.0, 2.0)
+    second, b = _spoken_at("Adjusting the days", 3.0, 1.5)
+
+    cues = recording.narration_srt_cues([first, second], [a, b], total=10.0)
+
+    assert cues == [
+        "1\n00:00:01,000 --> 00:00:03,000\nCopying the card\n",
+        "2\n00:00:03,000 --> 00:00:04,500\nAdjusting the days\n",
+    ]
+
+
+def test_a_narration_cue_past_the_end_is_cut_to_it_and_one_after_it_is_left_out() -> None:
+    first, a = _spoken_at("Late words", 9.0, 3.0)
+    second, b = _spoken_at("Never shown", 12.0, 1.0)
+
+    cues = recording.narration_srt_cues([first, second], [a, b], total=10.0)
+
+    assert cues == ["1\n00:00:09,000 --> 00:00:10,000\nLate words\n"]
+
+
+def test_the_narration_text_is_not_left_in_the_session_folder_after_the_encode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = tmp_path / "s"
+    _session(session)
+    narration.record_cue(session, "Copying the secret-ish card", now=lambda: 101.0)
+    _use_fake_engine(monkeypatch)
+    commands = _fake_ffmpeg(monkeypatch)
+
+    recording.encode_recording(session, tmp_path / "o.mp4", narration=NarrationOptions())
+
+    video = commands[-1]
+    written = [Path(video[k + 1]) for k, part in enumerate(video) if part == "-i"]
+    assert any(path.name == "narration.srt" for path in written)  # it was given to ffmpeg
+    # the cue journal is removed later by `_finish`; what the encode itself writes must go
+    left = [p for p in session.rglob("*") if p.is_file() and p.name != narration.NARRATION_FILE]
+    assert not [p for p in left if p.name == "narration.srt"]
+    assert not [p for p in left if b"secret-ish" in p.read_bytes()]

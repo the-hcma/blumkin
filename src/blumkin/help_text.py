@@ -503,13 +503,15 @@ limit` or `browser closed`). `--keep-frames` leaves the numbered JPEGs and the i
 
 The cues given with `blumkin browser narrate` are spoken by an offline engine (`--engine auto`,
 the default, is the Kokoro voice once `narration setup` was run and the macOS `say` voice until
-then; `--voice` and `--narration-speed` choose how it sounds), placed on the video's
-timeline and mixed into the MP4 as its sound track; `--no-narration` leaves them out and a GIF
-has no audio. The video keeps its real length: cues play in order, so when one runs on into
-the moment the next was planned for, the next waits until it ends and is counted as late, and a
-cue that runs past the end is cut off, unless `--hold-for-narration` lets the video run on with
-the last frame held so the last cue is heard whole. The result counts the cues, the late and cut
-ones and the seconds held; it never says what was said.
+then; `--voice` and `--narration-speed` choose how it sounds), placed on the video's timeline and
+mixed into the MP4 as its sound track, and their text is also a subtitle track named Narration
+(shown by default, the command captions stay a second track), so a viewer without sound reads the
+same thing; `--no-narration` leaves them out and a GIF has no audio. The video keeps its real
+length: cues play in order, so when one runs on into the moment the next was planned for, the next
+waits until it ends and is counted as late, and a cue that runs past the end is cut off, unless
+`--hold-for-narration` lets the video run on with the last frame held so the last cue is heard
+whole. The result counts the cues, the subtitle cues, the late and cut ones and the seconds held;
+it never says what was said.
 """
 
 BROWSER_NARRATION_EPILOG = """

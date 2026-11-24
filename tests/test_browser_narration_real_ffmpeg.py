@@ -14,6 +14,7 @@ import struct
 import subprocess
 import wave
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -110,3 +111,38 @@ def test_a_held_video_is_as_long_as_the_narration_and_its_audio_matches(
     assert result["seconds"] == pytest.approx(7.0, abs=0.05)  # 2 s of session, then the 5 s cue
     assert durations["video"] == pytest.approx(7.0, abs=0.3)
     assert durations["audio"] == pytest.approx(7.0, abs=0.3)
+
+
+def test_the_narration_is_also_a_subtitle_track_a_muted_viewer_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = tmp_path / "s"
+    _session(session, seconds=6.0)
+    narration.record_cue(session, "x" * 20, now=lambda: 101.0)
+    narration.record_cue(session, "y" * 20, now=lambda: 103.0)
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: _ToneEngine())
+    target = tmp_path / "o.mp4"
+
+    result = recording.encode_recording(session, target, narration=NarrationOptions())
+
+    subs: list[Any] = [s for s in _streams(target) if s["codec_type"] == "subtitle"]
+    assert [s["tags"]["name"] for s in subs] == ["Narration"]
+    assert subs[0]["disposition"]["default"] == 1
+    assert result["narration"]["subtitles"] == 2
+
+
+def test_with_command_captions_too_the_narration_is_the_default_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = tmp_path / "s"
+    _session(session, seconds=6.0)
+    (session / "captions.jsonl").write_text(json.dumps({"t": 100.5, "text": 'click "Add"'}) + "\n")
+    narration.record_cue(session, "x" * 20, now=lambda: 101.0)
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: _ToneEngine())
+    target = tmp_path / "o.mp4"
+
+    recording.encode_recording(session, target, narration=NarrationOptions())
+
+    subs: list[Any] = [s for s in _streams(target) if s["codec_type"] == "subtitle"]
+    assert [s["tags"]["name"] for s in subs] == ["Narration", "Commands"]
+    assert [s["disposition"]["default"] for s in subs] == [1, 0]
