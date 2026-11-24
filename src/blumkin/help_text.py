@@ -547,9 +547,10 @@ loads is GPL software: it is installed on demand into that folder and is never b
 blumkin. A test word is spoken at the end, and the setup is only marked done when it worked, so
 a failed run leaves nothing half-installed that is used. Once a setup has finished, running it
 again reports what is there and downloads nothing; after a failed one (a download that did not
-verify is removed), running it again may fetch the model again. This is the only time anything is downloaded: recording, `narrate` and
-`record stop` never touch the network. `--yes` skips the question (and is needed with `--json`),
-so an agent passes it only when you have said yes to this download.
+verify is removed), running it again may fetch the model again. This is the only time anything
+is downloaded: recording, `narrate` and `record stop` never touch the network. `--yes` skips
+the question (and is needed with `--json`), so an agent passes it only when you have said yes
+to this download.
 """
 
 BROWSER_NARRATION_STATUS_EPILOG = """
