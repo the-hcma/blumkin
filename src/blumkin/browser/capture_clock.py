@@ -1,10 +1,11 @@
 """One time axis for everything a recording writes (#821).
 
 A recording's frames carry the browser's paint times, and the recorder writes its cards and its
-end marker from a steady clock that starts at the first picture. Captions and narration cues are
-written by other processes (`browser click`, `browser narrate`), and used to stamp the wall
-clock, which can step during a recording (a time sync, a manual change): a step then put a cue
-past the end of the video or a caption in the wrong second.
+end marker from a steady clock that starts at the first entry (a picture, or a card when the page
+cannot be recorded). Captions and narration cues are written by other processes (`browser click`,
+`browser narrate`), and used to stamp the wall clock, which can step during a recording (a time
+sync, a manual change): a step then put a cue past the end of the video or a caption in the wrong
+second.
 
 The recorder writes the anchor once, when its first entry is logged: that entry's time on the
 journal's axis and the steady clock at that moment. Every other writer reads it and stamps

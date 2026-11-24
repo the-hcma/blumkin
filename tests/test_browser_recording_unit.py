@@ -2347,3 +2347,30 @@ def test_a_caption_lookup_that_raises_never_fails_the_command(
     result = CliRunner().invoke(cli.main, ["browser", "click", "time-sheet", "Go", "--json"])
 
     assert result.exit_code == 0, result.output
+
+
+def test_a_frame_painted_before_a_step_but_read_after_it_is_not_moved_a_whole_step_back(
+    tmp_path: Path,
+) -> None:
+    steps = [
+        _Step(frames=(_shot(_NEXT_PIXELS, 106.0),)),  # painted before the step, read after it
+        _Step(frames=(_shot(_NEXT_PIXELS, 176.0),)),  # painted after it (116 on the steady axis)
+    ]
+    driver = _Driver(steps)
+
+    def wall() -> float:  # the +60 s step lands before the first read
+        return 1000.0 + 5.0 * driver.pumped + (60.0 if driver.pumped >= 1 else 0.0)
+
+    _, lines = _run(
+        tmp_path,
+        driver,
+        False,
+        False,
+        True,
+        clock=wall,
+        tick=lambda: 50.0 + 5.0 * driver.pumped,
+    )
+
+    times = [item["t"] for item in lines if item["kind"] == "frame"]
+    assert times == sorted(times)  # never out of order
+    assert times[1] == 101.0  # held at the entry before it, not 46.0
