@@ -671,3 +671,25 @@ def test_the_plan_the_person_confirms_counts_the_packages_in_the_size() -> None:
     text = "\n".join(_narration_plan_lines(narration_setup.plan()))
     assert "plus about 130 MB for the packages" in text
     assert "about 500 MB on disk" in text
+
+
+def test_a_second_setup_for_the_same_config_directory_is_refused_while_one_runs(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.narration_setup import _exclusive
+
+    with _exclusive(tmp_path):
+        with pytest.raises(SetupError, match="no other narration setup"):
+            run_setup(tmp_path, confirm=lambda plan: pytest.fail("must not ask"))
+    with _exclusive(tmp_path):  # released once the first one ended
+        pass
+
+
+def test_a_marker_that_is_not_an_object_is_an_incomplete_setup_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    _install_fake(tmp_path)
+    marker = narration_dir(tmp_path) / "setup.json"
+    for text in ("[]", "null", "3"):
+        marker.write_text(text)
+        assert narration_setup.status(tmp_path) == {"installed": False}

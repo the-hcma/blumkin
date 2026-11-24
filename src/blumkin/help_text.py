@@ -492,7 +492,7 @@ Examples:
   blumkin browser record stop time-sheet
   blumkin browser record stop time-sheet --speed 2 --out ~/Desktop/time-sheet.mp4
   blumkin browser record stop time-sheet --format gif --trim-idle 1.5
-  blumkin browser record stop time-sheet --voice Daniel --narration-speed 0.9
+  blumkin browser record stop time-sheet --engine say --voice Daniel --narration-speed 0.9
   blumkin browser record stop time-sheet --no-narration
 
 Ends the task's recording and writes the video, which by default is as long as the session was

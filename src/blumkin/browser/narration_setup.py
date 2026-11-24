@@ -27,6 +27,7 @@ blumkin.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -158,8 +159,9 @@ def status(config_dir: Path) -> dict[str, Any]:
     if marker.is_file():
         with contextlib.suppress(OSError, ValueError):
             info = json.loads(marker.read_text())
-            found["since"] = info.get("when")
-            found["kokoro_onnx"] = info.get("kokoro_onnx")
+            if isinstance(info, dict):
+                found["since"] = info.get("when")
+                found["kokoro_onnx"] = info.get("kokoro_onnx")
     return found
 
 
@@ -329,7 +331,43 @@ def run_setup(
 
     Idempotent: files already there that match their hash are kept, and a finished install
     is reported as it is. Anything half-done is never left usable (the marker is written last).
+    One setup runs at a time per config directory: a second one is refused, not interleaved.
     """
+    with _exclusive(config_dir):
+        return _run_setup_locked(
+            config_dir, confirm=confirm, fetch_file=fetch_file, install=install,
+            check=check, say=say, now=now,
+        )  # fmt: skip
+
+
+@contextlib.contextmanager
+def _exclusive(config_dir: Path) -> Iterator[None]:
+    """Hold the setup lock of this config directory, or fail at once when another run has it."""
+    folder = config_dir / NARRATION_DIRNAME
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(folder / "setup.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise SetupError(
+                "Expected no other narration setup to be running, got one; wait for it to end"
+            ) from exc
+        yield
+    finally:
+        os.close(descriptor)  # closing releases the lock
+
+
+def _run_setup_locked(
+    config_dir: Path,
+    *,
+    confirm: Callable[[dict[str, Any]], bool],
+    fetch_file: Callable[..., None],
+    install: Callable[[Path], None],
+    check: Callable[[Path], float],
+    say: Callable[[str], None],
+    now: Callable[[], float],
+) -> dict[str, Any]:
     if is_installed(config_dir):
         return {"action": "narration-setup", "already": True, "ok": True, **status(config_dir)}
     if not confirm(plan()):
