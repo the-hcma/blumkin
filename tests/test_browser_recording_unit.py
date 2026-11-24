@@ -8,7 +8,7 @@ import shutil
 import stat
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -242,6 +242,7 @@ class _Driver:
         self.stopped = 0
         self.settles = 0
         self.keyframe_url_after: str | None = None
+        self.keyframe_stamp: Callable[[], float] | None = None  # a keyframe's paint time
         self._ran = False
 
     @property
@@ -278,7 +279,8 @@ class _Driver:
             self.start = self.keyframe_url_after
             self.pending = None
             self.current = _Step(before=self.keyframe_url_after, after=self.keyframe_url_after)
-        return _shot(pixels, 100.0 + self.keyframes)
+        stamp = self.keyframe_stamp() if self.keyframe_stamp else 100.0 + self.keyframes
+        return _shot(pixels, stamp)
 
     def screencast_pump(self, wait_ms: int) -> list[ScreenFrame]:
         if wait_ms == recording.SETTLE_MS:
@@ -339,6 +341,39 @@ def test_the_recorder_keeps_a_first_frame_then_every_frame_the_page_sends(tmp_pa
     assert driver.kwargs["max_width"] == recording.RECORD_MAX_WIDTH
     assert driver.settles == 1  # the first keyframe waited for the page to paint
     assert _stored(tmp_path) == [_APP_PIXELS, _NEXT_PIXELS, _NEXT_PIXELS]
+
+
+def test_the_recorder_writes_the_capture_clock_anchor_with_its_first_entry(
+    tmp_path: Path,
+) -> None:
+    from blumkin.browser.capture_clock import read_anchor
+
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 101.0),))])
+    ticks = iter([10.0, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5, 14.0] + [15.0] * 40)
+
+    _, lines = _run(tmp_path, driver, False, True, tick=lambda: next(ticks))
+
+    anchor = read_anchor(tmp_path)
+    assert anchor is not None
+    assert anchor[0] == lines[0]["t"]  # the first entry's time on the journal's axis
+
+
+def test_without_a_step_the_frames_keep_the_browsers_paint_times(tmp_path: Path) -> None:
+    steps = [_Step(frames=(_shot(_NEXT_PIXELS, 101.0 + 5 * n),)) for n in range(1, 4)]
+    driver = _Driver(steps)
+
+    _, lines = _run(
+        tmp_path,
+        driver,
+        False,
+        False,
+        False,
+        True,
+        clock=lambda: 1000.0 + 5.0 * driver.pumped,
+        tick=lambda: 50.0 + 5.0 * driver.pumped,
+    )
+
+    assert [item["t"] for item in lines if item["kind"] == "frame"] == [101.0, 106.0, 111.0, 116.0]
 
 
 def test_frames_painted_before_the_keyframe_are_stale_and_not_kept(tmp_path: Path) -> None:
@@ -2294,3 +2329,130 @@ def test_a_caption_lookup_that_raises_never_fails_the_command(
     result = CliRunner().invoke(cli.main, ["browser", "click", "time-sheet", "Go", "--json"])
 
     assert result.exit_code == 0, result.output
+
+
+def test_a_failure_to_write_the_anchor_does_not_stop_the_recording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(recording, "write_anchor", refuse)
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 102.0),))])
+
+    why, lines = _run(tmp_path, driver, False, True)
+
+    assert why == "stopped"
+    assert [item["kind"] for item in lines] == ["frame", "frame", "end"]
+
+
+def _stepping_clocks(driver: _Driver, *, step_at: int, step: float) -> tuple[Any, Any]:
+    """Clocks that move 5 s a read, the wall one stepping by `step` from read `step_at` on."""
+
+    def wall() -> float:
+        return 1000.0 + 5.0 * driver.pumped + (step if driver.pumped >= step_at else 0.0)
+
+    driver.keyframe_stamp = lambda: wall() - 899.0  # a keyframe is stamped with the wall clock
+    return wall, lambda: 50.0 + 5.0 * driver.pumped
+
+
+def test_frames_painted_after_a_forward_step_stay_on_the_steady_axis(tmp_path: Path) -> None:
+    steps = [
+        # read number n is the (2n-1)th, as a step takes two: painted then, on the wall clock
+        _Step(frames=(_shot(_NEXT_PIXELS, 101.0 + 5 * (2 * n - 1) + (60.0 if n >= 3 else 0.0)),))
+        for n in range(1, 5)
+    ]
+    driver = _Driver(steps)
+    wall, steady = _stepping_clocks(driver, step_at=5, step=60.0)
+
+    _, lines = _run(tmp_path, driver, *([False] * 7), True, clock=wall, tick=steady)
+
+    frames = [item["t"] for item in lines if item["kind"] == "frame"]
+    # The batch read as the step is seen (the third) is left out and a fresh picture is taken in
+    # its place: no jump of 60 s anywhere.
+    assert frames == [101.0, 106.0, 116.0, 126.0, 136.0]
+    assert driver.keyframes == 2
+
+
+def test_a_frame_painted_before_a_forward_step_but_read_after_it_is_not_misplaced(
+    tmp_path: Path,
+) -> None:
+    steps = [
+        _Step(frames=(_shot(_NEXT_PIXELS, 106.0),)),  # painted before the step, read after it
+        _Step(frames=(_shot(_NEXT_PIXELS, 176.0),)),  # painted after it (116 on the axis)
+    ]
+    driver = _Driver(steps)
+    wall, steady = _stepping_clocks(driver, step_at=1, step=60.0)
+
+    _, lines = _run(tmp_path, driver, False, False, False, True, clock=wall, tick=steady)
+
+    # Its batch is left out and a fresh picture (106 on the axis) is taken instead of it.
+    assert [item["t"] for item in lines if item["kind"] == "frame"] == [101.0, 106.0, 116.0]
+
+
+def test_a_backward_step_leaves_out_its_batch_and_does_not_freeze_the_frames_after_it(
+    tmp_path: Path,
+) -> None:
+    steps = [
+        _Step(frames=(_shot(_NEXT_PIXELS, 106.0),)),  # painted before the step, read after it
+        _Step(frames=(_shot(_NEXT_PIXELS, 56.0),)),  # painted after it: 116 on the axis
+    ]
+    driver = _Driver(steps)
+    wall, steady = _stepping_clocks(driver, step_at=1, step=-60.0)
+
+    _, lines = _run(tmp_path, driver, False, False, False, True, clock=wall, tick=steady)
+
+    assert [item["t"] for item in lines if item["kind"] == "frame"] == [101.0, 106.0, 116.0]
+
+
+def test_a_stale_frame_read_after_a_backward_step_is_not_let_back_in(tmp_path: Path) -> None:
+    """A frame painted before the keyframe (the page just left) must not pass a moved floor."""
+    steps = [_Step(frames=(_shot(_LOGIN_PIXELS, 99.0),))]  # painted before the keyframe (101)
+    driver = _Driver(steps)
+    wall, steady = _stepping_clocks(driver, step_at=1, step=-60.0)
+
+    _, lines = _run(tmp_path, driver, False, False, True, clock=wall, tick=steady)
+
+    assert _LOGIN_PIXELS not in _stored(tmp_path)
+    assert [item["t"] for item in lines if item["kind"] == "frame"] == [101.0, 106.0]
+
+
+def test_a_clock_that_is_slewed_is_not_a_step(tmp_path: Path) -> None:
+    """Drift of 0.2 s a read adds up past the step size, but no single look sees a step."""
+    steps = [_Step(frames=(_shot(_NEXT_PIXELS, 101.0 + 5 * n),)) for n in range(1, 4)]
+    driver = _Driver(steps)
+
+    _, lines = _run(
+        tmp_path,
+        driver,
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+        clock=lambda: 1000.0 + 5.2 * driver.pumped,
+        tick=lambda: 50.0 + 5.0 * driver.pumped,
+    )
+
+    assert driver.keyframes == 1  # no fresh picture was needed
+    assert [item["t"] for item in lines if item["kind"] == "frame"] == [101.0, 106.0, 111.0, 116.0]
+
+
+def test_a_fresh_picture_that_fails_after_a_step_is_tried_again_and_frames_wait_for_it(
+    tmp_path: Path,
+) -> None:
+    steps = [
+        _Step(frames=(_shot(_NEXT_PIXELS, 106.0),)),  # read as the step is seen
+        _Step(frames=(_shot(_LOGIN_PIXELS, 56.0 + 5.0),)),  # queued: read while no picture is fresh
+    ]
+    driver = _Driver(steps)
+    driver.keyframe_pixels = [_APP_PIXELS, b"not a jpeg", _NEXT_PIXELS]
+    wall, steady = _stepping_clocks(driver, step_at=1, step=-60.0)
+
+    _, lines = _run(tmp_path, driver, False, False, False, True, clock=wall, tick=steady)
+
+    assert driver.keyframes >= 3  # the start, the one that failed, and the retry
+    assert _LOGIN_PIXELS not in _stored(tmp_path)  # nothing was taken while waiting for it
+    frames = [item["t"] for item in lines if item["kind"] == "frame"]
+    assert len(frames) == 2 and frames[1] > frames[0]

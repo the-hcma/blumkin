@@ -45,6 +45,7 @@ from blumkin.browser.capture import (
     prune_captures,
     task_lock,
 )
+from blumkin.browser.capture_clock import capture_now, write_anchor
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     BrowserActionError,
@@ -74,6 +75,8 @@ from blumkin.browser.narration import (
 from blumkin.browser.profiles import load_profile
 
 STATE_NAME = RECORDING_STATE_NAME
+#: A difference between the wall and the steady clock smaller than this is not a step.
+CLOCK_STEP_MIN_S = 0.5
 #: A forgotten recording stops itself after this long.
 RECORD_MAX_SECONDS = 1800.0
 #: The video is at most this wide and runs at this many frames a second.
@@ -179,11 +182,38 @@ def run_recorder(
     index = _open_private(session_dir / "index.jsonl", "a")
     count = 0
     on_card = False
+    need_fresh = False  # a step was seen and no picture has been taken since
     floor = 0.0
     began = tick()  # the time limit runs on a clock that never steps back
     reason = "stopped"
 
     anchor: list[float] = []  # [journal time of the first entry, steady clock at that moment]
+    wall_at_anchor: list[float] = []  # the wall clock then: what a step is measured from
+    last: list[float] = []  # the time of the entry logged last
+    drift = [0.0]  # how far the wall clock was ahead of the steady one at the last look
+    stepped_by = [0.0]  # the sum of the steps seen since the first entry
+
+    def watch_step() -> bool:
+        """Look at the two clocks; True when the wall clock stepped since the last look.
+
+        A step is a jump between two looks (a poll apart), so the slow drift of a clock that is
+        being slewed never adds up to one. Paint times are on the wall clock and the journal's
+        axis is steady, so a frame is moved back by the steps seen: after one the pictures stay
+        where the cards, the captions and the cues are, instead of a whole step away from them.
+        """
+        if not anchor:
+            return False
+        now_drift = (clock() - wall_at_anchor[0]) - (tick() - anchor[1])
+        jump = now_drift - drift[0]
+        drift[0] = now_drift
+        if abs(jump) < CLOCK_STEP_MIN_S:
+            return False
+        stepped_by[0] += jump
+        return True
+
+    def on_axis(painted: float) -> float:
+        """A paint time (or a keyframe's) on the journal's axis, before any clamping."""
+        return painted - stepped_by[0]
 
     def moment() -> float:
         """Now on the journal's axis: the first entry's time plus steady time since it.
@@ -197,6 +227,12 @@ def run_recorder(
     def log(entry: dict[str, Any]) -> None:
         if not anchor and entry.get("kind") in ("frame", "card"):
             anchor.extend((float(entry["t"]), tick()))
+            wall_at_anchor.append(clock())
+            drift[0] = 0.0
+            with contextlib.suppress(OSError):  # without it they fall back to the wall clock
+                write_anchor(session_dir, anchor[0], anchor[1])  # captions and cues stamp from it
+        if entry.get("kind") in ("frame", "card"):
+            last[:] = [float(entry["t"])]
         index.write(json.dumps(entry) + "\n")
         index.flush()
 
@@ -207,7 +243,13 @@ def run_recorder(
         count += 1
         name = f"frames/f{count:06d}.jpg"
         _write_private(session_dir / name, frame.data)
-        log({"file": name, "kind": "frame", "t": frame.timestamp})
+        # The correction is the step as of now, so a frame painted just before a step and read
+        # just after it is moved a whole step the wrong way. A painted frame cannot be later than
+        # now, nor earlier than the entry logged last: when a step is seen, hold it in between.
+        moved = on_axis(frame.timestamp)
+        if stepped_by[0] != 0.0:
+            moved = min(moved, moment())
+        log({"file": name, "kind": "frame", "t": max(moved, last[0]) if last else moved})
 
     def add_card(why: str) -> None:
         nonlocal on_card
@@ -259,9 +301,9 @@ def run_recorder(
         if not steady():
             return None
         key = driver.screencast_keyframe()
-        if not steady() or not _valid_jpeg(key.data):
-            return None
-        floor = key.timestamp  # frames painted before it, still queued, are stale
+        if watch_step() or not steady() or not _valid_jpeg(key.data):
+            return None  # a step now: its paint time is on one side or the other, try again
+        floor = on_axis(key.timestamp)  # frames painted before it, still queued, are stale
         return key
 
     try:
@@ -282,6 +324,7 @@ def run_recorder(
             driver.take_committed_urls()
             driver.take_committed_frame_hosts()
             frames = driver.screencast_pump(POLL_MS)
+            step_seen = watch_step()
             after = state_now()
             route = route_state(driver.take_committed_urls(), driver.take_committed_frame_hosts())
             if before == "ok" and after == "ok" and route == "ok":
@@ -291,10 +334,22 @@ def run_recorder(
                     resumed = take_keyframe()
                     if resumed is not None:
                         on_card = False
+                        need_fresh = False
                         add_frame(resumed)
+                elif step_seen or need_fresh:
+                    # The clock stepped: a frame read now cannot be told from one queued before
+                    # the last keyframe (its paint time is on either side of the step), so
+                    # frames are left out and a fresh picture is tried for on every look until
+                    # one is taken, which also compares later frames from there and shows a page
+                    # that goes idle as it is now.
+                    need_fresh = True
+                    again = take_keyframe()
+                    if again is not None:
+                        need_fresh = False
+                        add_frame(again)
                 else:
                     for frame in frames:
-                        if frame.timestamp >= floor:
+                        if on_axis(frame.timestamp) >= floor:
                             add_frame(frame)
             elif not on_card:
                 add_card(next((s for s in (after, route, before) if s != "ok"), "unstable"))
@@ -937,7 +992,7 @@ def note_command(
     command: str,
     params: dict[str, Any],
     *,
-    now: Callable[[], float] = time.time,
+    now: Callable[[], float] | None = None,
 ) -> None:
     """Add a caption to the task's running recording, if there is one; never raises.
 
@@ -956,13 +1011,19 @@ def note_command(
         if not session_dir.is_dir() or (session_dir / "reason").exists():
             return
         with _open_private(session_dir / "captions.jsonl", "a") as handle:
-            handle.write(json.dumps({"t": now(), "text": text}) + "\n")
+            moment = now() if now is not None else capture_now(session_dir)
+            handle.write(json.dumps({"t": moment, "text": text}) + "\n")
     except Exception:  # noqa: BLE001, S110 - a caption must never fail the command it describes
         return
 
 
 def narrate_recording(
-    config: Any, task: str, text: str, *, ahead: bool = False, now: Callable[[], float] = time.time
+    config: Any,
+    task: str,
+    text: str,
+    *,
+    ahead: bool = False,
+    now: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     """Add one narration cue to the task's running recording; refuses when none is running.
 
@@ -994,7 +1055,12 @@ def narrate_recording(
                 f"Expected a running recording of task {task!r} to narrate, got one that has ended"
             )
         try:
-            held = record_cue(session_dir, cleaned, ahead=ahead, now=now)
+            held = record_cue(
+                session_dir,
+                cleaned,
+                ahead=ahead,
+                now=now if now is not None else (lambda: capture_now(session_dir)),
+            )
         except ValueError as exc:
             raise BrowserActionError(str(exc)) from exc
     return {"action": "narrate", "ahead": ahead, "cues": held, "ok": True, "task": task}
