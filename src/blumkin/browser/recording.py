@@ -53,6 +53,22 @@ from blumkin.browser.cdp import (
     attach,
 )
 from blumkin.browser.commands import TaskNotFoundError
+from blumkin.browser.narration import (
+    NARRATION_FILE,
+    NarrationError,
+    NarrationOptions,
+    get_engine,
+    mix_track,
+    overrun,
+    plan_cues,
+    read_cues,
+    record_cue,
+    summarize,
+    synthesize_cues,
+    validate_speed,
+    validate_text,
+    validate_voice,
+)
 from blumkin.browser.profiles import load_profile
 
 STATE_NAME = RECORDING_STATE_NAME
@@ -455,10 +471,13 @@ def encode_recording(
     fmt: str = "mp4",
     speed: float = 1.0,
     trim_idle_s: float | None = None,
+    narration: NarrationOptions | None = None,
 ) -> dict[str, Any]:
     """Write the session's frames as `target` (an MP4 or a GIF) at real speed.
 
-    Returns what was written: seconds, bytes, frame and card counts.
+    The narration cues of the session (see `narration.py`) are spoken, mixed and muxed into an
+    MP4 when `narration` is given; a GIF has no audio. Returns what was written: seconds, bytes,
+    frame and card counts, and a `narration` summary (counts only) when the session had cues.
     """
     if fmt not in RECORD_FORMATS:
         raise ValueError(f"Expected a format of {', '.join(RECORD_FORMATS)}, got {fmt!r}")
@@ -475,22 +494,44 @@ def encode_recording(
     cards = _write_cards(session_dir, entries, width, height)
     captions = read_captions(session_dir)
     cues = 0
-    if fmt == "gif":
-        total = _encode_gif(entries, shown, paths, cards, width, height, target)
-    else:
-        cues = _encode_mp4(
-            session_dir,
-            entries,
-            shown,
-            paths,
-            cards,
-            captions,
-            speed=speed,
-            width=width,
-            height=height,
-            total=total,
-            target=target,
-        )
+    told: dict[str, Any] | None = None
+    held_cues = read_cues(session_dir)
+    if held_cues and (fmt == "gif" or narration is None):
+        told = {
+            "cues": len(held_cues),
+            "skipped": "a GIF has no audio" if fmt == "gif" else "narration was turned off",
+        }
+    audio: Path | None = None
+    video_shown = shown  # what the frames last: longer in the last one when it is held
+    work = session_dir / "narration"
+    try:
+        if held_cues and fmt == "mp4" and narration is not None:
+            audio, told, video_shown, total = _narrate(
+                session_dir, work, held_cues, captions, entries, shown, speed, total, narration
+            )
+        if fmt == "gif":
+            total = _encode_gif(entries, shown, paths, cards, width, height, target)
+        else:
+            cues = _encode_mp4(
+                session_dir,
+                entries,
+                video_shown,
+                paths,
+                cards,
+                captions,
+                speed=speed,
+                width=width,
+                height=height,
+                total=total,
+                target=target,
+                audio=audio,
+                caption_shown=shown,
+            )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)  # the sound files go with the encode
+        if audio is not None:
+            with contextlib.suppress(OSError):
+                audio.unlink(missing_ok=True)
     os.chmod(target, 0o600)
     return {
         "bytes": target.stat().st_size,
@@ -499,9 +540,54 @@ def encode_recording(
         "format": fmt,
         "frames": sum(1 for entry in entries if entry.kind == "frame"),
         "height": height,
+        **({"narration": told} if told is not None else {}),
         "seconds": round(total, 3),
         "width": width,
     }
+
+
+def _narrate(
+    session_dir: Path,
+    work: Path,
+    cues: list[Any],
+    captions: list[tuple[float, str]],
+    entries: list[Entry],
+    shown: list[float],
+    speed: float,
+    total: float,
+    options: NarrationOptions,
+) -> tuple[Path, dict[str, Any], list[float], float]:
+    """Speak the cues, place them, and mix them into one audio file for the video.
+
+    Returns the audio file, what to report, and the frame durations and total, which grow by
+    the overrun (the last frame held) only when `options.hold` asks for it.
+    """
+    try:
+        engine = get_engine(options.engine)
+        voice = validate_voice(options.voice or engine.default_voice)
+        spoken = synthesize_cues(
+            cues, engine, voice=voice, speed=validate_speed(options.speed), folder=work
+        )
+        placements = plan_cues(
+            spoken,
+            [moment for moment, _ in captions],
+            lambda moment: map_time(moment, entries, shown, speed),
+        )
+        extra = overrun(placements, total) if options.hold else 0.0
+        if extra > 0:
+            shown = [*shown[:-1], shown[-1] + extra]
+            total += extra
+        audio = work / "mix.m4a"  # in the folder that is removed whether or not the mix works
+        mix_track(spoken, placements, total, audio)
+        told = {
+            **summarize(placements, total),
+            "engine": engine.name,
+            "hold_s": round(extra, 2),
+            "voice": voice,
+        }
+    except (NarrationError, ValueError) as exc:
+        raise BrowserActionError(str(exc)) from exc
+    return audio, told, shown, total
 
 
 def read_captions(session_dir: Path) -> list[tuple[float, str]]:
@@ -578,8 +664,16 @@ def _encode_mp4(
     height: int,
     total: float,
     target: Path,
+    audio: Path | None = None,
+    caption_shown: list[float] | None = None,
 ) -> int:
-    """Write the MP4 and return how many subtitle cues it holds."""
+    """Write the MP4 and return how many subtitle cues it holds.
+
+    `caption_shown` is the frame durations the captions are placed through: the session's own,
+    even when the last frame is held for narration, so a hold never moves a command.
+
+    With `audio` (the mixed narration, AAC) it is muxed in as the video's sound track.
+    """
     if shutil.which("ffmpeg") is None:
         raise ValueError(
             "Expected ffmpeg on PATH to write an MP4, got none; install it or use --format gif"
@@ -598,16 +692,22 @@ def _encode_mp4(
     subtitles = None
     cues = 0
     if captions:
-        found = srt_cues(captions, entries, shown, speed, total)
+        found = srt_cues(captions, entries, caption_shown or shown, speed, total)
         text = "\n".join(found)
         cues = len(found)
         if text:
             subtitles = session_dir / "captions.srt"
             _write_private(subtitles, text.encode())
             command += ["-i", str(subtitles)]
+    audio_input = None
+    if audio is not None:
+        audio_input = 2 if subtitles is not None else 1
+        command += ["-i", str(audio)]
     command += ["-vf", scale, "-map", "0:v"]
     if subtitles is not None:
         command += ["-map", "1:0", "-c:s", "mov_text", "-metadata:s:s:0", "language=eng"]
+    if audio_input is not None:
+        command += ["-map", f"{audio_input}:a", "-c:a", "copy"]
     command += [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "27",
         "-t", f"{total:.3f}",
@@ -805,6 +905,60 @@ def note_command(
         return
 
 
+def narrate_recording(
+    config: Any, task: str, text: str, *, ahead: bool = False, now: Callable[[], float] = time.time
+) -> dict[str, Any]:
+    """Add one narration cue to the task's running recording; refuses when none is running.
+
+    Unlike a caption, which is a courtesy and never fails its command, a cue that cannot be
+    recorded is an error: the caller meant it to be heard. The text is the caller's own, never
+    read off the page, and is kept only in the session's private journal until `record stop`.
+
+    The check and the append are made under the task's lock, and `record stop` marks the
+    recording as stopping under it before it reads the journal: a cue that is accepted is
+    always one the encode will see.
+    """
+    cleaned = validate_text(text)
+    directory = captures_dir(config.config_dir, task)
+    with task_lock(directory):
+        state = _read_state(directory)
+        if state is not None and state.get("kind") != "clip" and state.get("stopping"):
+            raise BrowserActionError(
+                f"Expected a running recording of task {task!r} to narrate, got one that is "
+                "being stopped"  # checked first: the stop has ended its worker by now
+            )
+        if state is None or state.get("kind") == "clip" or not _worker_alive(state):
+            raise BrowserActionError(
+                f"Expected a running recording of task {task!r} to narrate, got none; start one "
+                f"with `blumkin browser record start {task}`"
+            )
+        session_dir = directory / str(state["session"])
+        if not session_dir.is_dir() or (session_dir / "reason").exists():
+            raise BrowserActionError(
+                f"Expected a running recording of task {task!r} to narrate, got one that has ended"
+            )
+        try:
+            held = record_cue(session_dir, cleaned, ahead=ahead, now=now)
+        except ValueError as exc:
+            raise BrowserActionError(str(exc)) from exc
+    return {"action": "narrate", "ahead": ahead, "cues": held, "ok": True, "task": task}
+
+
+def _require_narration_ready(options: NarrationOptions) -> None:
+    """Refuse, before a recording is stopped, narration that could not be made."""
+    try:
+        engine = get_engine(options.engine)
+        engine.ensure_ready()
+        engine.check_voice(validate_voice(options.voice or engine.default_voice))
+    except NarrationError as exc:
+        raise BrowserActionError(str(exc)) from exc
+    if shutil.which("ffmpeg") is None:
+        raise BrowserActionError(
+            "Expected ffmpeg on PATH to mix the narration, got none; install it (an MP4 needs it "
+            "with or without narration), or stop with --format gif, which has no audio"
+        )
+
+
 # --------------------------------------------------------------------------- the worker
 
 
@@ -888,50 +1042,80 @@ def stop_recording(
     trim_idle_s: float | None = None,
     keep_frames: bool = False,
     now: Callable[[], float] = time.time,
+    narration: NarrationOptions | None = NarrationOptions(),
 ) -> dict[str, Any]:
-    """Stop the task's recording, encode it, and return the file and what it holds."""
+    """Stop the task's recording, encode it, and return the file and what it holds.
+
+    The narration cues given with `narrate` are spoken into the video (`narration` is None to
+    leave them out).
+    """
     directory = captures_dir(config.config_dir, task)
-    with task_lock(directory):
-        state = _read_state(directory)
-        if state is None:
-            raise BrowserActionError(f"Expected a recording of task {task!r} to stop, got none")
-        if state.get("kind") == "clip" and _worker_alive(state):
-            raise BrowserActionError(
-                f"Expected a recording to stop, got a `record clip` of task {task!r}, "
-                "which ends by itself"
-            )
-        session_dir = directory / str(state["session"])
-        if int(state["pid"]) <= 0 and now() - float(state["started"]) < START_WAIT_S * 2:
-            raise BrowserActionError(
-                f"Expected a recording of task {task!r} that is running, got one still "
-                "starting; try again in a few seconds"
-            )
-        if not _worker_alive(state) and not _has_entries(session_dir):
-            shutil.rmtree(session_dir, ignore_errors=True)
-            _release_state_locked(directory, session_dir.name)
-            raise BrowserActionError(
-                f"Expected a recording of task {task!r} to stop, got one whose recorder died "
-                "before it wrote anything; it was cleared, so `record start` can run again"
-            )
-    if _worker_alive(state):
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(int(state["pid"]), signal.SIGTERM)
-        deadline = time.monotonic() + STOP_WAIT_S
-        while time.monotonic() < deadline and _worker_alive(state):
-            time.sleep(0.1)
+    if narration is not None:
+        # Before anything is stopped: a bad option must not leave a half-finished stop.
+        get_engine(narration.engine)
+        validate_voice(narration.voice or "x")
+        validate_speed(narration.speed)
+    marked = False  # whether this stop wrote the mark, so only its own is ever taken off
+    state: dict[str, Any] = {}
+    try:
+        with task_lock(directory):
+            found = _read_state(directory)
+            if found is None:
+                raise BrowserActionError(f"Expected a recording of task {task!r} to stop, got none")
+            state = found
+            if state.get("kind") == "clip" and _worker_alive(state):
+                raise BrowserActionError(
+                    f"Expected a recording to stop, got a `record clip` of task {task!r}, "
+                    "which ends by itself"
+                )
+            session_dir = directory / str(state["session"])
+            if int(state["pid"]) <= 0 and now() - float(state["started"]) < START_WAIT_S * 2:
+                raise BrowserActionError(
+                    f"Expected a recording of task {task!r} that is running, got one still "
+                    "starting; try again in a few seconds"
+                )
+            if not _worker_alive(state) and not _has_entries(session_dir):
+                shutil.rmtree(session_dir, ignore_errors=True)
+                _release_state_locked(directory, session_dir.name)
+                raise BrowserActionError(
+                    f"Expected a recording of task {task!r} to stop, got one whose recorder died "
+                    "before it wrote anything; it was cleared, so `record start` can run again"
+                )
+            if narration is not None and fmt == "mp4" and read_cues(session_dir):
+                # Before anything is stopped (a GIF has no audio): the engine, the voice, ffmpeg.
+                _require_narration_ready(narration)
+            # From here a cue is no longer accepted: `narrate` checks this under the same lock, so
+            # one it said yes to is always in the journal the encode reads, never lost to it.
+            state = {**state, "stopping": True}
+            _write_state_locked(directory, state)
+            marked = True
         if _worker_alive(state):
             with contextlib.suppress(ProcessLookupError):
-                os.kill(int(state["pid"]), signal.SIGKILL)
-            deadline = time.monotonic() + KILL_WAIT_S
+                os.kill(int(state["pid"]), signal.SIGTERM)
+            deadline = time.monotonic() + STOP_WAIT_S
             while time.monotonic() < deadline and _worker_alive(state):
                 time.sleep(0.1)
-        if _worker_alive(state):
-            # The journal is read only once the worker has stopped writing it.
-            raise BrowserActionError(
-                f"Expected the recorder of task {task!r} to have stopped, got a process that "
-                "still runs; nothing was encoded and the recording is kept, so try again"
-            )
-    _claim_export(directory, state)
+            if _worker_alive(state):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(int(state["pid"]), signal.SIGKILL)
+                deadline = time.monotonic() + KILL_WAIT_S
+                while time.monotonic() < deadline and _worker_alive(state):
+                    time.sleep(0.1)
+            if _worker_alive(state):
+                # The journal is read only once the worker has stopped writing it; the recording
+                # goes on, so it takes cues again.
+                _clear_stopping(directory, state)
+                raise BrowserActionError(
+                    f"Expected the recorder of task {task!r} to have stopped, got a process that "
+                    "still runs; nothing was encoded and the recording is kept, so try again"
+                )
+        _claim_export(directory, state)
+    except BaseException:
+        # Interrupted (Ctrl+C) before the export was claimed: a recorder that is still
+        # running goes on taking cues. One that has stopped is over, whatever the mark says.
+        if marked and _worker_alive(state):
+            _clear_stopping(directory, state)
+        raise
     try:
         if not _has_entries(session_dir):
             _discard(directory, session_dir)
@@ -951,6 +1135,7 @@ def stop_recording(
             started=float(state["started"]),
             now=now,
             action="record-stop",
+            narration=narration,
         )
     except BaseException:
         _unclaim_export(directory, state)
@@ -1078,6 +1263,7 @@ def _finish(
     started: float,
     now: Callable[[], float],
     action: str,
+    narration: NarrationOptions | None = None,
 ) -> dict[str, Any]:
     """Encode a finished session, clear its working files, and describe the result.
 
@@ -1103,7 +1289,14 @@ def _finish(
     work = Path(temporary)
     reason = _read_reason(session_dir)  # read before publishing: nothing after it can fail
     try:
-        written = encode_recording(session_dir, work, fmt=fmt, speed=speed, trim_idle_s=trim_idle_s)
+        written = encode_recording(
+            session_dir,
+            work,
+            fmt=fmt,
+            speed=speed,
+            trim_idle_s=trim_idle_s,
+            narration=narration,
+        )
         _publish(work, target)
     finally:
         with contextlib.suppress(OSError):
@@ -1112,6 +1305,7 @@ def _finish(
     with contextlib.suppress(OSError):  # the video exists: housekeeping never fails the export
         if keep_frames:
             kept = str(session_dir)
+            (session_dir / NARRATION_FILE).unlink(missing_ok=True)  # the words are not kept
             _release_state(directory, session_dir.name)
         else:
             _discard(directory, session_dir)
@@ -1265,7 +1459,18 @@ def _unclaim_export(directory: Path, state: dict[str, Any]) -> None:
     with task_lock(directory), contextlib.suppress(OSError, BrowserActionError):
         current = _read_state(directory)
         if current is not None and current.get("session") == state["session"]:
-            _write_state_locked(directory, {k: v for k, v in current.items() if k != "exporting"})
+            _write_state_locked(
+                directory,
+                {k: v for k, v in current.items() if k not in ("exporting", "stopping")},
+            )
+
+
+def _clear_stopping(directory: Path, state: dict[str, Any]) -> None:
+    """Take the stopping mark off a recording that is still running."""
+    with task_lock(directory), contextlib.suppress(OSError, BrowserActionError):
+        current = _read_state(directory)
+        if current is not None and current.get("session") == state["session"]:
+            _write_state_locked(directory, {k: v for k, v in current.items() if k != "stopping"})
 
 
 def _has_entries(session_dir: Path) -> bool:

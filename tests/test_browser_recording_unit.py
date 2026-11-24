@@ -18,6 +18,7 @@ import pytest
 
 from blumkin.browser import recording
 from blumkin.browser.cdp import BrowserActionError, ScreenFrame
+from blumkin.browser.narration import NarrationOptions
 from blumkin.browser.recording import (
     Entry,
     classify,
@@ -1179,6 +1180,7 @@ def test_record_stop_passes_its_encoding_options(
         "speed": 2.0,
         "trim_idle_s": 1.5,
         "keep_frames": True,
+        "narration": NarrationOptions(),  # on by default; the cues given with `narrate` are spoken
     }
 
 
