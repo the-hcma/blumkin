@@ -872,13 +872,14 @@ overflows it is not covered, so mask the container that holds it. The bar is one
 that exists only while the picture is taken; nothing the page holds is changed. A mask finds
 elements in the page itself, not inside an embedded frame.
 
-The page must be on one of the task's allowed hosts and is not a sign-in page (sign in first).
-The page's documents are read before and after the picture and its frame events are counted
-meanwhile; nothing is saved if the documents differ or a frame was attached, navigated or
-detached, which catches a page that left for a sign-in page and came back. It is a safeguard,
-not proof that no sign-in pixel is saved: a same-document change also makes it refuse, so try
-again. A cross-process frame is counted through the same events, one that was already on the
-page when the command attached included.
+The page must be on one of the task's allowed hosts and is not a sign-in page (sign in first). The
+page's documents are read before and after the picture and its frame events are counted meanwhile;
+nothing is saved if the documents differ or a frame was attached, navigated or detached, which
+catches a page that left for a sign-in page and came back. It is a safeguard, not proof that no
+sign-in pixel is saved: a same-document change also makes it refuse, so try again. A cross-process
+frame is counted through the same events when Playwright lists it, which it did for one already on
+the page when the command attached (Chrome 158 with Playwright 1.65.2, checked in a real browser);
+where a version does not, that frame is checked at the two ends only.
 An element that is not wholly on screen is refused, as capturing it would scroll the page. The
 file is private (only you can read it) and kept under `<config dir>/captures/<task>/` unless
 `--out` names a file that does not exist yet. What the page shows can include names, amounts

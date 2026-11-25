@@ -2636,9 +2636,9 @@ class PlaywrightDriver:
         """The host of every frame of the page, the top one included (read from local state)."""
         self._require_open()
         main = self._page.main_frame
-        # Playwright lists a cross-origin frame that existed before it attached, but with no
-        # address until a moment later; the inventory `_child_frames` keeps is read too, so such
-        # a frame is checked by its real address and not left out.
+        # Playwright may not list a cross-origin frame that existed before it attached, or may
+        # list it with no address for a moment; the inventory `_child_frames` keeps is read too,
+        # so such a frame is checked by its real address and not left out.
         try:
             with self._bounded(self._call_deadline_s(), "list the page's frames"):
                 inner = self._child_frames()
@@ -2653,13 +2653,15 @@ class PlaywrightDriver:
     def watch_documents(self) -> Iterator[DocumentWatch]:
         """Count the frame events of the page for the length of the block.
 
-        A frame that is attached, navigated or detached while a picture is taken may have shown
-        something the checks before and after never saw: a sign-in frame can come and go between
-        two reads, and the frame tree behind `frame_signature` leaves out cross-process frames
-        (exactly where a sign-in frame usually is), which Playwright's own events do cover, one that
-        already existed when this command attached included (checked in a real browser). A
-        navigation of the main frame counts too: a document restored from the back/forward cache
-        keeps its loader id. A same-document change (`pushState`) fires the same event and is
+        A frame that is attached, navigated or detached while a picture is taken may have
+        shown something the checks before and after never saw: a sign-in frame can come and
+        go between two reads, and the frame tree behind `frame_signature` leaves out
+        cross-process frames (exactly where a sign-in frame usually is), which Playwright's
+        own events cover when it lists them: it did for one that already existed when this
+        command attached (Chrome 158 with Playwright 1.65.2, checked in a real browser);
+        where a version does not, that frame is checked at the two ends only. A navigation
+        of the main frame counts too: a document restored from the back/forward cache keeps
+        its loader id. A same-document change (`pushState`) fires the same event and is
         counted too, so a capture may be refused for it and asked for again.
 
         Events are delivered while the connection is serviced: the block should end with a short
