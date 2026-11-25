@@ -2695,3 +2695,69 @@ def test_a_mask_that_goes_missing_when_a_clock_step_asks_for_a_fresh_picture_is_
 
     cards = [item for item in lines if item["kind"] == "card"]
     assert [c["reason"] for c in cards] == ["mask"]  # the video does not hold the old picture
+
+
+# --------------------------------------------------------------- the gap between two looks (#807)
+
+
+def _run_with_stop(
+    tmp_path: Path, driver: _Driver, stop: Callable[[], bool]
+) -> list[dict[str, Any]]:
+    run_recorder(
+        driver,  # type: ignore[arg-type]
+        tmp_path,
+        hosts=_HOSTS,
+        sign_in_hosts=_SIGN_IN,
+        stop=stop,
+    )
+    return [json.loads(line) for line in (tmp_path / "index.jsonl").read_text().splitlines()]
+
+
+def test_a_sign_in_page_committed_between_two_looks_keeps_its_pixels_out(tmp_path: Path) -> None:
+    """The page went to the sign-in page and back after one look and before the next.
+
+    The addresses at the start and the end of the next look are both the app's, so only the
+    documents committed meanwhile can say that the frames it reads were painted by the sign-in
+    page: they must be judged with that look, not thrown away before it.
+    """
+    driver = _Driver(
+        [
+            _Step(frames=(_shot(_NEXT_PIXELS, 102.0),)),
+            _Step(frames=(_shot(_LOGIN_PIXELS, 103.0),)),  # painted by the sign-in page
+        ]
+    )
+    calls = [0]
+
+    def stop() -> bool:
+        calls[0] += 1
+        if calls[0] == 2:  # between the first look and the second, which reads the sign-in frames
+            driver.committed_now.append(_LOGIN)
+        return calls[0] >= 3
+
+    lines = _run_with_stop(tmp_path, driver, stop)
+
+    assert _LOGIN_PIXELS not in _stored(tmp_path)
+    assert "card" in [item["kind"] for item in lines]
+
+
+def test_a_sign_in_frame_that_came_and_went_between_two_looks_keeps_its_pixels_out(
+    tmp_path: Path,
+) -> None:
+    driver = _Driver(
+        [
+            _Step(frames=(_shot(_NEXT_PIXELS, 102.0),)),
+            _Step(frames=(_shot(_LOGIN_PIXELS, 103.0),)),
+        ]
+    )
+    calls = [0]
+
+    def stop() -> bool:
+        calls[0] += 1
+        if calls[0] == 2:
+            driver.inner_now.append("login.microsoftonline.com")  # an inner frame, then gone
+        return calls[0] >= 3
+
+    lines = _run_with_stop(tmp_path, driver, stop)
+
+    assert _LOGIN_PIXELS not in _stored(tmp_path)
+    assert "card" in [item["kind"] for item in lines]

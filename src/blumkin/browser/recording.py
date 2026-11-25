@@ -341,8 +341,10 @@ def run_recorder(
                 reason = "time limit"
                 break
             before = state_now()
-            driver.take_committed_urls()
-            driver.take_committed_frame_hosts()
+            # What the page committed since the last look ended is not drained here: those
+            # documents painted frames that this read returns, and the last look's check was
+            # made before they existed. Draining at the end of a look only, every document is
+            # judged with the frames that could be its own.
             mask_missing = False
             try:
                 frames = driver.screencast_pump(POLL_MS)
