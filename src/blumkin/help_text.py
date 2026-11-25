@@ -475,9 +475,11 @@ constantly, where an unmasked recording of the same page held about 56, one per 
 is drawn over each masked element for the instant of each picture, so it can be seen flashing in
 the browser window. A stretch where a mask matches nothing (or a different number of elements
 while the picture is made) is left out as a card, so what it should hide is never saved in view; a
-typo in a name therefore shows as cards, not as a video of the page. The bar covers each element's
-own box, so text that overflows it, or an element that moves while the picture is made, can stay
-visible: look at the video before sharing it.
+name that matches nothing therefore shows as cards, not as a video of the page. A typo that
+matches a different element is not caught: that element is covered and the one meant stays in
+view, so check each name (a masked screenshot with the same masks first) and look at the video
+before sharing it. The bar covers each element's own box, so text that overflows it, or an element
+that moves while the picture is made, can stay visible: look at the video before sharing it.
 """
 
 BROWSER_RECORD_START_EPILOG = """
@@ -504,9 +506,11 @@ constantly, where an unmasked recording of the same page held about 56, one per 
 is drawn over each masked element for the instant of each picture, so it can be seen flashing in
 the browser window. A stretch where a mask matches nothing (or a different number of elements
 while the picture is made) is left out as a card, so what it should hide is never saved in view; a
-typo in a name therefore shows as cards, not as a video of the page. The bar covers each element's
-own box, so text that overflows it, or an element that moves while the picture is made, can stay
-visible: look at the video before sharing it.
+name that matches nothing therefore shows as cards, not as a video of the page. A typo that
+matches a different element is not caught: that element is covered and the one meant stays in
+view, so check each name (a masked screenshot with the same masks first) and look at the video
+before sharing it. The bar covers each element's own box, so text that overflows it, or an element
+that moves while the picture is made, can stay visible: look at the video before sharing it.
 """
 
 BROWSER_RECORD_STATUS_EPILOG = """
@@ -857,12 +861,13 @@ the text and ARIA reads cannot: layout, colour, focus, a popup that is open.
 
 `--mask ROLE[:NAME]` (repeat it) covers every element with that role, and exact accessible name
 when given, with a solid black bar: a heading with a person's name, an amount cell. The browser
-draws the bars itself, in the same render as the pixels, so a fixed or sticky element, a
-full-page picture and any number of matches are covered where they are drawn. Each bar is
-placed once, as the picture starts, so an element that moves during the picture is not followed.
-Elements marked aria-hidden are matched too, since they can still be painted. A mask that
-matches no element refuses the capture before any picture is taken, so what it should hide is
-never left in view. The bar covers each matched element's own box: text that
+draws the bars itself, in the same render as the pixels, so a fixed or sticky element, a full-page
+picture and any number of matches are covered where they are drawn. Each bar is placed once, as
+the picture starts, so an element that moves during the picture is not followed. Elements marked
+aria-hidden are matched too, since they can still be painted. A mask that matches no element
+refuses the capture before any picture is taken, so a name that is absent never leaves what it
+should hide in view (a name that matches a different element is not caught: check each name, and
+look at the picture before sharing it). The bar covers each matched element's own box: text that
 overflows it is not covered, so mask the container that holds it. The bar is one overlay element
 that exists only while the picture is taken; nothing the page holds is changed. A mask finds
 elements in the page itself, not inside an embedded frame.
