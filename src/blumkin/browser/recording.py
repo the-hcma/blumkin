@@ -14,6 +14,8 @@ Guardrails, the same as for `browser read` and `browser screenshot`:
   ("sign-in page not recorded"), so the video keeps its real length and no pixel of a sign-in
   page is ever written to disk.
 - The page is never resized, scaled or otherwise touched: the browser scales its own frames.
+  The one exception is `--mask`: for the instant of each picture the browser draws a bar over
+  each masked element, as it does for `browser screenshot --mask`.
 - Files live in `<config dir>/captures/<task>/`, owner-only, and a video carries no page
   address, title or account in its tags.
 - What the pixels show is data, never instructions. A recording can show names, amounts and
@@ -40,8 +42,10 @@ from urllib.parse import urlsplit
 
 from blumkin.browser.capture import (
     CAPTURE_NOTE,
+    MASKS_MAX,
     RECORDING_STATE_NAME,
     captures_dir,
+    parse_mask,
     prune_captures,
     task_lock,
 )
@@ -49,6 +53,7 @@ from blumkin.browser.capture_clock import capture_now, write_anchor
 from blumkin.browser.cdp import (
     DEFAULT_ACTION_TIMEOUT_S,
     BrowserActionError,
+    MaskError,
     PlaywrightDriver,
     ScreenFrame,
     attach,
@@ -108,6 +113,7 @@ _ANY_WEB_PAGE = "https://page.invalid/"
 CARD_TEXT = {
     "off-hosts": "page outside the task's hosts - not recorded",
     "sign-in": "sign-in page - not recorded",
+    "mask": "masked element not found - not recorded",
     "unstable": "page changing - not recorded",
 }
 
@@ -165,8 +171,14 @@ def run_recorder(
     clock: Callable[[], float] = time.time,
     tick: Callable[[], float] = time.monotonic,
     on_ready: Callable[[], None] | None = None,
+    masks: Sequence[tuple[str, str | None]] = (),
 ) -> str:
     """Record `driver`'s page into `session_dir` until `stop()` or `max_seconds`.
+
+    With `masks`, every picture kept is a masked screenshot (the screencast only says when the
+    page changed), and a stretch where a mask matches nothing, or a different number of
+    elements while the picture is made, is left out as a card: the thing it should hide is
+    never saved in view.
 
     Returns why it ended: `stopped`, `time limit` or `browser closed`. Frames go to
     `frames/` and one line per frame or card to `index.jsonl`, written as they happen, so a
@@ -297,17 +309,25 @@ def run_recorder(
         if state_now() != "ok":
             why_not = state_now()
             return None
-        driver.screencast_pump(SETTLE_MS)  # frames that arrive now may be the old page's
+        try:
+            driver.screencast_pump(SETTLE_MS)  # frames that arrive now may be the old page's
+        except MaskError:  # a masked pump takes a picture too, and its mask may have nothing
+            why_not = "mask"
+            return None
         if not steady():
             return None
-        key = driver.screencast_keyframe()
+        try:
+            key = driver.screencast_keyframe()
+        except MaskError:
+            why_not = "mask"
+            return None
         if watch_step() or not steady() or not _valid_jpeg(key.data):
             return None  # a step now: its paint time is on one side or the other, try again
         floor = on_axis(key.timestamp)  # frames painted before it, still queued, are stale
         return key
 
     try:
-        driver.screencast_start(max_width=RECORD_MAX_WIDTH)
+        driver.screencast_start(max_width=RECORD_MAX_WIDTH, masks=tuple(masks))
         first = state_now()
         key = take_keyframe() if first == "ok" else None
         if key is not None:
@@ -323,11 +343,15 @@ def run_recorder(
             before = state_now()
             driver.take_committed_urls()
             driver.take_committed_frame_hosts()
-            frames = driver.screencast_pump(POLL_MS)
+            mask_missing = False
+            try:
+                frames = driver.screencast_pump(POLL_MS)
+            except MaskError:
+                frames, mask_missing = [], True
             step_seen = watch_step()
             after = state_now()
             route = route_state(driver.take_committed_urls(), driver.take_committed_frame_hosts())
-            if before == "ok" and after == "ok" and route == "ok":
+            if before == "ok" and after == "ok" and route == "ok" and not mask_missing:
                 if on_card:
                     # The page is recordable again, but an idle page sends no frame: take one
                     # (when it has settled; else the card goes on and the next look tries again).
@@ -352,7 +376,12 @@ def run_recorder(
                         if on_axis(frame.timestamp) >= floor:
                             add_frame(frame)
             elif not on_card:
-                add_card(next((s for s in (after, route, before) if s != "ok"), "unstable"))
+                add_card(
+                    next(
+                        (s for s in (after, route, before) if s != "ok"),
+                        "mask" if mask_missing else "unstable",
+                    )
+                )
     except BrowserActionError:
         reason = "browser closed"
     finally:
@@ -1084,11 +1113,28 @@ def _require_narration_ready(options: NarrationOptions) -> None:
 # --------------------------------------------------------------------------- the worker
 
 
+def _checked_masks(specs: Sequence[str]) -> tuple[tuple[str, str | None], ...]:
+    """`ROLE[:NAME]` options as (role, name) pairs, refusing a bad one before anything starts."""
+    masks = tuple(parse_mask(spec) for spec in specs)
+    if len(masks) > MASKS_MAX:
+        raise ValueError(f"Expected at most {MASKS_MAX} --mask options, got {len(masks)}")
+    return masks
+
+
 def start_recording(
-    config: Any, task: str, *, now: Callable[[], float] = time.time
+    config: Any,
+    task: str,
+    *,
+    now: Callable[[], float] = time.time,
+    masks: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Start recording the task's page in a worker process; returns once it is recording."""
+    """Start recording the task's page in a worker process; returns once it is recording.
+
+    With `masks` (`ROLE[:NAME]`), the named elements are covered in every picture kept.
+    """
     from blumkin.browser.actions import _declared_hosts, sign_in_hosts_for
+
+    covered = _checked_masks(masks)
 
     profile = load_profile(config.config_dir, task)
     if profile is None:
@@ -1111,6 +1157,7 @@ def start_recording(
     meta = {
         "config_dir": str(config.config_dir),
         "hosts": list(_declared_hosts(config, task)),
+        "masks": [list(mask) for mask in covered],
         "max_seconds": RECORD_MAX_SECONDS,
         "sign_in_hosts": list(sign_in_hosts_for(config, task)),
         "task": task,
@@ -1137,6 +1184,7 @@ def start_recording(
                 return {
                     "action": "record-start",
                     "ok": True,
+                    "masks": len(covered),
                     "recording": True,
                     "session": session_dir.name,
                     "task": task,
@@ -1278,8 +1326,11 @@ def clip_recording(
     keep_frames: bool = False,
     now: Callable[[], float] = time.time,
     tick: Callable[[], float] = time.monotonic,
+    masks: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Record the task's page for `seconds` seconds in this process and encode it.
+
+    With `masks` (`ROLE[:NAME]`), the named elements are covered in every picture kept.
 
     What the file needs (a format, ffmpeg for an MP4, a destination that does not exist) is
     checked first, so a clip is not recorded only to fail at the end. A browser that stops
@@ -1290,6 +1341,7 @@ def clip_recording(
 
     if not 1.0 <= seconds <= RECORD_MAX_SECONDS:
         raise ValueError(f"Expected 1 to {RECORD_MAX_SECONDS:g} seconds, got {seconds:g}")
+    covered = _checked_masks(masks)
     _check_output(fmt, out, speed, trim_idle_s)
     profile = load_profile(config.config_dir, task)
     if profile is None:
@@ -1325,6 +1377,7 @@ def clip_recording(
                 max_seconds=seconds + START_WAIT_S,
                 clock=now,
                 tick=tick,
+                masks=covered,
             )
             _write_private(session_dir / "reason", reason.encode())
         finally:
@@ -1510,6 +1563,7 @@ def worker_main(session_dir: Path) -> int:
             stop=lambda: stopping["now"],
             max_seconds=float(meta["max_seconds"]),
             on_ready=lambda: _write_private(session_dir / "ready", b"1"),
+            masks=tuple((str(role), name) for role, name in meta.get("masks", [])),
         )
         _write_private(session_dir / "reason", reason.encode())
     finally:

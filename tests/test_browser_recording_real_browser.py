@@ -66,13 +66,13 @@ def _close_contexts() -> Any:
             pass
 
 
-def _scripted_page(real: Any, scale: float = 1.0) -> tuple[PlaywrightDriver, Any]:
+def _scripted_page(real: Any, scale: float = 1.0, app: str = _APP) -> tuple[PlaywrightDriver, Any]:
     browser, manager = real
     context = browser.new_context(viewport={"width": 800, "height": 450}, device_scale_factor=scale)
     _CONTEXTS.append(context)
     page = context.new_page()
     page.route(
-        "https://app.example.com/**", lambda r: r.fulfill(body=_APP, content_type="text/html")
+        "https://app.example.com/**", lambda r: r.fulfill(body=app, content_type="text/html")
     )
     page.route(
         "https://login.microsoftonline.com/**",
@@ -88,14 +88,22 @@ def _scripted_page(real: Any, scale: float = 1.0) -> tuple[PlaywrightDriver, Any
 
 
 def _record(
-    real: Any, tmp_path: Path, script: list[tuple[float, str]], seconds: float, scale: float = 1.0
+    real: Any,
+    tmp_path: Path,
+    script: list[tuple[float, str]],
+    seconds: float,
+    scale: float = 1.0,
+    *,
+    app: str = _APP,
+    masks: tuple[tuple[str, str | None], ...] = (),
 ) -> tuple[Path, float, Any]:
     """Run the recorder for `seconds`, applying `script` (time, action) as the clock reaches it.
 
     An action is a page address to go to, or `color:#rrggbb` to paint the page.
     """
-    driver, page = _scripted_page(real, scale)
+    driver, page = _scripted_page(real, scale, app)
     session = tmp_path / "session"
+
     session.mkdir()
     pending = list(script)
     began = time.monotonic()  # steady: the system clock can step during a run
@@ -120,6 +128,7 @@ def _record(
         sign_in_hosts=_SIGN_IN,
         stop=stop,
         on_ready=lambda: ready_at.append(time.monotonic()),
+        masks=masks,
     )
     stepped = (time.time() - began_wall) - (time.monotonic() - began_steady)
     if abs(stepped) > 0.5:
@@ -274,3 +283,65 @@ def test_a_high_density_display_does_not_cost_the_video_any_of_its_length(
     assert abs(written["seconds"] - wall) <= wall * 0.05
     assert _near(_color_at(video, 1.5, tmp_path), (255, 255, 255))
     assert _near(_color_at(video, 4.5, tmp_path), (0, 0, 255))
+
+
+_SECRET_APP = """<!doctype html><title>t</title>
+<body style="margin:0;background:#ffffff;font:40px sans-serif">
+<h1 style="margin:20px;background:#cc0000;color:#ffffff;width:400px">Account 4242</h1>
+<div id=c style="margin:20px">x</div>"""
+
+
+def _frames_of(session: Path) -> list[Any]:
+    from PIL import Image
+
+    images = []
+    for path in sorted((session / "frames").glob("*.jpg")):
+        with Image.open(path) as shot:
+            images.append(shot.convert("RGB"))
+    return images
+
+
+def _has_color(image: Any, want: tuple[int, int, int], slack: int = 60) -> bool:
+    return any(
+        all(abs(got - expected) <= slack for got, expected in zip(pixel, want, strict=True))
+        for pixel in image.getdata()
+    )
+
+
+def test_a_masked_recording_never_saves_a_pixel_of_the_masked_element(
+    _browser: Any, tmp_path: Path
+) -> None:
+    script = [(1.5, "color:#e0e0ff"), (3.0, "color:#e0ffe0")]  # the page keeps changing
+    session, _, _ = _record(
+        _browser, tmp_path, script, seconds=5.0, app=_SECRET_APP, masks=(("heading", None),)
+    )
+
+    frames = _frames_of(session)
+
+    assert len(frames) >= 3
+    for image in frames:
+        assert not _has_color(image, (204, 0, 0))  # the heading's red never reached a frame
+    assert any(_has_color(image, (0, 0, 0), slack=25) for image in frames)  # the bar is there
+
+
+def test_without_a_mask_the_same_page_does_show_the_element(_browser: Any, tmp_path: Path) -> None:
+    session, _, _ = _record(_browser, tmp_path, [], seconds=3.0, app=_SECRET_APP)
+
+    assert any(_has_color(image, (204, 0, 0)) for image in _frames_of(session))
+
+
+def test_a_mask_that_matches_nothing_leaves_a_card_and_no_picture_of_the_page(
+    _browser: Any, tmp_path: Path
+) -> None:
+    session, _, _ = _record(
+        _browser,
+        tmp_path,
+        [],
+        seconds=3.0,
+        app=_SECRET_APP,
+        masks=(("textbox", "Nobody"),),
+    )
+
+    entries, _ = read_index(session)
+    assert entries and all(entry.kind == "card" and entry.reason == "mask" for entry in entries)
+    assert _frames_of(session) == []

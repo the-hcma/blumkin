@@ -63,6 +63,13 @@ class BrowserActionError(RuntimeError):
     """A page action failed or was refused."""
 
 
+class MaskError(BrowserActionError):
+    """A mask matched nothing, or a different number of elements, when a picture was taken.
+
+    The picture is not made: what the mask should hide would be left in view.
+    """
+
+
 class CellEditedError(BrowserActionError):
     """A grid cell was edited, but its state afterwards is not what the edit should have left.
 
@@ -666,6 +673,8 @@ class PlaywrightDriver:
         self._chain_listening = False
         self._expired = False
         self._screencast: tuple[Any, list[dict[str, Any]], int, int] | None = None
+        self._masks: tuple[tuple[str, str | None], ...] = ()  # a masked recording's masks
+        self._last_masked: bytes | None = None  # the last masked picture, to skip a repeat
         self._committed: list[str] = []
         self._committed_frames: list[str] = []
         self._navigation_listener: Callable[[Any], None] | None = None
@@ -2305,6 +2314,15 @@ class PlaywrightDriver:
 
     def _masked_shot(self, full_page: bool, masks: Sequence[tuple[str, str | None]]) -> bytes:
         """The viewport (or the whole page) as a PNG, with the masked elements covered."""
+        return self._shoot_masked(masks, type="png", full_page=full_page)
+
+    def _shoot_masked(self, masks: Sequence[tuple[str, str | None]], **shot: Any) -> bytes:
+        """A picture of the page with every masked element covered, or a `MaskError`.
+
+        Shared by screenshots and masked recordings: the browser draws the bars before a pixel
+        leaves it, and a mask that matches nothing (or a different number of elements by the
+        time the picture is made) refuses the picture instead of saving what it should hide.
+        """
         covered = []
         before: list[int] = []
         for role, name in masks:
@@ -2317,7 +2335,7 @@ class PlaywrightDriver:
             )
             found = target.count()
             if found == 0:
-                raise BrowserActionError(
+                raise MaskError(
                     f"Expected an element to mask ({role}{':' + name if name else ''}), got "
                     "none; nothing was captured, so the thing it should hide is not left in view"
                 )
@@ -2326,12 +2344,11 @@ class PlaywrightDriver:
         options: dict[str, Any] = {}
         if covered:
             options = {"mask": covered, "mask_color": _MASK_COLOR}
-        shot = bytes(
+        taken = bytes(
             self._page.screenshot(
-                type="png",
-                full_page=full_page,
                 caret="initial",  # leave the page's own styles alone
                 timeout=self._timeout_ms,
+                **shot,
                 **options,
             )
         )
@@ -2342,12 +2359,12 @@ class PlaywrightDriver:
         # while another takes its place, or one that is gone only for the instant between the
         # two counts, is not.
         if [target.count() for target in covered] != before:
-            raise BrowserActionError(
+            raise MaskError(
                 "Expected each mask to match as many elements after the picture was taken as "
                 "before, got a page where a count changed; nothing was captured, so look at "
                 "the page and try again"
             )
-        return shot
+        return taken
 
     def _detach_quietly(self, session: Any) -> None:
         """Release a DevTools session that did not get going, if the connection still answers."""
@@ -2404,8 +2421,18 @@ class PlaywrightDriver:
         assert box is not None  # `inside` is false without one
         return {key: float(value) for key, value in box.items()}
 
-    def screencast_start(self, *, max_width: int = 1280, quality: int = 60) -> None:
+    def screencast_start(
+        self,
+        *,
+        max_width: int = 1280,
+        quality: int = 60,
+        masks: Sequence[tuple[str, str | None]] = (),
+    ) -> None:
         """Start the browser's screencast of the page: a frame, with its time, on every change.
+
+        With `masks` the screencast only says when the page changed: its pixels are thrown away
+        and every picture kept is a masked screenshot (see `_masked_frame`), so no pixel of a
+        masked element is ever read from the screencast.
 
         The browser scales the frames it sends to at most `max_width` itself, so the page is
         never resized or touched (asking for CSS-pixel screenshots did resize it, around every
@@ -2437,6 +2464,8 @@ class PlaywrightDriver:
             self._detach_quietly(session)
             raise self._action_error("start the screencast", exc) from exc
         self._screencast = (session, arrived, quality, max_width)
+        self._masks = tuple(masks)
+        self._last_masked = None
         # The address of every top-level document the page commits, so a recording can tell
         # that the page went somewhere (a sign-in page) and came back during one read: the
         # address at the two ends alone looks unchanged.
@@ -2463,6 +2492,10 @@ class PlaywrightDriver:
         if self._screencast is None:
             raise BrowserActionError("Expected a running screencast, got none")
         session, _, quality, max_width = self._screencast
+        if self._masks:
+            data = self._masked_frame()
+            self._last_masked = data
+            return ScreenFrame(data=data, timestamp=time.time())
         try:
             with self._bounded(self._call_deadline_s(), "take a frame"):
                 shot = session.send(
@@ -2498,7 +2531,27 @@ class PlaywrightDriver:
                     session.send("Page.screencastFrameAck", {"sessionId": params["sessionId"]})
         except _playwright_error() as exc:
             raise self._action_error("read the screencast", exc) from exc
+        if self._masks:
+            # The pixels above are dropped unread: they only say that the page changed.
+            if not frames:
+                return []
+            data = self._masked_frame()
+            if data == self._last_masked:
+                return []  # the same picture again: the video holds the one it has
+            self._last_masked = data
+            return [ScreenFrame(data=data, timestamp=time.time())]
         return frames
+
+    def _masked_frame(self) -> bytes:
+        """The page as a JPEG, scaled as the screencast's frames are, with the masks covered."""
+        if self._screencast is None:
+            raise BrowserActionError("Expected a running screencast, got none")
+        _, _, quality, max_width = self._screencast
+        try:
+            shot = self._shoot_masked(self._masks, type="jpeg", quality=quality)
+        except _playwright_error() as exc:
+            raise self._action_error("take a masked frame", exc) from exc
+        return _fit_jpeg(shot, max_width, quality)
 
     def screencast_stop(self) -> None:
         """Stop the screencast (the browser may already be gone: that is not an error)."""
@@ -2506,6 +2559,8 @@ class PlaywrightDriver:
             return
         session, _, _, _ = self._screencast
         self._screencast = None
+        self._masks = ()
+        self._last_masked = None
         listener, self._navigation_listener = self._navigation_listener, None
         if listener is not None:
             with contextlib.suppress(_playwright_error(), AttributeError, ValueError):

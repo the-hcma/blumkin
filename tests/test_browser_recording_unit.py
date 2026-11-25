@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from blumkin.browser import recording
-from blumkin.browser.cdp import BrowserActionError, ScreenFrame
+from blumkin.browser.cdp import BrowserActionError, MaskError, ScreenFrame
 from blumkin.browser.narration import NarrationOptions
 from blumkin.browser.recording import (
     Entry,
@@ -243,6 +243,7 @@ class _Driver:
         self.settles = 0
         self.keyframe_url_after: str | None = None
         self.keyframe_stamp: Callable[[], float] | None = None  # a keyframe's paint time
+        self.mask_missing: Callable[[], bool] | None = None  # a mask finds nothing, while true
         self._ran = False
 
     @property
@@ -274,6 +275,8 @@ class _Driver:
 
     def screencast_keyframe(self) -> ScreenFrame:
         self.keyframes += 1
+        if self.mask_missing is not None and self.mask_missing():
+            raise MaskError("Expected an element to mask (heading), got none")
         pixels = self.keyframe_pixels.pop(0) if self.keyframe_pixels else _APP_PIXELS
         if self.keyframe_url_after is not None:
             self.start = self.keyframe_url_after
@@ -287,6 +290,8 @@ class _Driver:
             self.settles += 1
             return []
         self.pumped += 1
+        if self.mask_missing is not None and self.mask_missing():
+            raise MaskError("Expected an element to mask (heading), got none")
         if self.fail_after is not None and self.pumped > self.fail_after:
             raise BrowserActionError("Expected an open page, got a closed one")
         if self.pending is None:
@@ -1180,7 +1185,9 @@ def test_record_start_calls_the_recorder_with_the_task(
 
     seen: list[str] = []
     monkeypatch.setattr(
-        cli, "start_recording", lambda setup, task: seen.append(task) or {"ok": True, "task": task}
+        cli,
+        "start_recording",
+        lambda setup, task, masks=(): seen.append(task) or {"ok": True, "task": task},
     )
 
     result = _cli("start", "time-sheet")
@@ -1294,7 +1301,7 @@ def test_a_recording_failure_is_reported_as_an_error_not_a_traceback(
 ) -> None:
     from blumkin import cli
 
-    def fail(setup: Any, task: str) -> dict[str, Any]:
+    def fail(setup: Any, task: str, masks: Any = ()) -> dict[str, Any]:
         raise BrowserActionError("Expected a running browser, got none")
 
     monkeypatch.setattr(cli, "start_recording", fail)
@@ -2456,3 +2463,115 @@ def test_a_fresh_picture_that_fails_after_a_step_is_tried_again_and_frames_wait_
     assert _LOGIN_PIXELS not in _stored(tmp_path)  # nothing was taken while waiting for it
     frames = [item["t"] for item in lines if item["kind"] == "frame"]
     assert len(frames) == 2 and frames[1] > frames[0]
+
+
+# ------------------------------------------------------------------ masked recordings (#806)
+
+
+def test_the_masks_are_handed_to_the_driver_when_the_screencast_starts(tmp_path: Path) -> None:
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 102.0),))])
+
+    _run(tmp_path, driver, False, True, masks=(("heading", None), ("cell", "Total")))
+
+    assert driver.kwargs["masks"] == (("heading", None), ("cell", "Total"))
+
+
+def test_without_masks_the_driver_is_started_with_none(tmp_path: Path) -> None:
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 102.0),))])
+
+    _run(tmp_path, driver, False, True)
+
+    assert driver.kwargs["masks"] == ()
+
+
+def test_a_mask_that_matches_nothing_at_the_start_is_a_card_until_it_does(tmp_path: Path) -> None:
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 103.0),))])
+    driver.mask_missing = lambda: driver.pumped < 2 and driver.keyframes < 3
+
+    _, lines = _run(tmp_path, driver, False, False, True, masks=(("heading", None),))
+
+    kinds = [item["kind"] for item in lines]
+    assert kinds[0] == "card" and lines[0]["reason"] == "mask"
+    assert "frame" in kinds  # it picks up again once the element is there
+    assert _stored(tmp_path) and _LOGIN_PIXELS not in _stored(tmp_path)
+
+
+def test_a_missing_mask_while_the_page_settles_for_a_keyframe_is_a_card_not_the_end(
+    tmp_path: Path,
+) -> None:
+    driver = _Driver([_Step(frames=(_shot(_NEXT_PIXELS, 103.0),))])
+    original = driver.screencast_pump
+
+    def pump(wait_ms: int) -> list[ScreenFrame]:
+        if wait_ms == recording.SETTLE_MS and driver.keyframes == 0:
+            raise MaskError("Expected an element to mask (heading), got none")  # the settle pump
+        return original(wait_ms)
+
+    driver.screencast_pump = pump  # type: ignore[method-assign]
+
+    why, lines = _run(tmp_path, driver, False, False, True, masks=(("heading", None),))
+
+    assert why == "stopped" and lines[0]["kind"] == "card" and lines[0]["reason"] == "mask"
+
+
+def test_a_mask_that_goes_missing_mid_recording_leaves_that_stretch_out_as_a_card(
+    tmp_path: Path,
+) -> None:
+    driver = _Driver(
+        [
+            _Step(frames=(_shot(_NEXT_PIXELS, 102.0),)),
+            _Step(frames=(_shot(_APP_PIXELS, 104.0),)),
+            _Step(frames=(_shot(_NEXT_PIXELS, 106.0),)),
+        ]
+    )
+    driver.mask_missing = lambda: driver.pumped == 3  # the second step's frames: nothing to cover
+
+    why, lines = _run(tmp_path, driver, False, False, False, False, True, masks=(("cell", None),))
+
+    assert why == "stopped"  # a missing mask is a card, not the end of the recording
+    cards = [item for item in lines if item["kind"] == "card"]
+    assert [c["reason"] for c in cards] == ["mask"]
+    assert [i["kind"] for i in lines][-1] == "end"
+
+
+def test_start_writes_the_masks_for_the_worker_and_clip_hands_them_to_the_recorder() -> None:
+    from blumkin.browser import recording as module
+
+    assert module._checked_masks(["heading", "cell:Total"]) == (
+        ("heading", None),
+        ("cell", "Total"),
+    )
+
+
+def test_a_bad_mask_is_refused_before_anything_starts() -> None:
+    from blumkin.browser import recording as module
+
+    with pytest.raises(ValueError, match="ROLE"):
+        module._checked_masks([""])
+    with pytest.raises(ValueError, match="at most"):
+        module._checked_masks(["cell"] * (module.MASKS_MAX + 1))
+
+
+def test_record_start_and_clip_pass_the_mask_options_on(
+    config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blumkin import cli
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        cli,
+        "start_recording",
+        lambda setup, task, masks=(): seen.update(start=masks) or {"ok": True, "masks": len(masks)},
+    )
+    monkeypatch.setattr(
+        cli,
+        "clip_recording",
+        lambda setup, task, masks=(), **kw: seen.update(clip=masks) or {"ok": True},
+    )
+
+    started = _cli("start", "time-sheet", "--mask", "heading:Ada", "--mask", "cell")
+    clipped = _cli("clip", "time-sheet", "--seconds", "2", "--mask", "textbox:Amount")
+
+    assert started.exit_code == 0 and clipped.exit_code == 0, (started.output, clipped.output)
+    assert seen["start"] == ("heading:Ada", "cell")
+    assert seen["clip"] == ("textbox:Amount",)

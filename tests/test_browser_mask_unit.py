@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+from blumkin.browser.cdp import BrowserActionError, MaskError, PlaywrightDriver
 
 
 def _png(width: int = 200, height: int = 100) -> bytes:
@@ -196,3 +196,146 @@ def test_masks_look_for_elements_marked_aria_hidden_too_because_they_can_still_b
     _driver(page).screenshot_png(masks=[("heading", None), ("cell", "Total")])
 
     assert page.hidden_included == [True, True]  # both the role-only and the named lookup
+
+
+# ------------------------------------------------------------------ masked recordings (#806)
+
+
+class _Session:
+    """A DevTools session: what the driver asks it to do, and the frames it is made to send."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+        self.handlers: dict[str, Any] = {}
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+    def send(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.sent.append((method, params or {}))
+        return {"data": ""}
+
+    def emit_frame(self, number: int, pixels: bytes = b"UNMASKED-PIXELS") -> None:
+        import base64
+
+        self.handlers["Page.screencastFrame"](
+            {
+                "data": base64.b64encode(pixels).decode(),
+                "metadata": {"timestamp": 1000.0 + number},
+                "sessionId": number,
+            }
+        )
+
+
+def _jpeg(color: tuple[int, int, int]) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (200, 100), color).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+class _CastPage(_Page):
+    def __init__(self) -> None:
+        super().__init__()
+        self.session = _Session()
+        self.context = SimpleNamespace(new_cdp_session=lambda page: self.session)
+        self.main_frame = object()
+        self.next_picture = _jpeg((10, 10, 10))
+
+    def on(self, event: str, handler: Any) -> None:
+        return None
+
+    def remove_listener(self, event: str, handler: Any) -> None:
+        return None
+
+    def wait_for_timeout(self, ms: float) -> None:
+        return None
+
+    def screenshot(self, **kwargs: Any) -> bytes:
+        self.shots.append(kwargs)
+        return self.next_picture
+
+
+def _masked_cast(page: _CastPage, masks: Any = (("heading", None),)) -> PlaywrightDriver:
+    driver = _driver(page)
+    driver.screencast_start(max_width=1280, quality=60, masks=masks)
+    return driver
+
+
+def test_a_masked_recording_never_returns_a_pixel_of_the_screencast() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+    page.session.emit_frame(1)
+    page.session.emit_frame(2)
+
+    frames = driver.screencast_pump(50)
+
+    assert len(frames) == 1 and frames[0].data == page.next_picture  # the masked screenshot
+    assert b"UNMASKED" not in frames[0].data
+    (shot,) = page.shots
+    assert shot["type"] == "jpeg" and shot["quality"] == 60
+    assert [(m.role, m.name) for m in shot["mask"]] == [("heading", None)]
+    acks = [params for method, params in page.session.sent if method == "Page.screencastFrameAck"]
+    assert len(acks) == 2  # both screencast frames were acknowledged so the browser sends more
+
+
+def test_a_masked_page_that_did_not_change_is_not_photographed() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+
+    assert driver.screencast_pump(50) == []
+    assert page.shots == []  # no screencast frame, no change, no picture (and no flicker)
+
+
+def test_the_same_masked_picture_twice_is_kept_once_and_a_changed_one_is_kept() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+
+    page.session.emit_frame(1)
+    first = driver.screencast_pump(50)
+    page.session.emit_frame(2)
+    repeat = driver.screencast_pump(50)
+    page.next_picture = _jpeg((200, 0, 0))
+    page.session.emit_frame(3)
+    changed = driver.screencast_pump(50)
+
+    assert (len(first), len(repeat), len(changed)) == (1, 0, 1)
+    assert changed[0].data == page.next_picture
+
+
+def test_a_masked_keyframe_is_a_masked_screenshot_not_a_devtools_capture() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+
+    frame = driver.screencast_keyframe()
+
+    assert frame.data == page.next_picture
+    assert "Page.captureScreenshot" not in [method for method, _ in page.session.sent]
+    assert [(m.role, m.name) for m in page.shots[0]["mask"]] == [("heading", None)]
+
+
+def test_a_mask_that_matches_nothing_gives_no_frame_and_no_keyframe() -> None:
+    page = _CastPage()  # the page holds no heading
+    driver = _masked_cast(page)
+    page.session.emit_frame(1)
+
+    with pytest.raises(MaskError, match="heading"):
+        driver.screencast_pump(50)
+    with pytest.raises(MaskError, match="heading"):
+        driver.screencast_keyframe()
+
+    assert page.shots == []  # nothing was photographed
+
+
+def test_without_masks_the_screencast_frames_are_returned_as_they_always_were() -> None:
+    page = _CastPage()
+    driver = _driver(page)
+    driver.screencast_start(max_width=1280, quality=60)
+    page.session.emit_frame(1)
+
+    frames = driver.screencast_pump(50)
+
+    assert [f.data for f in frames] == [b"UNMASKED-PIXELS"] and page.shots == []

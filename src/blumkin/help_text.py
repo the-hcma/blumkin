@@ -461,6 +461,20 @@ Examples:
 Records the task's page for a fixed number of seconds in this command, then writes the video.
 Use `record start` and `stop` for a session that takes as long as it takes. See
 `blumkin browser record --help` for what is and is not recorded.
+
+With `--mask ROLE[:NAME]` (repeat it; the same options and limits as `browser screenshot --mask`)
+the named elements are covered by a solid black bar in every picture the recording keeps. The
+browser draws the bars before a picture leaves it, so the recorder takes each picture as a masked
+screenshot instead of reading the screencast, whose pixels it throws away unread: the screencast
+only tells it that the page changed, and a picture identical to the last is not kept again. That
+costs smoothness: a masked video holds about 14 pictures a second at most (measured on a page that
+repaints constantly, where an unmasked recording of the same page held about 56, one per paint),
+and a bar is drawn over each masked element for the instant of each picture, so it can be seen
+flashing in the browser window. A stretch where a mask matches nothing (or a different number of
+elements while the picture is made) is left out as a card, so what it should hide is never saved
+in view; a typo in a name therefore shows as cards, not as a video of the page. The bar covers
+each element's own box, so text that overflows it, or an element that moves while the picture is
+made, can stay visible: look at the video before sharing it.
 """
 
 BROWSER_RECORD_START_EPILOG = """
@@ -473,6 +487,20 @@ Starts recording the task's browser in a background process and returns once it 
 one recording per task at a time. Stop it with `blumkin browser record stop TASK`. If it is
 forgotten it stops itself after 30 minutes. See `blumkin browser record --help` for what is and
 is not recorded.
+
+With `--mask ROLE[:NAME]` (repeat it; the same options and limits as `browser screenshot --mask`)
+the named elements are covered by a solid black bar in every picture the recording keeps. The
+browser draws the bars before a picture leaves it, so the recorder takes each picture as a masked
+screenshot instead of reading the screencast, whose pixels it throws away unread: the screencast
+only tells it that the page changed, and a picture identical to the last is not kept again. That
+costs smoothness: a masked video holds about 14 pictures a second at most (measured on a page that
+repaints constantly, where an unmasked recording of the same page held about 56, one per paint),
+and a bar is drawn over each masked element for the instant of each picture, so it can be seen
+flashing in the browser window. A stretch where a mask matches nothing (or a different number of
+elements while the picture is made) is left out as a card, so what it should hide is never saved
+in view; a typo in a name therefore shows as cards, not as a video of the page. The bar covers
+each element's own box, so text that overflows it, or an element that moves while the picture is
+made, can stay visible: look at the video before sharing it.
 """
 
 BROWSER_RECORD_STATUS_EPILOG = """
