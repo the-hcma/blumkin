@@ -233,7 +233,8 @@ def test_a_cross_process_frame_that_existed_before_the_attach_is_counted_when_it
             playwright=SimpleNamespace(stop=lambda: None),
             timeout_s=5.0,
         )
-        assert len(page.frames) == 2  # the frame was there before this attach
+        # The frame was there before this attach (the first one waited for it to commit and let
+        # go); waiting for it here, not counting at once: Playwright may list it a moment late.
         _wait_for_child(page, f"http://other.example.org:{web}/x")
         # Playwright's own list, with the frame's real address (this driver is built without the
         # `/json/list` inventory, which the `existing_frames` tests in `test_browser_cdp_unit.py`
