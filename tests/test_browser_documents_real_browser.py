@@ -235,7 +235,9 @@ def test_a_cross_process_frame_that_existed_before_the_attach_is_counted_when_it
         )
         assert len(page.frames) == 2  # the frame was there before this attach
         _wait_for_child(page, f"http://other.example.org:{web}/x")
-        # checked by its real address, and once, whichever way the frame came to be known
+        # Playwright's own list, with the frame's real address (this driver is built without the
+        # `/json/list` inventory, which the `existing_frames` tests in `test_browser_cdp_unit.py`
+        # cover)
         assert driver.frame_hosts() == ("app.example.com", "other.example.org")
         sign_in = f"http://login.microsoftonline.com:{web}/x"
         back = f"http://other.example.org:{web}/x"
