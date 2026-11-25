@@ -383,11 +383,13 @@ def test_a_recorded_session_with_two_cues_has_an_audio_track_as_long_as_its_vide
 
     The speech is a tone engine (a person's voice is not what is checked); the cues are placed
     on the recording's own clock, as `browser narrate` does, one second and three and a half
-    seconds into the video.
+    seconds into the video. The recording runs eight seconds so the last cue (it ends at 5.5
+    seconds) has about two seconds of margin whatever the startup took: the video starts at the
+    first picture, not when the recorder was asked to start.
     """
     from test_browser_narration_real_ffmpeg import _ToneEngine
 
-    session, wall, _ = _record(_browser, tmp_path, [(2.0, "color:#0000ff")], seconds=6.0)
+    session, wall, _ = _record(_browser, tmp_path, [(2.0, "color:#0000ff")], seconds=8.0)
     entries, _ = read_index(session)
     first = entries[0].t
     narration.record_cue(session, "x" * 20, now=lambda: first + 1.0)  # two seconds of tone
