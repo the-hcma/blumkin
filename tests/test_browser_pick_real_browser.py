@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from browser_leaks import borrowed
 
 from blumkin.browser.cdp import ControlInfo, PlaywrightDriver
 
@@ -54,7 +55,12 @@ def _driver(real: Any) -> tuple[PlaywrightDriver, Any]:
     browser, page, manager = real
     page.set_content(_PAGE)
     page.evaluate("document.title = 'start'")
-    return PlaywrightDriver(browser=browser, page=page, playwright=manager, timeout_s=5.0), page
+    # The browser and the session are shared by every test here: lend them, so the cleanup that
+    # closes each test's driver does not close them for the next test (#824).
+    driver = PlaywrightDriver(
+        browser=borrowed(browser), page=page, playwright=borrowed(manager), timeout_s=5.0
+    )
+    return driver, page
 
 
 def _pick(real: Any, name: str, role: str) -> tuple[ControlInfo, str]:
@@ -127,3 +133,17 @@ def test_role_aria_snapshot_finds_a_visible_menu_by_role_and_by_name(_real_page:
     assert named is not None and 'menuitem "Cancel subscription"' in named[0]
     assert driver.role_aria_snapshot("menu", "Hidden") is None
     assert driver.role_aria_snapshot("listbox") is None
+
+
+def test_closing_a_driver_leaves_the_shared_browser_page_and_session_usable(
+    _real_page: Any,
+) -> None:
+    """The shared fixtures are lent, so the cleanup after one test cannot close them (#824)."""
+    driver, _ = _driver(_real_page)
+    driver.close()
+
+    again, page = _driver(_real_page)  # the same page, set up again, after the first was closed
+
+    assert page.title() == "start"
+    assert again is not driver
+    assert _real_page[0].is_connected()

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from browser_leaks import closing_leaked_drivers
+from browser_leaks import borrowed, closing_leaked_drivers
 
 
 class _Browser:
@@ -78,3 +78,27 @@ def test_the_driver_class_is_restored_afterwards() -> None:
     with closing_leaked_drivers():
         assert PlaywrightDriver.__init__ is not before
     assert PlaywrightDriver.__init__ is before
+
+
+def test_a_lent_object_is_passed_through_but_never_closed_or_stopped() -> None:
+    browser = _Browser()
+    browser.contexts = ["one"]  # type: ignore[attr-defined]
+    lent = borrowed(browser)
+
+    lent.close()
+    lent.stop()  # a session's stop is ignored the same way
+
+    assert browser.closed == 0
+    assert lent.contexts == ["one"]  # everything else reaches the owner
+
+
+def test_the_cleanup_leaves_a_lent_browser_and_session_open_for_the_next_test() -> None:
+    owned_browser, owned_playwright = _Browser(), _Playwright()
+    shared_browser, shared_playwright = _Browser(), _Playwright()
+
+    with closing_leaked_drivers():
+        _driver(owned_browser, owned_playwright)
+        _driver(borrowed(shared_browser), borrowed(shared_playwright))
+
+    assert (owned_browser.closed, owned_playwright.stopped) == (1, 1)
+    assert (shared_browser.closed, shared_playwright.stopped) == (0, 0)

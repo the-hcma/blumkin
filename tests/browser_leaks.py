@@ -7,6 +7,11 @@ as a dozen. `closing_leaked_drivers` records every `PlaywrightDriver` built insi
 (`close()` is idempotent), and one whose browser will not close still stops its Playwright
 session (`close()` does that in a `finally`); an error from either is swallowed so that the
 other drivers are still closed.
+
+A driver closes the browser and the Playwright session it was given. A test module that shares
+one browser and one session between its tests (a module-scoped fixture) hands its driver
+`borrowed(...)` copies instead, so the cleanup after the first test does not close what the
+next ones still use (#824).
 """
 
 from __future__ import annotations
@@ -15,6 +20,27 @@ import contextlib
 from collections.abc import Iterator
 from typing import Any
 from unittest import mock
+
+
+class _Borrowed:
+    """Another owner's object, lent out: everything is passed on except closing and stopping."""
+
+    def __init__(self, owner: Any) -> None:
+        self._owner = owner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._owner, name)
+
+    def close(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def stop(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def borrowed(owner: Any) -> Any:
+    """`owner` for a driver that must not close or stop it (its fixture does, once)."""
+    return _Borrowed(owner)
 
 
 @contextlib.contextmanager
