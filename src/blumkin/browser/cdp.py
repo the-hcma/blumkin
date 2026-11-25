@@ -2636,8 +2636,9 @@ class PlaywrightDriver:
         """The host of every frame of the page, the top one included (read from local state)."""
         self._require_open()
         main = self._page.main_frame
-        # Playwright misses a cross-origin frame that existed before it attached; the inventory
-        # `_child_frames` keeps for that is read too, so such a frame is not left out.
+        # Playwright lists a cross-origin frame that existed before it attached, but with no
+        # address until a moment later; the inventory `_child_frames` keeps is read too, so such
+        # a frame is checked by its real address and not left out.
         try:
             with self._bounded(self._call_deadline_s(), "list the page's frames"):
                 inner = self._child_frames()
