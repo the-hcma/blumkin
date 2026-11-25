@@ -382,18 +382,20 @@ def test_a_recorded_session_with_two_cues_has_an_audio_track_as_long_as_its_vide
     """Narration against a real recording (#816): real browser, real recorder, real ffmpeg.
 
     The speech is a tone engine (a person's voice is not what is checked); the cues are placed
-    on the recording's own clock, as `browser narrate` does, one second and three and a half
-    seconds into the video. The recording runs eight seconds so the last cue (it ends at 5.5
-    seconds) has about two seconds of margin whatever the startup took: the video starts at the
-    first picture, not when the recorder was asked to start.
+    on the recording's own clock, as `browser narrate` does. The video starts at the recorder's
+    first picture, not when it was asked to start, so the cues are placed from the length the
+    journal says the video has: the first near its start, the second so that it ends a full
+    second before the video does, whatever the startup took.
     """
     from test_browser_narration_real_ffmpeg import _ToneEngine
 
-    session, wall, _ = _record(_browser, tmp_path, [(2.0, "color:#0000ff")], seconds=8.0)
+    session, span, _ = _record(_browser, tmp_path, [(2.0, "color:#0000ff")], seconds=9.0)
+    if span < 6.0:
+        pytest.skip(f"the first picture came too late to fit two cues in the video ({span:.1f} s)")
     entries, _ = read_index(session)
     first = entries[0].t
-    narration.record_cue(session, "x" * 20, now=lambda: first + 1.0)  # two seconds of tone
-    narration.record_cue(session, "y" * 20, now=lambda: first + 3.5)
+    narration.record_cue(session, "x" * 20, now=lambda: first + 0.5)  # two seconds of tone
+    narration.record_cue(session, "y" * 20, now=lambda: first + span - 3.0)  # ends 1 s early
     monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: _ToneEngine())
     video = tmp_path / "out.mp4"
 
@@ -404,7 +406,7 @@ def test_a_recorded_session_with_two_cues_has_an_audio_track_as_long_as_its_vide
     visual = [s for s in streams if s["codec_type"] == "video"]
     assert len(audio) == 1 and len(visual) == 1
     assert abs(float(audio[0]["duration"]) - float(visual[0]["duration"])) < 0.3
-    assert abs(float(visual[0]["duration"]) - wall) <= wall * 0.05
+    assert abs(float(visual[0]["duration"]) - span) <= span * 0.05
     told = result["narration"]
     assert (told["cues"], told["late"], told["cut"]) == (2, 0, 0)
     assert told["spoken_s"] == pytest.approx(4.0, abs=0.1)
