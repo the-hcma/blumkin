@@ -2655,7 +2655,8 @@ class PlaywrightDriver:
         A frame that is attached, navigated or detached while a picture is taken may have shown
         something the checks before and after never saw: a sign-in frame can come and go between
         two reads, and the frame tree behind `frame_signature` leaves out cross-process frames
-        (exactly where a sign-in frame usually is), which Playwright's own events do cover. A
+        (exactly where a sign-in frame usually is), which Playwright's own events do cover, one that
+        already existed when this command attached included (checked in a real browser). A
         navigation of the main frame counts too: a document restored from the back/forward cache
         keeps its loader id. A same-document change (`pushState`) fires the same event and is
         counted too, so a capture may be refused for it and asked for again.

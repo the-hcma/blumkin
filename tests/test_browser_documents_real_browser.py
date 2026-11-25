@@ -109,3 +109,122 @@ def test_a_page_that_stays_put_counts_no_frame_events(_page: Any) -> None:
         page.wait_for_timeout(200)
 
     assert watch.changes == 0
+
+
+@pytest.fixture
+def _own_browser(tmp_path: Any) -> Any:
+    """A Chrome of its own, reachable by DevTools, and a web server for three made-up hosts.
+
+    Every blumkin command attaches to a browser that is already running, so a frame that exists
+    before the attach is the normal case; Playwright launching the browser itself never is.
+    """
+    import http.server
+    import json
+    import socket
+    import subprocess
+    import threading
+    import time
+    import urllib.request
+
+    from blumkin.browser.discovery import resolve_browser
+
+    def free_port() -> int:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return int(probe.getsockname()[1])
+
+    web, debugging = free_port(), free_port()
+    bodies = {
+        "app.example.com": f"<body>app<iframe src='http://other.example.org:{web}/x'></iframe>",
+        "other.example.org": "<body>child</body>",
+        "login.microsoftonline.com": "<body>sign in</body>",
+    }
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            host = (self.headers.get("Host") or "").split(":")[0]
+            body = bodies.get(host, "<body>?</body>").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:
+            return None
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", web), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    mapping = ",".join(f"MAP {host} 127.0.0.1" for host in bodies)
+    chrome = subprocess.Popen(  # noqa: S603 - the browser this suite found, with fixed flags
+        [
+            str(resolve_browser(None).path),
+            "--headless=new",
+            "--no-sandbox",
+            "--no-first-run",
+            f"--remote-debugging-port={debugging}",
+            f"--user-data-dir={tmp_path / 'profile'}",
+            f"--host-resolver-rules={mapping}",
+            "about:blank",
+        ],  # fmt: skip
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        endpoint = f"http://127.0.0.1:{debugging}"
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                json.load(urllib.request.urlopen(f"{endpoint}/json/version", timeout=1))  # noqa: S310
+                break
+            except OSError:
+                time.sleep(0.2)
+        yield endpoint, web
+    finally:
+        chrome.terminate()
+        chrome.wait(timeout=10)
+        server.shutdown()
+
+
+def test_a_cross_process_frame_that_existed_before_the_attach_is_counted_when_it_changes(
+    _own_browser: Any,
+) -> None:
+    """The limit the guide used to state, checked the way blumkin attaches (#807).
+
+    One attach builds the page and lets go; a second one, as the next command's, finds the
+    cross-origin frame already there. Its trip to a sign-in host and back during the watch is
+    still reported by Playwright's frame events, so a capture that watches them refuses.
+    """
+    from playwright.sync_api import sync_playwright
+
+    endpoint, web = _own_browser
+    with sync_playwright() as first:
+        browser = first.chromium.connect_over_cdp(endpoint)
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(f"http://app.example.com:{web}/")
+        page.wait_for_timeout(
+            800
+        )  # the frame is there; the attach ends without closing the browser
+
+    with sync_playwright() as second:
+        browser = second.chromium.connect_over_cdp(endpoint)
+        page = next(p for c in browser.contexts for p in c.pages if "app.example.com" in p.url)
+        driver = PlaywrightDriver(
+            browser=browser,
+            page=page,
+            playwright=SimpleNamespace(stop=lambda: None),
+            timeout_s=5.0,
+        )
+        assert len(page.frames) == 2  # the frame was there before this attach
+        with driver.watch_documents() as watch:
+            page.evaluate(
+                f"document.querySelector('iframe').src = 'http://login.microsoftonline.com:{web}/x'"
+            )
+            page.wait_for_timeout(500)
+            page.evaluate(
+                f"document.querySelector('iframe').src = 'http://other.example.org:{web}/x'"
+            )
+            page.wait_for_timeout(500)
+
+        assert watch.changes >= 2  # out to the sign-in host, and back
