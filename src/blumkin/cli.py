@@ -3928,19 +3928,40 @@ def _narration_notes(told: dict[str, Any] | None) -> list[str]:
     ]
 
 
+def _record_mask_option[F: Callable[..., Any]](command: F) -> F:
+    """`--mask` for the record commands: elements covered in every picture a recording keeps."""
+    return click.option(
+        "--mask",
+        multiple=True,
+        metavar="ROLE[:NAME]",
+        help=(
+            "Cover every element with this role (and exact name, when given) with a solid bar "
+            "in every picture the recording keeps; repeat it. A stretch where a mask matches "
+            "nothing is left out of the video as a card. Frames are taken by the browser with "
+            "the bars drawn, so the video is less smooth than an unmasked one."
+        ),
+    )(command)
+
+
 @browser_record.command("start", epilog=help_text.BROWSER_RECORD_START_EPILOG)
 @click.argument("task")
+@_record_mask_option
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
-def browser_record_start(ctx: click.Context, task: str, as_json_flag: bool) -> None:
+def browser_record_start(
+    ctx: click.Context, task: str, mask: tuple[str, ...], as_json_flag: bool
+) -> None:
     """Start recording TASK's page until `record stop` (it only looks)."""
     _browser_action(
         ctx,
         as_json_flag,
         task,
-        lambda: start_recording(load_browser_setup(), task),
+        lambda: start_recording(load_browser_setup(), task, masks=mask),
         "recording started",
-        notes=lambda p: [f"  stop it with: blumkin browser record stop {task}"],
+        notes=lambda p: [
+            *([f"  covered by {p['masks']} mask option(s)"] if p.get("masks") else []),
+            f"  stop it with: blumkin browser record stop {task}",
+        ],
     )
 
 
@@ -4029,12 +4050,14 @@ def browser_record_status(ctx: click.Context, task: str, as_json_flag: bool) -> 
     required=True,
     help=f"How long to record, 1 to {RECORD_MAX_SECONDS:g} seconds.",
 )
+@_record_mask_option
 @_record_encode_options
 @click.option("--json", "as_json_flag", is_flag=True, help="Machine-readable JSON on stdout.")
 @click.pass_context
 def browser_record_clip(
     ctx: click.Context,
     task: str,
+    mask: tuple[str, ...],
     seconds: float,
     fmt: str,
     out: Path | None,
@@ -4057,6 +4080,7 @@ def browser_record_clip(
             speed=speed,
             trim_idle_s=trim_idle,
             keep_frames=keep_frames,
+            masks=mask,
         ),
         "recording written",
         notes=_record_notes,

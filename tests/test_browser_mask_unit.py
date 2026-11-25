@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from blumkin.browser.cdp import BrowserActionError, PlaywrightDriver
+from blumkin.browser.cdp import BrowserActionError, MaskError, PlaywrightDriver
 
 
 def _png(width: int = 200, height: int = 100) -> bytes:
@@ -196,3 +196,285 @@ def test_masks_look_for_elements_marked_aria_hidden_too_because_they_can_still_b
     _driver(page).screenshot_png(masks=[("heading", None), ("cell", "Total")])
 
     assert page.hidden_included == [True, True]  # both the role-only and the named lookup
+
+
+# ------------------------------------------------------------------ masked recordings (#806)
+
+
+class _Session:
+    """A DevTools session: what the driver asks it to do, and the frames it is made to send."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+        self.handlers: dict[str, Any] = {}
+
+    def on(self, event: str, handler: Any) -> None:
+        self.handlers[event] = handler
+
+    def send(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.sent.append((method, params or {}))
+        return {"data": ""}
+
+    def emit_frame(self, number: int, pixels: bytes = b"UNMASKED-PIXELS") -> None:
+        import base64
+
+        self.handlers["Page.screencastFrame"](
+            {
+                "data": base64.b64encode(pixels).decode(),
+                "metadata": {"timestamp": 1000.0 + number},
+                "sessionId": number,
+            }
+        )
+
+
+def _jpeg(color: tuple[int, int, int]) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (200, 100), color).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+class _CastPage(_Page):
+    def __init__(self) -> None:
+        super().__init__()
+        self.session = _Session()
+        self.context = SimpleNamespace(new_cdp_session=lambda page: self.session)
+        self.main_frame = object()
+        self.next_picture = _jpeg((10, 10, 10))
+
+    def on(self, event: str, handler: Any) -> None:
+        return None
+
+    def remove_listener(self, event: str, handler: Any) -> None:
+        return None
+
+    def wait_for_timeout(self, ms: float) -> None:
+        return None
+
+    def screenshot(self, **kwargs: Any) -> bytes:
+        self.shots.append(kwargs)
+        return self.next_picture
+
+
+def _masked_cast(page: _CastPage, masks: Any = (("heading", None),)) -> PlaywrightDriver:
+    driver = _driver(page)
+    driver.screencast_start(max_width=1280, quality=60, masks=masks)
+    return driver
+
+
+def test_a_masked_recording_never_returns_a_pixel_of_the_screencast() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+    page.session.emit_frame(1)
+    page.session.emit_frame(2)
+
+    frames = driver.screencast_pump(50)
+
+    assert len(frames) == 1 and frames[0].data == page.next_picture  # the masked screenshot
+    assert b"UNMASKED" not in frames[0].data
+    (shot,) = page.shots
+    assert shot["type"] == "jpeg" and shot["quality"] == 60
+    assert [(m.role, m.name) for m in shot["mask"]] == [("heading", None)]
+    acks = [params for method, params in page.session.sent if method == "Page.screencastFrameAck"]
+    assert len(acks) == 2  # both screencast frames were acknowledged so the browser sends more
+
+
+def test_a_masked_page_that_did_not_change_is_not_photographed() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+
+    assert driver.screencast_pump(50) == []
+    assert page.shots == []  # no screencast frame, no change, no picture (and no flicker)
+
+
+def test_the_same_masked_picture_twice_is_kept_once_and_a_changed_one_is_kept() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+
+    page.session.emit_frame(1)
+    first = driver.screencast_pump(50)
+    page.session.emit_frame(2)
+    repeat = driver.screencast_pump(50)
+    page.next_picture = _jpeg((200, 0, 0))
+    page.session.emit_frame(3, pixels=b"A-CHANGED-PAGE")  # a real change paints different pixels
+    changed = driver.screencast_pump(50)
+
+    assert (len(first), len(repeat), len(changed)) == (1, 0, 1)
+    assert changed[0].data == page.next_picture
+
+
+def test_a_masked_keyframe_is_a_masked_screenshot_not_a_devtools_capture() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+
+    frame = driver.screencast_keyframe()
+
+    assert frame.data == page.next_picture
+    assert "Page.captureScreenshot" not in [method for method, _ in page.session.sent]
+    assert [(m.role, m.name) for m in page.shots[0]["mask"]] == [("heading", None)]
+
+
+def test_a_mask_that_matches_nothing_gives_no_frame_and_no_keyframe() -> None:
+    page = _CastPage()  # the page holds no heading
+    driver = _masked_cast(page)
+    page.session.emit_frame(1)
+
+    with pytest.raises(MaskError, match="heading"):
+        driver.screencast_pump(50)
+    with pytest.raises(MaskError, match="heading"):
+        driver.screencast_keyframe()
+
+    assert page.shots == []  # nothing was photographed
+
+
+def test_without_masks_the_screencast_frames_are_returned_as_they_always_were() -> None:
+    page = _CastPage()
+    driver = _driver(page)
+    driver.screencast_start(max_width=1280, quality=60)
+    page.session.emit_frame(1)
+
+    frames = driver.screencast_pump(50)
+
+    assert [f.data for f in frames] == [b"UNMASKED-PIXELS"] and page.shots == []
+
+
+def _after_each_shot_the_bars_repaint(page: _CastPage) -> None:
+    """Drawing and removing the bars repaints the page: the browser sends frames for it.
+
+    The frames show the page as it is then, so they differ from one state of the page to
+    another (`page.state`), as real pixels do.
+    """
+    original = page.screenshot
+    counter = [0]
+    page.state = "A"  # type: ignore[attr-defined]
+
+    def shoot(**kwargs: Any) -> bytes:
+        taken = original(**kwargs)
+        counter[0] += 1
+        state = page.state  # type: ignore[attr-defined]
+        page.session.emit_frame(100 + 2 * counter[0], pixels=f"{state}-WITH-BARS".encode())
+        page.session.emit_frame(101 + 2 * counter[0], pixels=f"{state}-WITHOUT-BARS".encode())
+        return taken
+
+    page.screenshot = shoot  # type: ignore[method-assign]
+
+
+def test_an_idle_masked_page_is_not_photographed_for_ever_by_its_own_bars() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+
+    kept = sum(len(driver.screencast_pump(50)) for _ in range(12))
+
+    assert kept == 0
+    assert len(page.shots) <= 3  # the keyframe, one look to tell the bars from a change, no more
+
+
+def test_a_real_change_is_kept_and_a_return_to_an_earlier_look_is_not_mistaken_for_bars() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    for _ in range(4):
+        driver.screencast_pump(50)  # idle: the bars' frames are learned as noise
+
+    page.next_picture = _jpeg((0, 120, 0))  # the page changes to B
+    page.state = "B"  # type: ignore[attr-defined]
+    page.session.emit_frame(1, pixels=b"B-PAINTED")
+    to_b = driver.screencast_pump(50)
+    for _ in range(4):
+        driver.screencast_pump(50)
+    page.next_picture = _jpeg((10, 10, 10))  # and back to how it was: A again
+    page.state = "A"  # type: ignore[attr-defined]
+    page.session.emit_frame(2, pixels=b"A-WITHOUT-BARS")  # the same pixels the bars once left
+    back_to_a = driver.screencast_pump(50)
+
+    assert len(to_b) == 1 and len(back_to_a) == 1
+
+
+def test_a_page_that_never_stops_changing_is_photographed_on_every_read() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    kept = 0
+    for number in range(6):
+        page.next_picture = _jpeg((number * 30, 0, 0))
+        page.session.emit_frame(number, pixels=f"PAINT-{number}".encode())
+        kept += len(driver.screencast_pump(50))
+
+    assert kept == 6
+
+
+def test_a_masked_frame_is_taken_under_the_drivers_call_deadline() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+    entered: list[tuple[float, str]] = []
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def bounded(seconds: float, what: str) -> Any:
+        entered.append((seconds, what))
+        yield
+
+    driver._bounded = bounded  # type: ignore[method-assign]
+    driver.screencast_keyframe()
+
+    assert [what for _, what in entered] == ["take a masked frame"]
+    assert entered[0][0] == driver._call_deadline_s()
+
+
+def test_an_intermediate_state_read_before_a_picture_is_not_learned_as_noise() -> None:
+    """A, then B, then A again within one poll: B must still be kept when the page settles on it."""
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    for _ in range(4):
+        driver.screencast_pump(50)  # idle: the bars' frames are learned as noise
+
+    page.session.emit_frame(1, pixels=b"B-FLICKER")  # painted and gone again before the read
+    page.session.emit_frame(2, pixels=b"A-WITHOUT-BARS")
+    first = driver.screencast_pump(50)  # the picture shows A again: nothing is kept
+    for _ in range(3):
+        driver.screencast_pump(50)
+
+    page.next_picture = _jpeg((0, 0, 200))  # now the page settles on B for real
+    page.state = "B"  # type: ignore[attr-defined]
+    page.session.emit_frame(3, pixels=b"B-FLICKER")
+    settled = driver.screencast_pump(50)
+
+    assert first == [] and len(settled) == 1
+
+
+def test_what_was_learned_about_the_bars_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    from blumkin.browser import cdp
+
+    clock = [1000.0]
+    monkeypatch.setattr(cdp.time, "monotonic", lambda: clock[0])
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    for _ in range(4):
+        driver.screencast_pump(50)
+    before = len(page.shots)
+    page.session.emit_frame(9, pixels=b"A-WITHOUT-BARS")  # a known frame: ignored
+    driver.screencast_pump(50)
+    assert len(page.shots) == before
+
+    clock[0] += cdp._NOISE_TTL_S + 1
+    page.session.emit_frame(10, pixels=b"A-WITHOUT-BARS")  # the same frame, long after
+    driver.screencast_pump(50)
+
+    assert len(page.shots) == before + 1  # looked at again: it may be a real change
