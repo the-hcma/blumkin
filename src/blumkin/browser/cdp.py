@@ -2570,7 +2570,9 @@ class PlaywrightDriver:
             raise BrowserActionError("Expected a running screencast, got none")
         _, _, quality, max_width = self._screencast
         try:
-            shot = self._shoot_masked(self._masks, type="jpeg", quality=quality)
+            # Bounded like every other frame read: counting the matches has no wait of its own.
+            with self._bounded(self._call_deadline_s(), "take a masked frame"):
+                shot = self._shoot_masked(self._masks, type="jpeg", quality=quality)
         except _playwright_error() as exc:
             raise self._action_error("take a masked frame", exc) from exc
         return _fit_jpeg(shot, max_width, quality)

@@ -410,3 +410,23 @@ def test_a_page_that_never_stops_changing_is_photographed_on_every_read() -> Non
         kept += len(driver.screencast_pump(50))
 
     assert kept == 6
+
+
+def test_a_masked_frame_is_taken_under_the_drivers_call_deadline() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+    entered: list[tuple[float, str]] = []
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def bounded(seconds: float, what: str) -> Any:
+        entered.append((seconds, what))
+        yield
+
+    driver._bounded = bounded  # type: ignore[method-assign]
+    driver.screencast_keyframe()
+
+    assert [what for _, what in entered] == ["take a masked frame"]
+    assert entered[0][0] == driver._call_deadline_s()

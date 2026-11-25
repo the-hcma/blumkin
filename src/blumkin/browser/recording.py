@@ -371,6 +371,8 @@ def run_recorder(
                     if again is not None:
                         need_fresh = False
                         add_frame(again)
+                    elif why_not == "mask" and not on_card:
+                        add_card("mask")  # nothing to cover: leave the stretch out, as a card
                 else:
                     for frame in frames:
                         if on_axis(frame.timestamp) >= floor:

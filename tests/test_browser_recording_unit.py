@@ -244,6 +244,7 @@ class _Driver:
         self.keyframe_url_after: str | None = None
         self.keyframe_stamp: Callable[[], float] | None = None  # a keyframe's paint time
         self.mask_missing: Callable[[], bool] | None = None  # a mask finds nothing, while true
+        self.keyframe_mask_missing: Callable[[], bool] | None = None  # the same, keyframes only
         self._ran = False
 
     @property
@@ -275,7 +276,9 @@ class _Driver:
 
     def screencast_keyframe(self) -> ScreenFrame:
         self.keyframes += 1
-        if self.mask_missing is not None and self.mask_missing():
+        if (self.mask_missing is not None and self.mask_missing()) or (
+            self.keyframe_mask_missing is not None and self.keyframe_mask_missing()
+        ):
             raise MaskError("Expected an element to mask (heading), got none")
         pixels = self.keyframe_pixels.pop(0) if self.keyframe_pixels else _APP_PIXELS
         if self.keyframe_url_after is not None:
@@ -2667,3 +2670,28 @@ def test_a_clip_hands_its_masks_to_the_recorder(
         )
 
     assert seen["masks"] == (("textbox", "Amount"), ("heading", None))
+
+
+def test_a_mask_that_goes_missing_when_a_clock_step_asks_for_a_fresh_picture_is_a_card(
+    tmp_path: Path,
+) -> None:
+    steps = [_Step(frames=(_shot(_NEXT_PIXELS, 106.0),))]
+    driver = _Driver(steps)
+    wall, steady = _stepping_clocks(driver, step_at=1, step=60.0)
+    # An idle page: no frame is read, so only the fresh picture asked for after the step can
+    # find the mask missing (the first picture was fine).
+    driver.keyframe_mask_missing = lambda: driver.keyframes >= 2
+
+    _, lines = _run(
+        tmp_path,
+        driver,
+        False,
+        False,
+        True,
+        clock=wall,
+        tick=steady,
+        masks=(("heading", None),),
+    )
+
+    cards = [item for item in lines if item["kind"] == "card"]
+    assert [c["reason"] for c in cards] == ["mask"]  # the video does not hold the old picture
