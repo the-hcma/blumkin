@@ -1,11 +1,12 @@
 """Frames a fresh Playwright connection cannot see, read over a loopback DevTools websocket.
 
 A cross-origin iframe is its own DevTools target. A connection made after the frame already
-exists never learns of it through Playwright (issue #551), but Chrome still lists it at
-`/json/list` with a debugger socket of its own. This module speaks just enough of that socket
-to evaluate a script in the frame: a stdlib websocket client for loopback only, a fixed list of
-allowed calls, a size cap and a timeout on every read, and the filter that keeps only frames
-that belong to the page being driven.
+existed did not learn of it through Playwright (issue #551; with Chrome 158 and Playwright 1.65.2
+it does, and can run a script in it, checked in a real browser, but other versions may not), and
+Chrome lists it at `/json/list` with a debugger socket of its own either way. This module speaks
+just enough of that socket to evaluate a script in the frame: a stdlib websocket client for
+loopback only, a fixed list of allowed calls, a size cap and a timeout on every read, and the
+filter that keeps only frames that belong to the page being driven.
 """
 
 from __future__ import annotations
@@ -214,7 +215,7 @@ class CdpSocket:
 
 
 class ExistingFrames:
-    """The frames of the driven page that Playwright does not list, with their sockets kept."""
+    """The frames of the driven page that Playwright may not list, with their sockets kept."""
 
     def __init__(
         self,
