@@ -642,6 +642,8 @@ _PUMP_MAX_FRAMES = 120
 _MASK_COLOR = "#000000"
 #: How many frame fingerprints a masked recording keeps as "our own bars" before it starts over.
 _NOISE_MAX = 256
+#: How long what a masked recording learned about its own bars stays valid, in seconds.
+_NOISE_TTL_S = 3.0
 
 
 def _paint_time(params: dict[str, Any]) -> float:
@@ -678,6 +680,8 @@ class PlaywrightDriver:
         self._masks: tuple[tuple[str, str | None], ...] = ()  # a masked recording's masks
         self._last_masked: bytes | None = None  # the last masked picture, to skip a repeat
         self._noise: set[bytes] = set()  # screencast frames our own bars are known to cause
+        self._noise_at = 0.0  # when the noise was last learned
+        self._after_shot = False  # whether the last masked call took a picture
         self._committed: list[str] = []
         self._committed_frames: list[str] = []
         self._navigation_listener: Callable[[Any], None] | None = None
@@ -2470,6 +2474,7 @@ class PlaywrightDriver:
         self._masks = tuple(masks)
         self._last_masked = None
         self._noise = set()
+        self._after_shot = False
         # The address of every top-level document the page commits, so a recording can tell
         # that the page went somewhere (a sign-in page) and came back during one read: the
         # address at the two ends alone looks unchanged.
@@ -2500,6 +2505,7 @@ class PlaywrightDriver:
             data = self._masked_frame()
             self._last_masked = data
             self._noise.clear()
+            self._after_shot = True  # the frames that follow are caused by these bars
             return ScreenFrame(data=data, timestamp=time.time())
         try:
             with self._bounded(self._call_deadline_s(), "take a frame"):
@@ -2550,15 +2556,26 @@ class PlaywrightDriver:
         to the last one are therefore remembered by their hash and do not count again, until a
         picture that does differ is kept: what was noise before may then be a real change (the
         page going back to how it was).
+
+        Only the frames read right after a picture of ours can be its bars: frames read at other
+        times may show a state the page passed through (A, then B, then A again before the read),
+        and learning those would hide the page settling on B later. What is learned also expires,
+        so a frame that was once noise cannot hide a change for ever.
         """
+        learnable, self._after_shot = self._after_shot, False
+        if self._noise and time.monotonic() - self._noise_at > _NOISE_TTL_S:
+            self._noise.clear()
         fresh = [f for f in frames if _frame_hash(f.data) not in self._noise]
         if not fresh:
             return []
         data = self._masked_frame()
+        self._after_shot = True
         if data == self._last_masked:
-            if len(self._noise) > _NOISE_MAX:
-                self._noise.clear()
-            self._noise.update(_frame_hash(f.data) for f in fresh)
+            if learnable:
+                if len(self._noise) > _NOISE_MAX:
+                    self._noise.clear()
+                self._noise.update(_frame_hash(f.data) for f in fresh)
+                self._noise_at = time.monotonic()
             return []  # the same picture again: the video holds the one it has
         self._last_masked = data
         self._noise.clear()
@@ -2586,6 +2603,7 @@ class PlaywrightDriver:
         self._masks = ()
         self._last_masked = None
         self._noise = set()
+        self._after_shot = False
         listener, self._navigation_listener = self._navigation_listener, None
         if listener is not None:
             with contextlib.suppress(_playwright_error(), AttributeError, ValueError):

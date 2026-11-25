@@ -430,3 +430,51 @@ def test_a_masked_frame_is_taken_under_the_drivers_call_deadline() -> None:
 
     assert [what for _, what in entered] == ["take a masked frame"]
     assert entered[0][0] == driver._call_deadline_s()
+
+
+def test_an_intermediate_state_read_before_a_picture_is_not_learned_as_noise() -> None:
+    """A, then B, then A again within one poll: B must still be kept when the page settles on it."""
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    for _ in range(4):
+        driver.screencast_pump(50)  # idle: the bars' frames are learned as noise
+
+    page.session.emit_frame(1, pixels=b"B-FLICKER")  # painted and gone again before the read
+    page.session.emit_frame(2, pixels=b"A-WITHOUT-BARS")
+    first = driver.screencast_pump(50)  # the picture shows A again: nothing is kept
+    for _ in range(3):
+        driver.screencast_pump(50)
+
+    page.next_picture = _jpeg((0, 0, 200))  # now the page settles on B for real
+    page.state = "B"  # type: ignore[attr-defined]
+    page.session.emit_frame(3, pixels=b"B-FLICKER")
+    settled = driver.screencast_pump(50)
+
+    assert first == [] and len(settled) == 1
+
+
+def test_what_was_learned_about_the_bars_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    from blumkin.browser import cdp
+
+    clock = [1000.0]
+    monkeypatch.setattr(cdp.time, "monotonic", lambda: clock[0])
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    for _ in range(4):
+        driver.screencast_pump(50)
+    before = len(page.shots)
+    page.session.emit_frame(9, pixels=b"A-WITHOUT-BARS")  # a known frame: ignored
+    driver.screencast_pump(50)
+    assert len(page.shots) == before
+
+    clock[0] += cdp._NOISE_TTL_S + 1
+    page.session.emit_frame(10, pixels=b"A-WITHOUT-BARS")  # the same frame, long after
+    driver.screencast_pump(50)
+
+    assert len(page.shots) == before + 1  # looked at again: it may be a real change
