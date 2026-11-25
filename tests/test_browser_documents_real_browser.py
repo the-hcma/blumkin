@@ -173,17 +173,36 @@ def _own_browser(tmp_path: Any) -> Any:
     try:
         endpoint = f"http://127.0.0.1:{debugging}"
         deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
+        while True:
             try:
                 json.load(urllib.request.urlopen(f"{endpoint}/json/version", timeout=1))  # noqa: S310
                 break
             except OSError:
+                if time.monotonic() > deadline:
+                    pytest.fail(f"Expected Chrome to answer DevTools at {endpoint}, got none")
                 time.sleep(0.2)
         yield endpoint, web
     finally:
         chrome.terminate()
-        chrome.wait(timeout=10)
-        server.shutdown()
+        try:
+            chrome.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            chrome.kill()  # it ignored the request to end: do not leave it running
+            chrome.wait(timeout=10)
+        finally:
+            server.shutdown()
+
+
+def _wait_for_child(page: Any, address: str, seconds: float = 10.0) -> None:
+    """Wait until a child frame of `page` has committed `address` (not for a fixed time)."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if any(str(frame.url) == address for frame in page.frames[1:]):
+            return
+        page.wait_for_timeout(50)
+    pytest.fail(f"Expected a child frame at {address}, got {[f.url for f in page.frames]}")
 
 
 def test_a_cross_process_frame_that_existed_before_the_attach_is_counted_when_it_changes(
@@ -203,9 +222,7 @@ def test_a_cross_process_frame_that_existed_before_the_attach_is_counted_when_it
         context = browser.contexts[0]
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(f"http://app.example.com:{web}/")
-        page.wait_for_timeout(
-            800
-        )  # the frame is there; the attach ends without closing the browser
+        _wait_for_child(page, f"http://other.example.org:{web}/x")  # the frame is there
 
     with sync_playwright() as second:
         browser = second.chromium.connect_over_cdp(endpoint)
@@ -217,14 +234,13 @@ def test_a_cross_process_frame_that_existed_before_the_attach_is_counted_when_it
             timeout_s=5.0,
         )
         assert len(page.frames) == 2  # the frame was there before this attach
+        sign_in = f"http://login.microsoftonline.com:{web}/x"
+        back = f"http://other.example.org:{web}/x"
         with driver.watch_documents() as watch:
-            page.evaluate(
-                f"document.querySelector('iframe').src = 'http://login.microsoftonline.com:{web}/x'"
-            )
-            page.wait_for_timeout(500)
-            page.evaluate(
-                f"document.querySelector('iframe').src = 'http://other.example.org:{web}/x'"
-            )
-            page.wait_for_timeout(500)
+            page.evaluate(f"document.querySelector('iframe').src = '{sign_in}'")
+            _wait_for_child(page, sign_in)  # committed, not assumed after a pause
+            page.evaluate(f"document.querySelector('iframe').src = '{back}'")
+            _wait_for_child(page, back)
+            page.wait_for_timeout(100)  # an event still on its way is counted
 
         assert watch.changes >= 2  # out to the sign-in host, and back

@@ -3442,8 +3442,10 @@ class PlaywrightDriver:
     def _child_frames(self) -> list[Any]:
         """Playwright's child frames, then any frame it cannot see that Chrome still lists.
 
-        A connection made after a cross-origin frame exists never hears of it from Playwright
-        (#551); those frames are reached over their own DevTools socket instead.
+        A connection made after a cross-origin frame existed did not hear of it from Playwright
+        in the case behind #551 (Chrome 158 with Playwright 1.65.2 does, checked in a real
+        browser, but other versions may not); the frames it does not list are reached over their
+        own DevTools socket instead, so a frame is checked whichever way it is known.
         """
         frames = [frame for frame in self._page.frames if frame != self._page.main_frame]
         if self._existing_frames is not None:
