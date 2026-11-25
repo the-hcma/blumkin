@@ -18,7 +18,9 @@ from typing import Any
 import pytest
 from browser_leaks import borrowed
 
+from blumkin.browser import narration, recording
 from blumkin.browser.cdp import PlaywrightDriver
+from blumkin.browser.narration import NarrationOptions
 from blumkin.browser.recording import encode_recording, read_index, run_recorder
 
 pytestmark = pytest.mark.skipif(
@@ -372,3 +374,39 @@ def test_an_idle_masked_page_stops_being_photographed_and_its_bars_stop_flashing
 
     assert kept == 0
     assert shots[0] <= 4, shots[0]  # the keyframe and a look or two, not one a poll (about 16)
+
+
+def test_a_recorded_session_with_two_cues_has_an_audio_track_as_long_as_its_video(
+    _browser: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Narration against a real recording (#816): real browser, real recorder, real ffmpeg.
+
+    The speech is a tone engine (a person's voice is not what is checked); the cues are placed
+    on the recording's own clock, as `browser narrate` does. The video starts at the recorder's
+    first picture, not when it was asked to start, so the cues are placed from the length the
+    journal says the video has: the first near its start, the second so that it ends a full
+    second before the video does, whatever the startup took.
+    """
+    from test_browser_narration_real_ffmpeg import _ToneEngine
+
+    session, span, _ = _record(_browser, tmp_path, [(2.0, "color:#0000ff")], seconds=9.0)
+    if span < 6.0:
+        pytest.skip(f"the first picture came too late to fit two cues in the video ({span:.1f} s)")
+    entries, _ = read_index(session)
+    first = entries[0].t
+    narration.record_cue(session, "x" * 20, now=lambda: first + 0.5)  # two seconds of tone
+    narration.record_cue(session, "y" * 20, now=lambda: first + span - 3.0)  # ends 1 s early
+    monkeypatch.setattr(recording, "get_engine", lambda name, config_dir=None: _ToneEngine())
+    video = tmp_path / "out.mp4"
+
+    result = encode_recording(session, video, narration=NarrationOptions())
+
+    streams = _probe(video)["streams"]
+    audio = [s for s in streams if s["codec_type"] == "audio"]
+    visual = [s for s in streams if s["codec_type"] == "video"]
+    assert len(audio) == 1 and len(visual) == 1
+    assert abs(float(audio[0]["duration"]) - float(visual[0]["duration"])) < 0.3
+    assert abs(float(visual[0]["duration"]) - span) <= span * 0.05
+    told = result["narration"]
+    assert (told["cues"], told["late"], told["cut"]) == (2, 0, 0)
+    assert told["spoken_s"] == pytest.approx(4.0, abs=0.1)
