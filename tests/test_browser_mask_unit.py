@@ -298,7 +298,7 @@ def test_the_same_masked_picture_twice_is_kept_once_and_a_changed_one_is_kept() 
     page.session.emit_frame(2)
     repeat = driver.screencast_pump(50)
     page.next_picture = _jpeg((200, 0, 0))
-    page.session.emit_frame(3)
+    page.session.emit_frame(3, pixels=b"A-CHANGED-PAGE")  # a real change paints different pixels
     changed = driver.screencast_pump(50)
 
     assert (len(first), len(repeat), len(changed)) == (1, 0, 1)
@@ -339,3 +339,74 @@ def test_without_masks_the_screencast_frames_are_returned_as_they_always_were() 
     frames = driver.screencast_pump(50)
 
     assert [f.data for f in frames] == [b"UNMASKED-PIXELS"] and page.shots == []
+
+
+def _after_each_shot_the_bars_repaint(page: _CastPage) -> None:
+    """Drawing and removing the bars repaints the page: the browser sends frames for it.
+
+    The frames show the page as it is then, so they differ from one state of the page to
+    another (`page.state`), as real pixels do.
+    """
+    original = page.screenshot
+    counter = [0]
+    page.state = "A"  # type: ignore[attr-defined]
+
+    def shoot(**kwargs: Any) -> bytes:
+        taken = original(**kwargs)
+        counter[0] += 1
+        state = page.state  # type: ignore[attr-defined]
+        page.session.emit_frame(100 + 2 * counter[0], pixels=f"{state}-WITH-BARS".encode())
+        page.session.emit_frame(101 + 2 * counter[0], pixels=f"{state}-WITHOUT-BARS".encode())
+        return taken
+
+    page.screenshot = shoot  # type: ignore[method-assign]
+
+
+def test_an_idle_masked_page_is_not_photographed_for_ever_by_its_own_bars() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+
+    kept = sum(len(driver.screencast_pump(50)) for _ in range(12))
+
+    assert kept == 0
+    assert len(page.shots) <= 3  # the keyframe, one look to tell the bars from a change, no more
+
+
+def test_a_real_change_is_kept_and_a_return_to_an_earlier_look_is_not_mistaken_for_bars() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    _after_each_shot_the_bars_repaint(page)
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    for _ in range(4):
+        driver.screencast_pump(50)  # idle: the bars' frames are learned as noise
+
+    page.next_picture = _jpeg((0, 120, 0))  # the page changes to B
+    page.state = "B"  # type: ignore[attr-defined]
+    page.session.emit_frame(1, pixels=b"B-PAINTED")
+    to_b = driver.screencast_pump(50)
+    for _ in range(4):
+        driver.screencast_pump(50)
+    page.next_picture = _jpeg((10, 10, 10))  # and back to how it was: A again
+    page.state = "A"  # type: ignore[attr-defined]
+    page.session.emit_frame(2, pixels=b"A-WITHOUT-BARS")  # the same pixels the bars once left
+    back_to_a = driver.screencast_pump(50)
+
+    assert len(to_b) == 1 and len(back_to_a) == 1
+
+
+def test_a_page_that_never_stops_changing_is_photographed_on_every_read() -> None:
+    page = _CastPage()
+    page.matches = {("heading", None): 1}
+    driver = _masked_cast(page)
+    driver.screencast_keyframe()
+    kept = 0
+    for number in range(6):
+        page.next_picture = _jpeg((number * 30, 0, 0))
+        page.session.emit_frame(number, pixels=f"PAINT-{number}".encode())
+        kept += len(driver.screencast_pump(50))
+
+    assert kept == 6

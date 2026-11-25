@@ -345,3 +345,30 @@ def test_a_mask_that_matches_nothing_leaves_a_card_and_no_picture_of_the_page(
     entries, _ = read_index(session)
     assert entries and all(entry.kind == "card" and entry.reason == "mask" for entry in entries)
     assert _frames_of(session) == []
+
+
+def test_an_idle_masked_page_stops_being_photographed_and_its_bars_stop_flashing(
+    _browser: Any,
+) -> None:
+    """Drawing the bars repaints the page; that must not make each picture cause the next."""
+    driver, page = _scripted_page(_browser, 1.0, _SECRET_APP)
+    shots = [0]
+    original = page.screenshot
+
+    def counting(**kwargs: Any) -> bytes:
+        shots[0] += 1
+        return original(**kwargs)
+
+    page.screenshot = counting
+    driver.screencast_start(max_width=1280, masks=(("heading", None),))
+    try:
+        driver.screencast_keyframe()
+        began = time.monotonic()
+        kept = 0
+        while time.monotonic() - began < 4.0:
+            kept += len(driver.screencast_pump(250))
+    finally:
+        driver.screencast_stop()
+
+    assert kept == 0
+    assert shots[0] <= 4, shots[0]  # the keyframe and a look or two, not one a poll (about 16)

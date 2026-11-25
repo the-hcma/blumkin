@@ -466,15 +466,18 @@ With `--mask ROLE[:NAME]` (repeat it; the same options and limits as `browser sc
 the named elements are covered by a solid black bar in every picture the recording keeps. The
 browser draws the bars before a picture leaves it, so the recorder takes each picture as a masked
 screenshot instead of reading the screencast, whose pixels it throws away unread: the screencast
-only tells it that the page changed, and a picture identical to the last is not kept again. That
-costs smoothness: a masked video holds about 14 pictures a second at most (measured on a page that
-repaints constantly, where an unmasked recording of the same page held about 56, one per paint),
-and a bar is drawn over each masked element for the instant of each picture, so it can be seen
-flashing in the browser window. A stretch where a mask matches nothing (or a different number of
-elements while the picture is made) is left out as a card, so what it should hide is never saved
-in view; a typo in a name therefore shows as cards, not as a video of the page. The bar covers
-each element's own box, so text that overflows it, or an element that moves while the picture is
-made, can stay visible: look at the video before sharing it.
+only tells it that the page changed, and a picture identical to the last is not kept again.
+Drawing the bars repaints the page, so the recorder learns which screencast frames are only its
+own bars and does not photograph the page again for them: a page that has stopped changing is
+looked at once more and then left alone, and its bars stop flashing. That costs smoothness: a
+masked video holds about 14 pictures a second at most (measured on a page that repaints
+constantly, where an unmasked recording of the same page held about 56, one per paint), and a bar
+is drawn over each masked element for the instant of each picture, so it can be seen flashing in
+the browser window. A stretch where a mask matches nothing (or a different number of elements
+while the picture is made) is left out as a card, so what it should hide is never saved in view; a
+typo in a name therefore shows as cards, not as a video of the page. The bar covers each element's
+own box, so text that overflows it, or an element that moves while the picture is made, can stay
+visible: look at the video before sharing it.
 """
 
 BROWSER_RECORD_START_EPILOG = """
@@ -492,15 +495,18 @@ With `--mask ROLE[:NAME]` (repeat it; the same options and limits as `browser sc
 the named elements are covered by a solid black bar in every picture the recording keeps. The
 browser draws the bars before a picture leaves it, so the recorder takes each picture as a masked
 screenshot instead of reading the screencast, whose pixels it throws away unread: the screencast
-only tells it that the page changed, and a picture identical to the last is not kept again. That
-costs smoothness: a masked video holds about 14 pictures a second at most (measured on a page that
-repaints constantly, where an unmasked recording of the same page held about 56, one per paint),
-and a bar is drawn over each masked element for the instant of each picture, so it can be seen
-flashing in the browser window. A stretch where a mask matches nothing (or a different number of
-elements while the picture is made) is left out as a card, so what it should hide is never saved
-in view; a typo in a name therefore shows as cards, not as a video of the page. The bar covers
-each element's own box, so text that overflows it, or an element that moves while the picture is
-made, can stay visible: look at the video before sharing it.
+only tells it that the page changed, and a picture identical to the last is not kept again.
+Drawing the bars repaints the page, so the recorder learns which screencast frames are only its
+own bars and does not photograph the page again for them: a page that has stopped changing is
+looked at once more and then left alone, and its bars stop flashing. That costs smoothness: a
+masked video holds about 14 pictures a second at most (measured on a page that repaints
+constantly, where an unmasked recording of the same page held about 56, one per paint), and a bar
+is drawn over each masked element for the instant of each picture, so it can be seen flashing in
+the browser window. A stretch where a mask matches nothing (or a different number of elements
+while the picture is made) is left out as a card, so what it should hide is never saved in view; a
+typo in a name therefore shows as cards, not as a video of the page. The bar covers each element's
+own box, so text that overflows it, or an element that moves while the picture is made, can stay
+visible: look at the video before sharing it.
 """
 
 BROWSER_RECORD_STATUS_EPILOG = """

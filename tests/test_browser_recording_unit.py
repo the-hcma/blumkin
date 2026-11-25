@@ -2534,7 +2534,7 @@ def test_a_mask_that_goes_missing_mid_recording_leaves_that_stretch_out_as_a_car
     assert [i["kind"] for i in lines][-1] == "end"
 
 
-def test_start_writes_the_masks_for_the_worker_and_clip_hands_them_to_the_recorder() -> None:
+def test_mask_options_are_parsed_into_role_and_name_pairs() -> None:
     from blumkin.browser import recording as module
 
     assert module._checked_masks(["heading", "cell:Total"]) == (
@@ -2575,3 +2575,95 @@ def test_record_start_and_clip_pass_the_mask_options_on(
     assert started.exit_code == 0 and clipped.exit_code == 0, (started.output, clipped.output)
     assert seen["start"] == ("heading:Ada", "cell")
     assert seen["clip"] == ("textbox:Amount",)
+
+
+def test_start_writes_the_masks_into_the_workers_meta_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recording, "load_profile", lambda *args: SimpleNamespace())
+    seen: dict[str, Any] = {}
+
+    class _Worker:
+        pid = 4242
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(command: list[str], **kwargs: Any) -> _Worker:
+        session = Path(command[-1])
+        seen["meta"] = json.loads((session / "meta.json").read_text())
+        (session / "ready").write_text("1")
+        return _Worker()
+
+    monkeypatch.setattr(recording.subprocess, "Popen", fake_popen)
+
+    result = recording.start_recording(
+        _setup(tmp_path), "time-sheet", masks=["heading", "cell:Total"]
+    )
+
+    assert seen["meta"]["masks"] == [["heading", None], ["cell", "Total"]]
+    assert result["masks"] == 2
+
+
+def test_the_worker_reads_the_masks_back_from_the_meta_file_and_hands_them_to_the_recorder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = tmp_path / "s"
+    session.mkdir()
+    (session / "meta.json").write_text(
+        json.dumps(
+            {
+                "config_dir": str(tmp_path),
+                "hosts": ["app.example.com"],
+                "masks": [["heading", None], ["cell", "Total"]],  # a role with no name is null
+                "max_seconds": 5.0,
+                "sign_in_hosts": [],
+                "task": "time-sheet",
+            }
+        )
+    )
+    seen: dict[str, Any] = {}
+
+    class _Attached:
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(recording, "load_profile", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(recording, "attach", lambda *a, **k: _Attached())
+    monkeypatch.setattr(recording.signal, "signal", lambda *a, **k: None)
+    monkeypatch.setattr(
+        recording, "run_recorder", lambda driver, folder, **kw: seen.update(kw) or "stopped"
+    )
+
+    recording.worker_main(session)
+
+    assert seen["masks"] == (("heading", None), ("cell", "Total"))
+
+
+def test_a_clip_hands_its_masks_to_the_recorder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class _Attached:
+        def close(self) -> None:
+            return None
+
+    class _Stop(Exception):
+        pass
+
+    def fake_recorder(driver: Any, folder: Path, **kw: Any) -> str:
+        seen.update(kw)
+        raise _Stop
+
+    monkeypatch.setattr(recording, "load_profile", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(recording, "attach", lambda *a, **k: _Attached())
+    monkeypatch.setattr(recording, "run_recorder", fake_recorder)
+    monkeypatch.setattr(recording.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    with pytest.raises(_Stop):
+        recording.clip_recording(
+            _setup(tmp_path), "time-sheet", seconds=5, masks=["textbox:Amount", "heading"]
+        )
+
+    assert seen["masks"] == (("textbox", "Amount"), ("heading", None))

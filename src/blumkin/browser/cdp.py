@@ -640,6 +640,8 @@ def _without_fragment(address: str) -> str:
 _PUMP_MAX_FRAMES = 120
 #: The colour of the bar a mask draws.
 _MASK_COLOR = "#000000"
+#: How many frame fingerprints a masked recording keeps as "our own bars" before it starts over.
+_NOISE_MAX = 256
 
 
 def _paint_time(params: dict[str, Any]) -> float:
@@ -675,6 +677,7 @@ class PlaywrightDriver:
         self._screencast: tuple[Any, list[dict[str, Any]], int, int] | None = None
         self._masks: tuple[tuple[str, str | None], ...] = ()  # a masked recording's masks
         self._last_masked: bytes | None = None  # the last masked picture, to skip a repeat
+        self._noise: set[bytes] = set()  # screencast frames our own bars are known to cause
         self._committed: list[str] = []
         self._committed_frames: list[str] = []
         self._navigation_listener: Callable[[Any], None] | None = None
@@ -2466,6 +2469,7 @@ class PlaywrightDriver:
         self._screencast = (session, arrived, quality, max_width)
         self._masks = tuple(masks)
         self._last_masked = None
+        self._noise = set()
         # The address of every top-level document the page commits, so a recording can tell
         # that the page went somewhere (a sign-in page) and came back during one read: the
         # address at the two ends alone looks unchanged.
@@ -2495,6 +2499,7 @@ class PlaywrightDriver:
         if self._masks:
             data = self._masked_frame()
             self._last_masked = data
+            self._noise.clear()
             return ScreenFrame(data=data, timestamp=time.time())
         try:
             with self._bounded(self._call_deadline_s(), "take a frame"):
@@ -2532,15 +2537,32 @@ class PlaywrightDriver:
         except _playwright_error() as exc:
             raise self._action_error("read the screencast", exc) from exc
         if self._masks:
-            # The pixels above are dropped unread: they only say that the page changed.
-            if not frames:
-                return []
-            data = self._masked_frame()
-            if data == self._last_masked:
-                return []  # the same picture again: the video holds the one it has
-            self._last_masked = data
-            return [ScreenFrame(data=data, timestamp=time.time())]
+            return self._masked_frames(frames)
         return frames
+
+    def _masked_frames(self, frames: list[ScreenFrame]) -> list[ScreenFrame]:
+        """What a masked recording keeps from a read: at most one masked picture.
+
+        The screencast's pixels are only looked at to tell whether the page changed, and are
+        dropped. Drawing a bar over a page and removing it repaints the page, so each picture
+        would cause the frames that lead to the next one, and an idle page would be photographed
+        (and its bars flash in the window) for ever. The frames that led to a picture identical
+        to the last one are therefore remembered by their hash and do not count again, until a
+        picture that does differ is kept: what was noise before may then be a real change (the
+        page going back to how it was).
+        """
+        fresh = [f for f in frames if _frame_hash(f.data) not in self._noise]
+        if not fresh:
+            return []
+        data = self._masked_frame()
+        if data == self._last_masked:
+            if len(self._noise) > _NOISE_MAX:
+                self._noise.clear()
+            self._noise.update(_frame_hash(f.data) for f in fresh)
+            return []  # the same picture again: the video holds the one it has
+        self._last_masked = data
+        self._noise.clear()
+        return [ScreenFrame(data=data, timestamp=time.time())]
 
     def _masked_frame(self) -> bytes:
         """The page as a JPEG, scaled as the screencast's frames are, with the masks covered."""
@@ -2561,6 +2583,7 @@ class PlaywrightDriver:
         self._screencast = None
         self._masks = ()
         self._last_masked = None
+        self._noise = set()
         listener, self._navigation_listener = self._navigation_listener, None
         if listener is not None:
             with contextlib.suppress(_playwright_error(), AttributeError, ValueError):
@@ -3510,6 +3533,13 @@ def _same_cell_text(expected: str, shown: str, *, option: bool) -> bool:
     except decimal.InvalidOperation:
         pass
     return option and bool(left) and bool(right) and (left in right or right in left)
+
+
+def _frame_hash(data: bytes) -> bytes:
+    """A short fingerprint of a screencast frame (identical pixels encode to identical bytes)."""
+    import hashlib
+
+    return hashlib.blake2b(data, digest_size=8).digest()
 
 
 def _fit_jpeg(data: bytes, max_side: int, quality: int) -> bytes:
