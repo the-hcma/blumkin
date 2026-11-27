@@ -1092,7 +1092,7 @@ def test_more_filed_than_expected_reads_in_words_not_as_ten_of_three(tmp_path: P
     assert status.summary() == "4 days filed (3 expected), not submitted"
 
 
-def test_filed_equal_to_expected_keeps_the_of_wording_and_one_reads_singular(
+def test_filed_equal_to_expected_keeps_the_of_wording_and_a_receipt_overflow_reads_in_words(
     tmp_path: Path,
 ) -> None:
     begin_instance(tmp_path, "timesheet", "2026-p21", expected={ItemKind.DAY: 2})
@@ -1117,4 +1117,23 @@ def test_filed_equal_to_expected_keeps_the_of_wording_and_one_reads_singular(
             )
     assert instance_status(tmp_path, "expense-report", "trip-a").summary() == (
         "2 receipts filed (1 expected), not submitted"
+    )
+
+
+def test_one_filed_item_with_no_plan_reads_in_the_singular(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-b", expected={})
+    for state in (ItemState.STAGED, ItemState.FILLED, ItemState.VERIFIED):
+        record_item(
+            tmp_path,
+            "expense-report",
+            "trip-b",
+            ItemKind.RECEIPT,
+            "r1",
+            state,
+            model_version=1,
+            sha256="1" * 64,
+        )
+
+    assert instance_status(tmp_path, "expense-report", "trip-b").summary() == (
+        "1 receipt filed, not submitted"
     )
