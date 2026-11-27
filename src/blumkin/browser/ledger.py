@@ -154,7 +154,10 @@ class LedgerStatus:
         return sum(1 for i in self.items if i.kind is kind and i.state is state)
 
     def summary(self) -> str:
-        """One line, for example `3 of 10 days filed, 4 receipts filed, not submitted`."""
+        """One line, for example `3 of 10 days filed, 4 receipts filed, not submitted`.
+
+        More filed than expected reads `10 days filed (3 expected)`, not `10 of 3 days filed`.
+        """
         parts: list[str] = []
         for kind in ItemKind:
             total = self.expected.get(kind)
@@ -164,6 +167,10 @@ class LedgerStatus:
             filed = self.count(kind, ItemState.VERIFIED)
             if total is None:
                 parts.append(f"{filed} {_noun(kind, filed)} filed")
+            elif filed > total:
+                # More were filed than the plan said (the plan changed after `ledger begin`):
+                # "10 of 3 days filed" reads as nonsense, so say what happened in words.
+                parts.append(f"{filed} {_noun(kind, filed)} filed ({total} expected)")
             else:
                 parts.append(f"{filed} of {total} {_noun(kind, total)} filed")
         if not parts:
@@ -308,8 +315,8 @@ def expect_items(
     """Change how many items of each kind an open instance expects (the other kinds stay).
 
     Plans change while a period is worked: more days get staged than were expected at the
-    start, and the instance would end at "10 of 3 days filed". The change is a journal entry of
-    its own, so the history shows what was expected and when it changed.
+    start, and the instance would end at "10 days filed (3 expected)". The change is a journal
+    entry of its own, so the history shows what was expected and when it changed.
     """
     _check_task(task)
     _check_instance(instance)
