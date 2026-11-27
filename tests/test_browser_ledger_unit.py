@@ -1080,3 +1080,60 @@ def test_recording_or_answering_a_decision_keeps_the_pending_session_hint(tmp_pa
     # Work still clears it: a real change of state means the session has resumed.
     _staged_receipt(tmp_path, "r1")
     assert instance_status(tmp_path, "expense-report", "trip").session is None
+
+
+def test_more_filed_than_expected_reads_in_words_not_as_ten_of_three(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "timesheet", "2026-p21", expected={ItemKind.DAY: 3})
+    for day in ("2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22"):
+        _file_day(tmp_path, day)
+
+    status = instance_status(tmp_path, "timesheet", "2026-p21")
+
+    assert status.summary() == "4 days filed (3 expected), not submitted"
+
+
+def test_filed_equal_to_expected_keeps_the_of_wording_and_a_receipt_overflow_reads_in_words(
+    tmp_path: Path,
+) -> None:
+    begin_instance(tmp_path, "timesheet", "2026-p21", expected={ItemKind.DAY: 2})
+    _file_day(tmp_path, "2026-10-19")
+    _file_day(tmp_path, "2026-10-20")
+    assert instance_status(tmp_path, "timesheet", "2026-p21").summary() == (
+        "2 of 2 days filed, not submitted"
+    )
+
+    begin_instance(tmp_path, "expense-report", "trip-a", expected={ItemKind.RECEIPT: 1})
+    for number in (1, 2):
+        for state in (ItemState.STAGED, ItemState.FILLED, ItemState.VERIFIED):
+            record_item(
+                tmp_path,
+                "expense-report",
+                "trip-a",
+                ItemKind.RECEIPT,
+                f"r{number}",
+                state,
+                model_version=1,
+                sha256=f"{number}" * 64,
+            )
+    assert instance_status(tmp_path, "expense-report", "trip-a").summary() == (
+        "2 receipts filed (1 expected), not submitted"
+    )
+
+
+def test_one_filed_item_with_no_plan_reads_in_the_singular(tmp_path: Path) -> None:
+    begin_instance(tmp_path, "expense-report", "trip-b", expected={})
+    for state in (ItemState.STAGED, ItemState.FILLED, ItemState.VERIFIED):
+        record_item(
+            tmp_path,
+            "expense-report",
+            "trip-b",
+            ItemKind.RECEIPT,
+            "r1",
+            state,
+            model_version=1,
+            sha256="1" * 64,
+        )
+
+    assert instance_status(tmp_path, "expense-report", "trip-b").summary() == (
+        "1 receipt filed, not submitted"
+    )
