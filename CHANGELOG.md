@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.16.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.15.0...blumkin-v1.16.0) (2026-11-27)
+
+
+### Features
+
+* **browser:** dialog --nth picks one of several same-named controls ([#781](https://github.com/the-hcma/blumkin/issues/781)) ([#790](https://github.com/the-hcma/blumkin/issues/790)) ([c041b7a](https://github.com/the-hcma/blumkin/commit/c041b7abdc9c71135efdc09d5a1b5210d7568e6f))
+* **browser:** explore observe works without allowed_hosts, and frame help says what the code does ([#785](https://github.com/the-hcma/blumkin/issues/785)) ([#792](https://github.com/the-hcma/blumkin/issues/792)) ([6637ed2](https://github.com/the-hcma/blumkin/commit/6637ed2ebf875722f0de18a226e45bf4f6c80881))
+* **browser:** narration for recordings, a voice-over made from the agent's own cues, with the macOS say engine (part of [#816](https://github.com/the-hcma/blumkin/issues/816)) ([#820](https://github.com/the-hcma/blumkin/issues/820)) ([425a399](https://github.com/the-hcma/blumkin/commit/425a399f2ebfe782f349b06f73b5b778f14d2510))
+* **browser:** pick chooses a row header or cell, and a click that finds nothing points at it ([#783](https://github.com/the-hcma/blumkin/issues/783)) ([#791](https://github.com/the-hcma/blumkin/issues/791)) ([ad0b255](https://github.com/the-hcma/blumkin/commit/ad0b255ce18f5692a622c0b38da4b407e7468731))
+* **browser:** real-time recordings of the task browser, start and stop, with captions and sign-in cards, and screenshots ([#701](https://github.com/the-hcma/blumkin/issues/701)) ([#805](https://github.com/the-hcma/blumkin/issues/805)) ([02211e5](https://github.com/the-hcma/blumkin/commit/02211e58c9d9d8a6896a0fe56fde547559d998b0))
+* **browser:** record start and clip take --mask, and the skills ask … ([#827](https://github.com/the-hcma/blumkin/issues/827)) ([7e1228e](https://github.com/the-hcma/blumkin/commit/7e1228e5b1596bac2938265453456dedc48bd37a))
+* **browser:** screenshot --mask ROLE[:NAME] covers names and amounts with a solid bar before the picture is kept (part of [#806](https://github.com/the-hcma/blumkin/issues/806)) ([#819](https://github.com/the-hcma/blumkin/issues/819)) ([77c7f83](https://github.com/the-hcma/blumkin/commit/77c7f83e08d537b46aecc99d4b4364db12107a5c))
+* **browser:** the Kokoro voice for narration, set up once with narra… ([#822](https://github.com/the-hcma/blumkin/issues/822)) ([49cff65](https://github.com/the-hcma/blumkin/commit/49cff65c54aa99575907b8b4548e0f1c93d202a0))
+* **browser:** the narration is also a subtitle track, and the skills… ([#823](https://github.com/the-hcma/blumkin/issues/823)) ([2ff0547](https://github.com/the-hcma/blumkin/commit/2ff0547b9318c345fbc8415fc939715ccdcd1028))
+* **chat:** find says why chats were skipped, and chat last --allow-partial accepts a unique match ([#787](https://github.com/the-hcma/blumkin/issues/787)) ([#795](https://github.com/the-hcma/blumkin/issues/795)) ([b579896](https://github.com/the-hcma/blumkin/commit/b57989621b9218851be0f9a8e1ef8c8b54456d8c))
+* **completion:** complete browser tasks, instances, pages, roles, profiles, zones and addresses, with checks that docs, the skills registry and completion stay in step ([#800](https://github.com/the-hcma/blumkin/issues/800)) ([afe4f2f](https://github.com/the-hcma/blumkin/commit/afe4f2f102bbf93ae85101fa8889fc1e05db37c8))
+
+
+### Bug Fixes
+
+* **browser:** a dropdown cell that shows no list is refused, and a typed value the page did not keep is an error, not an edit that worked ([#796](https://github.com/the-hcma/blumkin/issues/796)) ([#801](https://github.com/the-hcma/blumkin/issues/801)) ([e93b2e2](https://github.com/the-hcma/blumkin/commit/e93b2e2db301496ca1a45f80612fa4a37a1892ee))
+* **browser:** a dropdown choice in a grid cell that reads back empty is made once more before it is reported as not kept ([#809](https://github.com/the-hcma/blumkin/issues/809)) ([#813](https://github.com/the-hcma/blumkin/issues/813)) ([b28daf9](https://github.com/the-hcma/blumkin/commit/b28daf9370d54d34e663fb8831ede27d75cbd56f))
+* **browser:** a navigation item named Pay-as-you-go is clickable ([#786](https://github.com/the-hcma/blumkin/issues/786)) ([#788](https://github.com/the-hcma/blumkin/issues/788)) ([20150ec](https://github.com/the-hcma/blumkin/commit/20150ec6e596926de66f7b9cabcace65e4f8844b))
+* **browser:** a screenshot is tied to the documents the page showed, so a page that left for a sign-in page and came back during the capture is not saved (part of [#807](https://github.com/the-hcma/blumkin/issues/807)) ([#818](https://github.com/the-hcma/blumkin/issues/818)) ([84955de](https://github.com/the-hcma/blumkin/commit/84955defce5b6a113a571d8df989289db5d45f3b))
+* **browser:** a task browser with no open page is given a blank tab and attached to, instead of failing with a DevTools protocol error ([#810](https://github.com/the-hcma/blumkin/issues/810)) ([#811](https://github.com/the-hcma/blumkin/issues/811)) ([4a082d3](https://github.com/the-hcma/blumkin/commit/4a082d316cef7f7676144db8745c4e62ee04234f))
+* **browser:** a task with no table is in open mode ([#784](https://github.com/the-hcma/blumkin/issues/784)) ([#789](https://github.com/the-hcma/blumkin/issues/789)) ([d87f807](https://github.com/the-hcma/blumkin/commit/d87f8077e1e5127e4a665677cf3dfc94fa0d2045))
+* **browser:** captions and narration cues are stamped on the recordin… ([#825](https://github.com/the-hcma/blumkin/issues/825)) ([c6766c3](https://github.com/the-hcma/blumkin/commit/c6766c3073fbed2fd33836d5520c4401cde2ef82))
+* **browser:** click with a wrong --role says which role the control has, without waiting out the wait ([#797](https://github.com/the-hcma/blumkin/issues/797)) ([#799](https://github.com/the-hcma/blumkin/issues/799)) ([df7fb16](https://github.com/the-hcma/blumkin/commit/df7fb16d3dc209c46e568b333ff2fc9c7aceeb89))
+* **browser:** documents committed between two recorder looks are judged with the next look, not thrown away (part of [#807](https://github.com/the-hcma/blumkin/issues/807)) ([#828](https://github.com/the-hcma/blumkin/issues/828)) ([d8ff9ff](https://github.com/the-hcma/blumkin/commit/d8ff9ffdbcc2809da1e9e13ad124ce13e27f11ca))
+* **browser:** ledger status says '10 days filed (3 expected)' instead… ([#834](https://github.com/the-hcma/blumkin/issues/834)) ([6e2b36d](https://github.com/the-hcma/blumkin/commit/6e2b36ded913c1ca9d949df404c9688e52fed06a))
+* **browser:** pages no longer hang after goto or a click, sign-in clicks complete, and payment-style navigation names are clickable ([#780](https://github.com/the-hcma/blumkin/issues/780)) ([e13b576](https://github.com/the-hcma/blumkin/commit/e13b5764b7d179105071fc19bb273f6cc5724a5d))
+* **browser:** read --within and dialog find a menu the page snapshot lacks through the role lookup ([#782](https://github.com/the-hcma/blumkin/issues/782)) ([#793](https://github.com/the-hcma/blumkin/issues/793)) ([5f300fd](https://github.com/the-hcma/blumkin/commit/5f300fd235e353adf43a474c3d1ffd29b597f41b))
+* **browser:** the sign-in pass stays while a goto ends on a sign-in page, so the identity provider's login post is not swallowed ([#808](https://github.com/the-hcma/blumkin/issues/808)) ([#815](https://github.com/the-hcma/blumkin/issues/815)) ([a943c0e](https://github.com/the-hcma/blumkin/commit/a943c0e75e3b3754e7ca6760d22d676172a0e604))
+* ruff format no longer rewrites the repo's markdown, which broke the markdown lint on submit ([#798](https://github.com/the-hcma/blumkin/issues/798)) ([#803](https://github.com/the-hcma/blumkin/issues/803)) ([4b688b3](https://github.com/the-hcma/blumkin/commit/4b688b37653d81a37b0ddc6de8105d30d77c07d2))
+
+
+### Documentation
+
+* **skills:** a browser command map for agents, the Oracle grid in the time-sheet skill, chat partial matches and the wrong-role hint ([#804](https://github.com/the-hcma/blumkin/issues/804)) ([705e391](https://github.com/the-hcma/blumkin/commit/705e3912d9492584f6f865a9ddf54874c4dd7fff))
+
 ## [1.15.0](https://github.com/the-hcma/blumkin/compare/blumkin-v1.14.0...blumkin-v1.15.0) (2026-11-17)
 
 
